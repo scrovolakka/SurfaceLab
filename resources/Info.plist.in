@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>SurfaceLab</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.xinpak.surfacelab</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>SurfaceLab</string>
+    <key>CFBundlePackageType</key>
+    <string>eFKT</string>
+    <key>CFBundleShortVersionString</key>
+    <string>@PROJECT_VERSION@</string>
+    <key>CFBundleVersion</key>
+    <string>@PROJECT_VERSION@</string>
+    <key>CFBundleSignature</key>
+    <string>FXTC</string>
+    <key>LSRequiresCarbon</key>
+    <true/>
+    <key>NSAppleScriptEnabled</key>
+    <string>No</string>
+</dict>
+</plist>
+

@@ -1,0 +1,6747 @@
+#include "SurfaceLab.h"
+#include "AEGP_SuiteHandler.h"
+#include "AEFX_SuiteHelper.h"
+#include <adobesdk/DrawbotSuite.h>
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <limits>
+#include <type_traits>
+#include <vector>
+
+namespace {
+
+struct Point2 {
+    double x{};
+    double y{};
+};
+
+struct Point3 {
+    double x{};
+    double y{};
+    double z{};
+};
+
+struct GlobalData {
+    AEGP_PluginID plugin_id{};
+};
+
+constexpr std::uint32_t kSceneMagic = 0x534C4142U;  // "SLAB"
+constexpr std::uint32_t kSceneSchemaVersion = 13;
+constexpr std::size_t kAnimationStreamsInitializedIndex = 0;
+constexpr std::size_t kAnimationBanksInitializedIndex = 1;
+constexpr std::uint32_t kMaximumSurfaces = 8;
+constexpr std::size_t kScenePrintSize = 96;
+constexpr std::uint32_t kDefaultDivisions = 12;
+constexpr std::uint32_t kMinimumDivisions = 2;
+constexpr std::uint32_t kMaximumDivisions = 32;
+constexpr std::uint32_t kImageSizeStretch = 1;
+constexpr std::uint32_t kImageSizeFill = 2;
+constexpr std::uint32_t kImageSizeFit = 3;
+constexpr std::uint32_t kImageBorderClamp = 1;
+constexpr std::uint32_t kImageBorderRepeat = 2;
+constexpr std::uint32_t kImageBorderMirror = 3;
+constexpr std::uint32_t kImageBorderTransparent = 4;
+constexpr A_long kTextureFilterNearest = 1;
+constexpr A_long kTextureFilterBilinear = 2;
+constexpr A_long kOutputBoundsSource = 1;
+constexpr A_long kOutputBoundsAuto = 2;
+constexpr A_long kOutputBoundsFixed = 3;
+constexpr A_long kDefaultOutputPadding = 32;
+constexpr std::uint32_t kRollEdgeRight = 1;
+constexpr std::uint32_t kRollEdgeLeft = 2;
+constexpr std::uint32_t kRollEdgeBottom = 3;
+constexpr std::uint32_t kRollEdgeTop = 4;
+constexpr std::uint32_t kCornerTopLeft = 1;
+constexpr std::uint32_t kCornerTopRight = 2;
+constexpr std::uint32_t kCornerBottomRight = 3;
+constexpr std::uint32_t kCornerBottomLeft = 4;
+constexpr std::uint32_t kTwistEdgeLeft = 1;
+constexpr std::uint32_t kTwistEdgeRight = 2;
+constexpr std::uint32_t kTwistEdgeTop = 3;
+constexpr std::uint32_t kTwistEdgeBottom = 4;
+constexpr std::uint32_t kRotationOriginCenter = 1;
+constexpr std::uint32_t kRotationOriginLeftEdge = 2;
+constexpr std::uint32_t kRotationOriginRightEdge = 3;
+constexpr std::uint32_t kRotationOriginTopEdge = 4;
+constexpr std::uint32_t kRotationOriginBottomEdge = 5;
+constexpr std::uint32_t kRotationOriginCustom = 6;
+
+constexpr std::array<PF_ParamIndex, 4> kCornerAmountParams = {
+    kParamSurfaceCornerAmount,
+    kParamSurfaceCorner2Amount,
+    kParamSurfaceCorner3Amount,
+    kParamSurfaceCorner4Amount};
+constexpr std::array<PF_ParamIndex, 4> kCornerRadiusParams = {
+    kParamSurfaceCornerRadius,
+    kParamSurfaceCorner2Radius,
+    kParamSurfaceCorner3Radius,
+    kParamSurfaceCorner4Radius};
+constexpr std::array<PF_ParamIndex, 4> kCornerDirectionParams = {
+    kParamSurfaceCornerDirection,
+    kParamSurfaceCorner2Direction,
+    kParamSurfaceCorner3Direction,
+    kParamSurfaceCorner4Direction};
+constexpr std::array<PF_ParamIndex, 4> kCornerLengthParams = {
+    kParamSurfaceCornerLength,
+    kParamSurfaceCorner2Length,
+    kParamSurfaceCorner3Length,
+    kParamSurfaceCorner4Length};
+constexpr std::array<PF_ParamIndex, 4> kTwistAngleParams = {
+    kParamSurfaceTwistAngle,
+    kParamSurfaceTwist2Angle,
+    kParamSurfaceTwist3Angle,
+    kParamSurfaceTwist4Angle};
+constexpr std::array<PF_ParamIndex, 4> kTwistFalloffParams = {
+    kParamSurfaceTwistFalloff,
+    kParamSurfaceTwist2Falloff,
+    kParamSurfaceTwist3Falloff,
+    kParamSurfaceTwist4Falloff};
+
+template <std::size_t Size>
+bool ContainsParam(
+    PF_ParamIndex index,
+    const std::array<PF_ParamIndex, Size>& parameters) {
+    return std::find(parameters.begin(), parameters.end(), index) !=
+           parameters.end();
+}
+
+bool IsCornerCurlValueParam(PF_ParamIndex index) {
+    return ContainsParam(index, kCornerAmountParams) ||
+           ContainsParam(index, kCornerRadiusParams) ||
+           ContainsParam(index, kCornerDirectionParams) ||
+           ContainsParam(index, kCornerLengthParams);
+}
+
+bool IsEdgeTwistValueParam(PF_ParamIndex index) {
+    return ContainsParam(index, kTwistAngleParams) ||
+           ContainsParam(index, kTwistFalloffParams);
+}
+
+PF_ParamIndex PrimaryAnimationParam(std::size_t property) {
+    if (property < 16) {
+        return kParamPoint00 + static_cast<PF_ParamIndex>(property);
+    }
+    if (property < 32) {
+        return kParamDepth00 + static_cast<PF_ParamIndex>(property - 16);
+    }
+    if (property < 35) {
+        return kParamRotationX + static_cast<PF_ParamIndex>(property - 32);
+    }
+    switch (property) {
+        case 35: return kParamSurfaceSizeX;
+        case 36: return kParamSurfaceSizeY;
+        case 37: return kParamSurfacePosition;
+        case 38: return kParamSurfaceRotationOriginMode;
+        case 39: return kParamSurfaceRotationOriginX;
+        case 40: return kParamSurfaceRotationOriginY;
+        case 41: return kParamSurfaceScaleX;
+        case 42: return kParamSurfaceScaleY;
+        case 43: return kParamSurfaceScaleZ;
+        case 44: return kParamSurfaceDivisionsX;
+        case 45: return kParamSurfaceDivisionsY;
+        case 46: return kParamSurfaceThickness;
+        case 47: return kParamSurfaceBendX;
+        case 48: return kParamSurfaceBendY;
+        case 49: return kParamSurfaceRollEdge;
+        case 50: return kParamSurfaceRollAngle;
+        case 51: return kParamSurfaceRollLength;
+        default: break;
+    }
+    if (property < 68) {
+        const std::size_t offset = property - 52;
+        const std::size_t corner = offset / 4;
+        switch (offset % 4) {
+            case 0: return kCornerAmountParams[corner];
+            case 1: return kCornerRadiusParams[corner];
+            case 2: return kCornerDirectionParams[corner];
+            default: return kCornerLengthParams[corner];
+        }
+    }
+    if (property < 76) {
+        const std::size_t offset = property - 68;
+        const std::size_t edge = offset / 2;
+        return offset % 2 == 0
+                   ? kTwistAngleParams[edge]
+                   : kTwistFalloffParams[edge];
+    }
+    switch (property) {
+        case 76: return kParamSurfaceSourceSlot;
+        case 77: return kParamSurfaceBackSourceSlot;
+        case 78: return kParamSurfaceImageSize;
+        case 79: return kParamSurfaceImageBorder;
+        case 80: return kParamSurfaceOpacity;
+        case 81: return kParamSurfaceDiffuse;
+        case 82: return kParamSurfaceSpecular;
+        default: return kParamSurfaceShininess;
+    }
+}
+
+PF_ParamIndex AnimationBankTopicParam(std::uint32_t bank) {
+    return kParamSurfaceAnimationBanksStart +
+           static_cast<PF_ParamIndex>(bank - 1) *
+               kSurfaceAnimationBankStride;
+}
+
+PF_ParamIndex AnimationBankParam(
+    std::uint32_t bank,
+    std::size_t property) {
+    if (bank == 0) {
+        return PrimaryAnimationParam(property);
+    }
+    return AnimationBankTopicParam(bank) + 1 +
+           static_cast<PF_ParamIndex>(property);
+}
+
+struct AnimationParamAddress {
+    bool valid{};
+    std::uint32_t bank{};
+    std::size_t property{};
+    PF_ParamIndex canonical{};
+};
+
+AnimationParamAddress ResolveAnimationParam(PF_ParamIndex parameter) {
+    if (parameter >= kParamSurfaceAnimationBanksStart &&
+        parameter < kParamSurfacesEnd) {
+        const PF_ParamIndex offset =
+            parameter - kParamSurfaceAnimationBanksStart;
+        const PF_ParamIndex within = offset % kSurfaceAnimationBankStride;
+        if (within > 0 && within <= kSurfaceAnimationPropertyCount) {
+            const std::size_t property = static_cast<std::size_t>(within - 1);
+            return {
+                true,
+                static_cast<std::uint32_t>(offset /
+                                           kSurfaceAnimationBankStride) + 1,
+                property,
+                PrimaryAnimationParam(property)};
+        }
+        return {};
+    }
+    for (std::size_t property = 0;
+         property < static_cast<std::size_t>(kSurfaceAnimationPropertyCount);
+         ++property) {
+        if (PrimaryAnimationParam(property) == parameter) {
+            return {true, 0, property, parameter};
+        }
+    }
+    return {};
+}
+
+std::array<PF_ParamDef*, kParamCount> BuildAnimationParameterView(
+    PF_ParamDef* params[],
+    std::uint32_t bank) {
+    std::array<PF_ParamDef*, kParamCount> view{};
+    std::copy(params, params + kParamCount, view.begin());
+    for (std::size_t property = 0;
+         property < static_cast<std::size_t>(kSurfaceAnimationPropertyCount);
+         ++property) {
+        view[static_cast<std::size_t>(PrimaryAnimationParam(property))] =
+            params[AnimationBankParam(bank, property)];
+    }
+    return view;
+}
+
+struct StoredPoint3 {
+    float x{};
+    float y{};
+    float z{};
+};
+
+struct SurfaceDataV1 {
+    std::uint32_t id{};
+    std::uint32_t enabled{};
+    StoredPoint3 control_points[16]{};
+    float rotation_x{};
+    float rotation_y{};
+    float rotation_z{};
+    std::uint32_t reserved[5]{};
+};
+
+struct SceneDataV1 {
+    std::uint32_t magic{};
+    std::uint32_t schema_version{};
+    std::uint32_t active{};
+    std::uint32_t surface_count{};
+    std::uint32_t selected_surface{};
+    std::uint32_t next_surface_id{};
+    std::uint32_t reserved[10]{};
+    SurfaceDataV1 surfaces[kMaximumSurfaces]{};
+};
+
+struct SurfaceDataV2 {
+    std::uint32_t id{};
+    std::uint32_t enabled{};
+    StoredPoint3 control_points[16]{};
+    float rotation_x{};
+    float rotation_y{};
+    float rotation_z{};
+    float size_x{};
+    float size_y{};
+    float position_x{};
+    float position_y{};
+    float position_z{};
+    float scale_x{100.0F};
+    float scale_y{100.0F};
+    float scale_z{100.0F};
+    std::uint32_t transform_mode{};
+    std::uint32_t reserved[3]{};
+};
+
+struct SceneDataV2 {
+    std::uint32_t magic{};
+    std::uint32_t schema_version{};
+    std::uint32_t active{};
+    std::uint32_t surface_count{};
+    std::uint32_t selected_surface{};
+    std::uint32_t next_surface_id{};
+    std::uint32_t reserved[10]{};
+    SurfaceDataV2 surfaces[kMaximumSurfaces]{};
+};
+
+struct SurfaceDataV3 {
+    std::uint32_t id{};
+    std::uint32_t enabled{};
+    StoredPoint3 control_points[16]{};
+    float rotation_x{};
+    float rotation_y{};
+    float rotation_z{};
+    float size_x{};
+    float size_y{};
+    float position_x{};
+    float position_y{};
+    float position_z{};
+    float scale_x{100.0F};
+    float scale_y{100.0F};
+    float scale_z{100.0F};
+    std::uint32_t divisions_x{};
+    std::uint32_t divisions_y{};
+    std::uint32_t transform_mode{};
+    std::uint32_t reserved[1]{};
+};
+
+struct SceneDataV3 {
+    std::uint32_t magic{};
+    std::uint32_t schema_version{};
+    std::uint32_t active{};
+    std::uint32_t surface_count{};
+    std::uint32_t selected_surface{};
+    std::uint32_t next_surface_id{};
+    std::uint32_t reserved[10]{};
+    SurfaceDataV3 surfaces[kMaximumSurfaces]{};
+};
+
+struct SurfaceDataV4 {
+    std::uint32_t id{};
+    std::uint32_t enabled{};
+    StoredPoint3 control_points[16]{};
+    float rotation_x{};
+    float rotation_y{};
+    float rotation_z{};
+    float size_x{};
+    float size_y{};
+    float position_x{};
+    float position_y{};
+    float position_z{};
+    float scale_x{100.0F};
+    float scale_y{100.0F};
+    float scale_z{100.0F};
+    std::uint32_t divisions_x{};
+    std::uint32_t divisions_y{};
+    std::uint32_t transform_mode{};
+    std::uint32_t source_slot{};
+    std::uint32_t image_size_mode{kImageSizeStretch};
+    std::uint32_t image_border_mode{kImageBorderClamp};
+    float opacity{100.0F};
+    std::uint32_t reserved[1]{};
+};
+
+struct SceneDataV4 {
+    std::uint32_t magic{};
+    std::uint32_t schema_version{};
+    std::uint32_t active{};
+    std::uint32_t surface_count{};
+    std::uint32_t selected_surface{};
+    std::uint32_t next_surface_id{};
+    std::uint32_t reserved[10]{};
+    SurfaceDataV4 surfaces[kMaximumSurfaces]{};
+};
+
+struct SurfaceDataV5 {
+    std::uint32_t id{};
+    std::uint32_t enabled{};
+    StoredPoint3 control_points[16]{};
+    float rotation_x{};
+    float rotation_y{};
+    float rotation_z{};
+    float size_x{};
+    float size_y{};
+    float position_x{};
+    float position_y{};
+    float position_z{};
+    float scale_x{100.0F};
+    float scale_y{100.0F};
+    float scale_z{100.0F};
+    std::uint32_t divisions_x{};
+    std::uint32_t divisions_y{};
+    std::uint32_t transform_mode{};
+    std::uint32_t source_slot{};
+    std::uint32_t image_size_mode{kImageSizeStretch};
+    std::uint32_t image_border_mode{kImageBorderClamp};
+    float opacity{100.0F};
+    float thickness{};
+};
+
+struct SceneDataV5 {
+    std::uint32_t magic{};
+    std::uint32_t schema_version{};
+    std::uint32_t active{};
+    std::uint32_t surface_count{};
+    std::uint32_t selected_surface{};
+    std::uint32_t next_surface_id{};
+    std::uint32_t reserved[10]{};
+    SurfaceDataV5 surfaces[kMaximumSurfaces]{};
+};
+
+struct SurfaceDataV6 {
+    std::uint32_t id{};
+    std::uint32_t enabled{};
+    StoredPoint3 control_points[16]{};
+    float rotation_x{};
+    float rotation_y{};
+    float rotation_z{};
+    float size_x{};
+    float size_y{};
+    float position_x{};
+    float position_y{};
+    float position_z{};
+    float scale_x{100.0F};
+    float scale_y{100.0F};
+    float scale_z{100.0F};
+    std::uint32_t divisions_x{};
+    std::uint32_t divisions_y{};
+    std::uint32_t transform_mode{};
+    std::uint32_t source_slot{};
+    std::uint32_t image_size_mode{kImageSizeStretch};
+    std::uint32_t image_border_mode{kImageBorderClamp};
+    float opacity{100.0F};
+    float thickness{};
+    float diffuse{100.0F};
+    float specular{50.0F};
+    float shininess{32.0F};
+};
+
+struct SceneDataV6 {
+    std::uint32_t magic{};
+    std::uint32_t schema_version{};
+    std::uint32_t active{};
+    std::uint32_t surface_count{};
+    std::uint32_t selected_surface{};
+    std::uint32_t next_surface_id{};
+    std::uint32_t reserved[10]{};
+    SurfaceDataV6 surfaces[kMaximumSurfaces]{};
+};
+
+struct SurfaceDataV7 {
+    std::uint32_t id{};
+    std::uint32_t enabled{};
+    StoredPoint3 control_points[16]{};
+    float rotation_x{};
+    float rotation_y{};
+    float rotation_z{};
+    float size_x{};
+    float size_y{};
+    float position_x{};
+    float position_y{};
+    float position_z{};
+    float scale_x{100.0F};
+    float scale_y{100.0F};
+    float scale_z{100.0F};
+    std::uint32_t divisions_x{};
+    std::uint32_t divisions_y{};
+    std::uint32_t transform_mode{};
+    std::uint32_t source_slot{};
+    std::uint32_t image_size_mode{kImageSizeStretch};
+    std::uint32_t image_border_mode{kImageBorderClamp};
+    float opacity{100.0F};
+    float thickness{};
+    float diffuse{100.0F};
+    float specular{50.0F};
+    float shininess{32.0F};
+    float bend_x{};
+    float bend_y{};
+    float roll_angle{};
+    float roll_length{25.0F};
+    std::uint32_t roll_edge{kRollEdgeRight};
+};
+
+struct SceneDataV7 {
+    std::uint32_t magic{};
+    std::uint32_t schema_version{};
+    std::uint32_t active{};
+    std::uint32_t surface_count{};
+    std::uint32_t selected_surface{};
+    std::uint32_t next_surface_id{};
+    std::uint32_t reserved[10]{};
+    SurfaceDataV7 surfaces[kMaximumSurfaces]{};
+};
+
+struct CornerCurlData {
+    float amount{};
+    float radius{15.0F};
+    float direction{45.0F};
+    float length{30.0F};
+};
+
+struct SurfaceDataV8 {
+    std::uint32_t id{};
+    std::uint32_t enabled{};
+    StoredPoint3 control_points[16]{};
+    float rotation_x{};
+    float rotation_y{};
+    float rotation_z{};
+    float size_x{};
+    float size_y{};
+    float position_x{};
+    float position_y{};
+    float position_z{};
+    float scale_x{100.0F};
+    float scale_y{100.0F};
+    float scale_z{100.0F};
+    std::uint32_t divisions_x{};
+    std::uint32_t divisions_y{};
+    std::uint32_t transform_mode{};
+    std::uint32_t source_slot{};
+    std::uint32_t image_size_mode{kImageSizeStretch};
+    std::uint32_t image_border_mode{kImageBorderClamp};
+    float opacity{100.0F};
+    float thickness{};
+    float diffuse{100.0F};
+    float specular{50.0F};
+    float shininess{32.0F};
+    float bend_x{};
+    float bend_y{};
+    float roll_angle{};
+    float roll_length{25.0F};
+    std::uint32_t roll_edge{kRollEdgeRight};
+    CornerCurlData corner_curls[4]{};
+    std::uint32_t selected_corner{kCornerTopLeft};
+};
+
+struct SceneDataV8 {
+    std::uint32_t magic{};
+    std::uint32_t schema_version{};
+    std::uint32_t active{};
+    std::uint32_t surface_count{};
+    std::uint32_t selected_surface{};
+    std::uint32_t next_surface_id{};
+    std::uint32_t reserved[10]{};
+    SurfaceDataV8 surfaces[kMaximumSurfaces]{};
+};
+
+struct EdgeTwistData {
+    float angle{};
+    float falloff{100.0F};
+};
+
+struct SurfaceDataV9 {
+    std::uint32_t id{};
+    std::uint32_t enabled{};
+    StoredPoint3 control_points[16]{};
+    float rotation_x{};
+    float rotation_y{};
+    float rotation_z{};
+    float size_x{};
+    float size_y{};
+    float position_x{};
+    float position_y{};
+    float position_z{};
+    float scale_x{100.0F};
+    float scale_y{100.0F};
+    float scale_z{100.0F};
+    std::uint32_t divisions_x{};
+    std::uint32_t divisions_y{};
+    std::uint32_t transform_mode{};
+    std::uint32_t source_slot{};
+    std::uint32_t image_size_mode{kImageSizeStretch};
+    std::uint32_t image_border_mode{kImageBorderClamp};
+    float opacity{100.0F};
+    float thickness{};
+    float diffuse{100.0F};
+    float specular{50.0F};
+    float shininess{32.0F};
+    float bend_x{};
+    float bend_y{};
+    float roll_angle{};
+    float roll_length{25.0F};
+    std::uint32_t roll_edge{kRollEdgeRight};
+    CornerCurlData corner_curls[4]{};
+    std::uint32_t selected_corner{kCornerTopLeft};
+    EdgeTwistData edge_twists[4]{};
+    std::uint32_t selected_twist_edge{kTwistEdgeLeft};
+};
+
+struct SceneDataV9 {
+    std::uint32_t magic{};
+    std::uint32_t schema_version{};
+    std::uint32_t active{};
+    std::uint32_t surface_count{};
+    std::uint32_t selected_surface{};
+    std::uint32_t next_surface_id{};
+    std::uint32_t reserved[10]{};
+    SurfaceDataV9 surfaces[kMaximumSurfaces]{};
+};
+
+struct SurfaceDataV11 {
+    std::uint32_t id{};
+    std::uint32_t enabled{};
+    StoredPoint3 control_points[16]{};
+    float rotation_x{};
+    float rotation_y{};
+    float rotation_z{};
+    float size_x{};
+    float size_y{};
+    float position_x{};
+    float position_y{};
+    float position_z{};
+    float scale_x{100.0F};
+    float scale_y{100.0F};
+    float scale_z{100.0F};
+    std::uint32_t divisions_x{};
+    std::uint32_t divisions_y{};
+    std::uint32_t transform_mode{};
+    std::uint32_t source_slot{};
+    std::uint32_t image_size_mode{kImageSizeStretch};
+    std::uint32_t image_border_mode{kImageBorderClamp};
+    float opacity{100.0F};
+    float thickness{};
+    float diffuse{100.0F};
+    float specular{50.0F};
+    float shininess{32.0F};
+    float bend_x{};
+    float bend_y{};
+    float roll_angle{};
+    float roll_length{25.0F};
+    std::uint32_t roll_edge{kRollEdgeRight};
+    CornerCurlData corner_curls[4]{};
+    std::uint32_t selected_corner{kCornerTopLeft};
+    EdgeTwistData edge_twists[4]{};
+    std::uint32_t selected_twist_edge{kTwistEdgeLeft};
+    std::uint32_t rotation_origin_mode{kRotationOriginCenter};
+    float rotation_origin_x{50.0F};
+    float rotation_origin_y{50.0F};
+};
+
+struct SceneDataV11 {
+    std::uint32_t magic{};
+    std::uint32_t schema_version{};
+    std::uint32_t active{};
+    std::uint32_t surface_count{};
+    std::uint32_t selected_surface{};
+    std::uint32_t next_surface_id{};
+    std::uint32_t reserved[10]{};
+    SurfaceDataV11 surfaces[kMaximumSurfaces]{};
+};
+
+struct SurfaceDataV12 {
+    std::uint32_t id{};
+    std::uint32_t enabled{};
+    StoredPoint3 control_points[16]{};
+    float rotation_x{};
+    float rotation_y{};
+    float rotation_z{};
+    float size_x{};
+    float size_y{};
+    float position_x{};
+    float position_y{};
+    float position_z{};
+    float scale_x{100.0F};
+    float scale_y{100.0F};
+    float scale_z{100.0F};
+    std::uint32_t divisions_x{};
+    std::uint32_t divisions_y{};
+    std::uint32_t transform_mode{};
+    std::uint32_t source_slot{};
+    std::uint32_t image_size_mode{kImageSizeStretch};
+    std::uint32_t image_border_mode{kImageBorderClamp};
+    float opacity{100.0F};
+    float thickness{};
+    float diffuse{100.0F};
+    float specular{50.0F};
+    float shininess{32.0F};
+    float bend_x{};
+    float bend_y{};
+    float roll_angle{};
+    float roll_length{25.0F};
+    std::uint32_t roll_edge{kRollEdgeRight};
+    CornerCurlData corner_curls[4]{};
+    std::uint32_t selected_corner{kCornerTopLeft};
+    EdgeTwistData edge_twists[4]{};
+    std::uint32_t selected_twist_edge{kTwistEdgeLeft};
+    std::uint32_t rotation_origin_mode{kRotationOriginCenter};
+    float rotation_origin_x{50.0F};
+    float rotation_origin_y{50.0F};
+    std::uint32_t back_source_slot{};
+};
+
+struct SceneDataV12 {
+    std::uint32_t magic{};
+    std::uint32_t schema_version{};
+    std::uint32_t active{};
+    std::uint32_t surface_count{};
+    std::uint32_t selected_surface{};
+    std::uint32_t next_surface_id{};
+    std::uint32_t reserved[10]{};
+    SurfaceDataV12 surfaces[kMaximumSurfaces]{};
+};
+
+struct SurfaceData {
+    std::uint32_t id{};
+    std::uint32_t enabled{};
+    StoredPoint3 control_points[16]{};
+    float rotation_x{};
+    float rotation_y{};
+    float rotation_z{};
+    float size_x{};
+    float size_y{};
+    float position_x{};
+    float position_y{};
+    float position_z{};
+    float scale_x{100.0F};
+    float scale_y{100.0F};
+    float scale_z{100.0F};
+    std::uint32_t divisions_x{};
+    std::uint32_t divisions_y{};
+    std::uint32_t transform_mode{};
+    std::uint32_t source_slot{};
+    std::uint32_t image_size_mode{kImageSizeStretch};
+    std::uint32_t image_border_mode{kImageBorderClamp};
+    float opacity{100.0F};
+    float thickness{};
+    float diffuse{100.0F};
+    float specular{50.0F};
+    float shininess{32.0F};
+    float bend_x{};
+    float bend_y{};
+    float roll_angle{};
+    float roll_length{25.0F};
+    std::uint32_t roll_edge{kRollEdgeRight};
+    CornerCurlData corner_curls[4]{};
+    std::uint32_t selected_corner{kCornerTopLeft};
+    EdgeTwistData edge_twists[4]{};
+    std::uint32_t selected_twist_edge{kTwistEdgeLeft};
+    std::uint32_t rotation_origin_mode{kRotationOriginCenter};
+    float rotation_origin_x{50.0F};
+    float rotation_origin_y{50.0F};
+    // 0 follows source_slot; 1..8 explicitly select Source Layer slots 1..8.
+    std::uint32_t back_source_slot{};
+    std::uint32_t animation_bank{};
+};
+
+struct SceneData {
+    std::uint32_t magic{};
+    std::uint32_t schema_version{};
+    std::uint32_t active{};
+    std::uint32_t surface_count{};
+    std::uint32_t selected_surface{};
+    std::uint32_t next_surface_id{};
+    std::uint32_t reserved[10]{};
+    SurfaceData surfaces[kMaximumSurfaces]{};
+};
+
+static_assert(std::is_trivially_copyable_v<SceneData>);
+static_assert(std::is_standard_layout_v<SceneData>);
+static_assert(std::is_trivially_copyable_v<SceneDataV1>);
+static_assert(std::is_trivially_copyable_v<SceneDataV2>);
+static_assert(std::is_trivially_copyable_v<SceneDataV3>);
+static_assert(std::is_trivially_copyable_v<SceneDataV4>);
+static_assert(std::is_trivially_copyable_v<SceneDataV5>);
+static_assert(std::is_trivially_copyable_v<SceneDataV6>);
+static_assert(std::is_trivially_copyable_v<SceneDataV7>);
+static_assert(std::is_trivially_copyable_v<SceneDataV8>);
+static_assert(std::is_trivially_copyable_v<SceneDataV9>);
+static_assert(std::is_trivially_copyable_v<SceneDataV11>);
+static_assert(std::is_trivially_copyable_v<SceneDataV12>);
+static_assert(sizeof(SceneDataV1) == 1920);
+static_assert(sizeof(SceneDataV2) == 2144);
+static_assert(sizeof(SceneDataV3) == 2144);
+static_assert(sizeof(SceneDataV4) == 2272);
+static_assert(sizeof(SceneDataV5) == 2272);
+static_assert(sizeof(SceneDataV6) == 2368);
+static_assert(sizeof(SceneDataV7) == 2528);
+static_assert(sizeof(SceneDataV8) == 3072);
+static_assert(sizeof(SceneDataV9) == 3360);
+static_assert(offsetof(SurfaceData, rotation_origin_mode) == sizeof(SurfaceDataV9));
+static_assert(sizeof(SceneDataV11) == 3456);
+static_assert(offsetof(SurfaceData, back_source_slot) == sizeof(SurfaceDataV11));
+static_assert(sizeof(SceneDataV12) == 3488);
+static_assert(offsetof(SurfaceData, animation_bank) == sizeof(SurfaceDataV12));
+static_assert(sizeof(SceneData) == 3520);
+
+struct Vertex {
+    double x{};
+    double y{};
+    double u{};
+    double v{};
+    double inverse_depth{};
+    Point3 world_position{};
+    Point3 normal{};
+    bool visible{};
+};
+
+struct CameraState {
+    Point3 position{};
+    double rotation_x{};
+    double rotation_y{};
+    double rotation_z{};
+    double focal_distance{};
+    double center_x{};
+    double center_y{};
+    double output_offset_x{};
+    double output_offset_y{};
+    bool perspective{};
+};
+
+struct Bounds2D {
+    double minimum_x{};
+    double minimum_y{};
+    double maximum_x{};
+    double maximum_y{};
+};
+
+struct LightingState {
+    Point3 direction{0.0, 0.0, -1.0};
+    Point3 camera_position{};
+    double intensity{1.0};
+    double ambient{0.2};
+    bool enabled{};
+    bool backface_culling{};
+    A_long texture_filter{kTextureFilterBilinear};
+};
+
+enum class TextureFace {
+    Automatic,
+    Front,
+    Back
+};
+
+void UpdateDerivedTransform(SurfaceData& surface) {
+    float minimum_x = surface.control_points[0].x;
+    float maximum_x = minimum_x;
+    float minimum_y = surface.control_points[0].y;
+    float maximum_y = minimum_y;
+    double total_z = 0.0;
+    for (const StoredPoint3& point : surface.control_points) {
+        minimum_x = std::min(minimum_x, point.x);
+        maximum_x = std::max(maximum_x, point.x);
+        minimum_y = std::min(minimum_y, point.y);
+        maximum_y = std::max(maximum_y, point.y);
+        total_z += point.z;
+    }
+    surface.size_x = std::max(0.001F, maximum_x - minimum_x);
+    surface.size_y = std::max(0.001F, maximum_y - minimum_y);
+    surface.position_x = (minimum_x + maximum_x) * 0.5F;
+    surface.position_y = (minimum_y + maximum_y) * 0.5F;
+    surface.position_z = static_cast<float>(total_z / 16.0);
+}
+
+void InitializeEdgeTwists(SurfaceData& surface) {
+    for (EdgeTwistData& edge : surface.edge_twists) {
+        edge.angle = 0.0F;
+        edge.falloff = 100.0F;
+    }
+    surface.selected_twist_edge = kTwistEdgeLeft;
+}
+
+void InitializeCornerCurls(SurfaceData& surface) {
+    for (CornerCurlData& corner : surface.corner_curls) {
+        corner.amount = 0.0F;
+        corner.radius = 15.0F;
+        corner.direction = 45.0F;
+        corner.length = 30.0F;
+    }
+    surface.selected_corner = kCornerTopLeft;
+    InitializeEdgeTwists(surface);
+}
+
+void InitializeFlatSurface(
+    SurfaceData& surface,
+    std::uint32_t id,
+    double width,
+    double height,
+    bool use_local_transform) {
+    surface = {};
+    surface.id = id;
+    surface.enabled = 1;
+    for (int row = 0; row < 4; ++row) {
+        for (int column = 0; column < 4; ++column) {
+            const int index = row * 4 + column;
+            surface.control_points[index].x = static_cast<float>(
+                width * static_cast<double>(column) / 3.0);
+            surface.control_points[index].y = static_cast<float>(
+                height * static_cast<double>(row) / 3.0);
+        }
+    }
+    surface.scale_x = 100.0F;
+    surface.scale_y = 100.0F;
+    surface.scale_z = 100.0F;
+    surface.divisions_x = use_local_transform ? kDefaultDivisions : 0U;
+    surface.divisions_y = use_local_transform ? kDefaultDivisions : 0U;
+    surface.transform_mode = use_local_transform ? 1U : 0U;
+    surface.source_slot = 0;
+    surface.back_source_slot = 0;
+    surface.animation_bank = 0;
+    surface.image_size_mode = kImageSizeStretch;
+    surface.image_border_mode = kImageBorderClamp;
+    surface.opacity = 100.0F;
+    surface.thickness = 0.0F;
+    surface.diffuse = 100.0F;
+    surface.specular = 50.0F;
+    surface.shininess = 32.0F;
+    surface.bend_x = 0.0F;
+    surface.bend_y = 0.0F;
+    surface.roll_angle = 0.0F;
+    surface.roll_length = 25.0F;
+    surface.roll_edge = kRollEdgeRight;
+    InitializeCornerCurls(surface);
+    UpdateDerivedTransform(surface);
+}
+
+void InitializeScene(SceneData& scene, double width, double height) {
+    scene = {};
+    scene.magic = kSceneMagic;
+    scene.schema_version = kSceneSchemaVersion;
+    scene.reserved[kAnimationStreamsInitializedIndex] = 1;
+    scene.reserved[kAnimationBanksInitializedIndex] = 1;
+    scene.surface_count = 1;
+    scene.next_surface_id = 2;
+    InitializeFlatSurface(scene.surfaces[0], 1, width, height, false);
+}
+
+bool IsValidScene(const SceneData& scene) {
+    if (scene.magic != kSceneMagic ||
+        scene.schema_version != kSceneSchemaVersion ||
+        scene.surface_count < 1 ||
+        scene.surface_count > kMaximumSurfaces ||
+        scene.selected_surface >= scene.surface_count) {
+        return false;
+    }
+    std::array<bool, kMaximumSurfaces> used_animation_banks{};
+    for (std::uint32_t index = 0; index < scene.surface_count; ++index) {
+        const SurfaceData& surface = scene.surfaces[index];
+        if (surface.animation_bank >= kMaximumSurfaces ||
+            used_animation_banks[surface.animation_bank]) {
+            return false;
+        }
+        used_animation_banks[surface.animation_bank] = true;
+        const bool valid_x = surface.divisions_x == 0 ||
+                             (surface.divisions_x >= kMinimumDivisions &&
+                              surface.divisions_x <= kMaximumDivisions);
+        const bool valid_y = surface.divisions_y == 0 ||
+                             (surface.divisions_y >= kMinimumDivisions &&
+                              surface.divisions_y <= kMaximumDivisions);
+        if (!valid_x || !valid_y) {
+            return false;
+        }
+        if (surface.source_slot >= kMaximumSurfaces ||
+            surface.back_source_slot > kMaximumSurfaces ||
+            surface.image_size_mode < kImageSizeStretch ||
+            surface.image_size_mode > kImageSizeFit ||
+            surface.image_border_mode < kImageBorderClamp ||
+            surface.image_border_mode > kImageBorderTransparent ||
+            !std::isfinite(surface.opacity) ||
+            surface.opacity < 0.0F ||
+            surface.opacity > 100.0F) {
+            return false;
+        }
+        if (!std::isfinite(surface.thickness) ||
+            surface.thickness < 0.0F ||
+            surface.thickness > 4000.0F) {
+            return false;
+        }
+        if (!std::isfinite(surface.diffuse) ||
+            !std::isfinite(surface.specular) ||
+            !std::isfinite(surface.shininess) ||
+            surface.diffuse < 0.0F || surface.diffuse > 200.0F ||
+            surface.specular < 0.0F || surface.specular > 200.0F ||
+            surface.shininess < 1.0F || surface.shininess > 256.0F) {
+            return false;
+        }
+        if (!std::isfinite(surface.bend_x) ||
+            !std::isfinite(surface.bend_y) ||
+            !std::isfinite(surface.roll_angle) ||
+            !std::isfinite(surface.roll_length) ||
+            surface.bend_x < -720.0F || surface.bend_x > 720.0F ||
+            surface.bend_y < -720.0F || surface.bend_y > 720.0F ||
+            surface.roll_angle < -1080.0F || surface.roll_angle > 1080.0F ||
+            surface.roll_length < 0.0F || surface.roll_length > 100.0F ||
+            surface.roll_edge < kRollEdgeRight ||
+            surface.roll_edge > kRollEdgeTop) {
+            return false;
+        }
+        if (surface.selected_corner < kCornerTopLeft ||
+            surface.selected_corner > kCornerBottomLeft) {
+            return false;
+        }
+        for (const CornerCurlData& corner : surface.corner_curls) {
+            if (!std::isfinite(corner.amount) ||
+                !std::isfinite(corner.radius) ||
+                !std::isfinite(corner.direction) ||
+                !std::isfinite(corner.length) ||
+                corner.amount < -100.0F || corner.amount > 100.0F ||
+                corner.radius < 0.1F || corner.radius > 100.0F ||
+                corner.direction < 0.0F || corner.direction > 90.0F ||
+                corner.length < 0.0F || corner.length > 150.0F) {
+                return false;
+            }
+        }
+        if (surface.selected_twist_edge < kTwistEdgeLeft ||
+            surface.selected_twist_edge > kTwistEdgeBottom) {
+            return false;
+        }
+        for (const EdgeTwistData& edge : surface.edge_twists) {
+            if (!std::isfinite(edge.angle) ||
+                !std::isfinite(edge.falloff) ||
+                edge.angle < -180.0F || edge.angle > 180.0F ||
+                edge.falloff < 1.0F || edge.falloff > 100.0F) {
+                return false;
+            }
+        }
+        if (surface.rotation_origin_mode < kRotationOriginCenter ||
+            surface.rotation_origin_mode > kRotationOriginCustom ||
+            !std::isfinite(surface.rotation_origin_x) ||
+            !std::isfinite(surface.rotation_origin_y) ||
+            surface.rotation_origin_x < -1000.0F ||
+            surface.rotation_origin_x > 1000.0F ||
+            surface.rotation_origin_y < -1000.0F ||
+            surface.rotation_origin_y > 1000.0F) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool IsValidSceneV1(const SceneDataV1& scene) {
+    return scene.magic == kSceneMagic &&
+           scene.schema_version == 1 &&
+           scene.surface_count >= 1 &&
+           scene.surface_count <= kMaximumSurfaces &&
+           scene.selected_surface < scene.surface_count;
+}
+
+bool IsValidSceneV2(const SceneDataV2& scene) {
+    return scene.magic == kSceneMagic &&
+           scene.schema_version == 2 &&
+           scene.surface_count >= 1 &&
+           scene.surface_count <= kMaximumSurfaces &&
+           scene.selected_surface < scene.surface_count;
+}
+
+bool IsValidSceneV3(const SceneDataV3& scene) {
+    return scene.magic == kSceneMagic &&
+           scene.schema_version == 3 &&
+           scene.surface_count >= 1 &&
+           scene.surface_count <= kMaximumSurfaces &&
+           scene.selected_surface < scene.surface_count;
+}
+
+bool IsValidSceneV4(const SceneDataV4& scene) {
+    return scene.magic == kSceneMagic &&
+           scene.schema_version == 4 &&
+           scene.surface_count >= 1 &&
+           scene.surface_count <= kMaximumSurfaces &&
+           scene.selected_surface < scene.surface_count;
+}
+
+bool IsValidSceneV5(const SceneDataV5& scene) {
+    return scene.magic == kSceneMagic &&
+           scene.schema_version == 5 &&
+           scene.surface_count >= 1 &&
+           scene.surface_count <= kMaximumSurfaces &&
+           scene.selected_surface < scene.surface_count;
+}
+
+bool IsValidSceneV6(const SceneDataV6& scene) {
+    return scene.magic == kSceneMagic &&
+           scene.schema_version == 6 &&
+           scene.surface_count >= 1 &&
+           scene.surface_count <= kMaximumSurfaces &&
+           scene.selected_surface < scene.surface_count;
+}
+
+bool IsValidSceneV7(const SceneDataV7& scene) {
+    return scene.magic == kSceneMagic &&
+           scene.schema_version == 7 &&
+           scene.surface_count >= 1 &&
+           scene.surface_count <= kMaximumSurfaces &&
+           scene.selected_surface < scene.surface_count;
+}
+
+bool IsValidSceneV8(const SceneDataV8& scene) {
+    return scene.magic == kSceneMagic &&
+           scene.schema_version == 8 &&
+           scene.surface_count >= 1 &&
+           scene.surface_count <= kMaximumSurfaces &&
+           scene.selected_surface < scene.surface_count;
+}
+
+bool IsValidSceneV9(const SceneDataV9& scene) {
+    return scene.magic == kSceneMagic &&
+           scene.schema_version == 9 &&
+           scene.surface_count >= 1 &&
+           scene.surface_count <= kMaximumSurfaces &&
+           scene.selected_surface < scene.surface_count;
+}
+
+void InitializeMaterial(SurfaceData& surface) {
+    surface.source_slot = 0;
+    surface.image_size_mode = kImageSizeStretch;
+    surface.image_border_mode = kImageBorderClamp;
+    surface.opacity = 100.0F;
+    surface.diffuse = 100.0F;
+    surface.specular = 50.0F;
+    surface.shininess = 32.0F;
+}
+
+void MigrateSceneV1(const SceneDataV1& source, SceneData& destination) {
+    destination = {};
+    destination.magic = kSceneMagic;
+    destination.schema_version = kSceneSchemaVersion;
+    destination.active = source.active;
+    destination.surface_count = source.surface_count;
+    destination.selected_surface = source.selected_surface;
+    destination.next_surface_id = source.next_surface_id;
+    for (std::uint32_t index = 0; index < source.surface_count; ++index) {
+        const SurfaceDataV1& old_surface = source.surfaces[index];
+        SurfaceData& new_surface = destination.surfaces[index];
+        new_surface.id = old_surface.id;
+        new_surface.enabled = old_surface.enabled;
+        std::copy(
+            std::begin(old_surface.control_points),
+            std::end(old_surface.control_points),
+            std::begin(new_surface.control_points));
+        new_surface.rotation_x = old_surface.rotation_x;
+        new_surface.rotation_y = old_surface.rotation_y;
+        new_surface.rotation_z = old_surface.rotation_z;
+        new_surface.scale_x = 100.0F;
+        new_surface.scale_y = 100.0F;
+        new_surface.scale_z = 100.0F;
+        new_surface.divisions_x = 0;
+        new_surface.divisions_y = 0;
+        new_surface.transform_mode = 0;
+        InitializeMaterial(new_surface);
+        UpdateDerivedTransform(new_surface);
+        InitializeCornerCurls(new_surface);
+    }
+}
+
+void MigrateSceneV2(const SceneDataV2& source, SceneData& destination) {
+    destination = {};
+    destination.magic = kSceneMagic;
+    destination.schema_version = kSceneSchemaVersion;
+    destination.active = source.active;
+    destination.surface_count = source.surface_count;
+    destination.selected_surface = source.selected_surface;
+    destination.next_surface_id = source.next_surface_id;
+    for (std::uint32_t index = 0; index < source.surface_count; ++index) {
+        const SurfaceDataV2& old_surface = source.surfaces[index];
+        SurfaceData& new_surface = destination.surfaces[index];
+        new_surface.id = old_surface.id;
+        new_surface.enabled = old_surface.enabled;
+        std::copy(
+            std::begin(old_surface.control_points),
+            std::end(old_surface.control_points),
+            std::begin(new_surface.control_points));
+        new_surface.rotation_x = old_surface.rotation_x;
+        new_surface.rotation_y = old_surface.rotation_y;
+        new_surface.rotation_z = old_surface.rotation_z;
+        new_surface.size_x = old_surface.size_x;
+        new_surface.size_y = old_surface.size_y;
+        new_surface.position_x = old_surface.position_x;
+        new_surface.position_y = old_surface.position_y;
+        new_surface.position_z = old_surface.position_z;
+        new_surface.scale_x = old_surface.scale_x;
+        new_surface.scale_y = old_surface.scale_y;
+        new_surface.scale_z = old_surface.scale_z;
+        new_surface.divisions_x = 0;
+        new_surface.divisions_y = 0;
+        new_surface.transform_mode = old_surface.transform_mode;
+        InitializeMaterial(new_surface);
+        InitializeCornerCurls(new_surface);
+    }
+}
+
+void MigrateSceneV3(const SceneDataV3& source, SceneData& destination) {
+    destination = {};
+    destination.magic = kSceneMagic;
+    destination.schema_version = kSceneSchemaVersion;
+    destination.active = source.active;
+    destination.surface_count = source.surface_count;
+    destination.selected_surface = source.selected_surface;
+    destination.next_surface_id = source.next_surface_id;
+    for (std::uint32_t index = 0; index < source.surface_count; ++index) {
+        const SurfaceDataV3& old_surface = source.surfaces[index];
+        SurfaceData& new_surface = destination.surfaces[index];
+        new_surface.id = old_surface.id;
+        new_surface.enabled = old_surface.enabled;
+        std::copy(
+            std::begin(old_surface.control_points),
+            std::end(old_surface.control_points),
+            std::begin(new_surface.control_points));
+        new_surface.rotation_x = old_surface.rotation_x;
+        new_surface.rotation_y = old_surface.rotation_y;
+        new_surface.rotation_z = old_surface.rotation_z;
+        new_surface.size_x = old_surface.size_x;
+        new_surface.size_y = old_surface.size_y;
+        new_surface.position_x = old_surface.position_x;
+        new_surface.position_y = old_surface.position_y;
+        new_surface.position_z = old_surface.position_z;
+        new_surface.scale_x = old_surface.scale_x;
+        new_surface.scale_y = old_surface.scale_y;
+        new_surface.scale_z = old_surface.scale_z;
+        new_surface.divisions_x = old_surface.divisions_x;
+        new_surface.divisions_y = old_surface.divisions_y;
+        new_surface.transform_mode = old_surface.transform_mode;
+        InitializeMaterial(new_surface);
+        InitializeCornerCurls(new_surface);
+    }
+}
+
+void MigrateSceneV4(const SceneDataV4& source, SceneData& destination) {
+    destination = {};
+    destination.magic = kSceneMagic;
+    destination.schema_version = kSceneSchemaVersion;
+    destination.active = source.active;
+    destination.surface_count = source.surface_count;
+    destination.selected_surface = source.selected_surface;
+    destination.next_surface_id = source.next_surface_id;
+    for (std::uint32_t index = 0; index < source.surface_count; ++index) {
+        const SurfaceDataV4& old_surface = source.surfaces[index];
+        SurfaceData& new_surface = destination.surfaces[index];
+        new_surface.id = old_surface.id;
+        new_surface.enabled = old_surface.enabled;
+        std::copy(
+            std::begin(old_surface.control_points),
+            std::end(old_surface.control_points),
+            std::begin(new_surface.control_points));
+        new_surface.rotation_x = old_surface.rotation_x;
+        new_surface.rotation_y = old_surface.rotation_y;
+        new_surface.rotation_z = old_surface.rotation_z;
+        new_surface.size_x = old_surface.size_x;
+        new_surface.size_y = old_surface.size_y;
+        new_surface.position_x = old_surface.position_x;
+        new_surface.position_y = old_surface.position_y;
+        new_surface.position_z = old_surface.position_z;
+        new_surface.scale_x = old_surface.scale_x;
+        new_surface.scale_y = old_surface.scale_y;
+        new_surface.scale_z = old_surface.scale_z;
+        new_surface.divisions_x = old_surface.divisions_x;
+        new_surface.divisions_y = old_surface.divisions_y;
+        new_surface.transform_mode = old_surface.transform_mode;
+        new_surface.source_slot = old_surface.source_slot;
+        new_surface.image_size_mode = old_surface.image_size_mode;
+        new_surface.image_border_mode = old_surface.image_border_mode;
+        new_surface.opacity = old_surface.opacity;
+        new_surface.thickness = 0.0F;
+        new_surface.diffuse = 100.0F;
+        new_surface.specular = 50.0F;
+        new_surface.shininess = 32.0F;
+        InitializeCornerCurls(new_surface);
+    }
+}
+
+void MigrateSceneV5(const SceneDataV5& source, SceneData& destination) {
+    destination = {};
+    destination.magic = kSceneMagic;
+    destination.schema_version = kSceneSchemaVersion;
+    destination.active = source.active;
+    destination.surface_count = source.surface_count;
+    destination.selected_surface = source.selected_surface;
+    destination.next_surface_id = source.next_surface_id;
+    for (std::uint32_t index = 0; index < source.surface_count; ++index) {
+        const SurfaceDataV5& old_surface = source.surfaces[index];
+        SurfaceData& new_surface = destination.surfaces[index];
+        new_surface.id = old_surface.id;
+        new_surface.enabled = old_surface.enabled;
+        std::copy(
+            std::begin(old_surface.control_points),
+            std::end(old_surface.control_points),
+            std::begin(new_surface.control_points));
+        new_surface.rotation_x = old_surface.rotation_x;
+        new_surface.rotation_y = old_surface.rotation_y;
+        new_surface.rotation_z = old_surface.rotation_z;
+        new_surface.size_x = old_surface.size_x;
+        new_surface.size_y = old_surface.size_y;
+        new_surface.position_x = old_surface.position_x;
+        new_surface.position_y = old_surface.position_y;
+        new_surface.position_z = old_surface.position_z;
+        new_surface.scale_x = old_surface.scale_x;
+        new_surface.scale_y = old_surface.scale_y;
+        new_surface.scale_z = old_surface.scale_z;
+        new_surface.divisions_x = old_surface.divisions_x;
+        new_surface.divisions_y = old_surface.divisions_y;
+        new_surface.transform_mode = old_surface.transform_mode;
+        new_surface.source_slot = old_surface.source_slot;
+        new_surface.image_size_mode = old_surface.image_size_mode;
+        new_surface.image_border_mode = old_surface.image_border_mode;
+        new_surface.opacity = old_surface.opacity;
+        new_surface.thickness = old_surface.thickness;
+        new_surface.diffuse = 100.0F;
+        new_surface.specular = 50.0F;
+        new_surface.shininess = 32.0F;
+        InitializeCornerCurls(new_surface);
+    }
+}
+
+void MigrateSceneV6(const SceneDataV6& source, SceneData& destination) {
+    destination = {};
+    destination.magic = kSceneMagic;
+    destination.schema_version = kSceneSchemaVersion;
+    destination.active = source.active;
+    destination.surface_count = source.surface_count;
+    destination.selected_surface = source.selected_surface;
+    destination.next_surface_id = source.next_surface_id;
+    for (std::uint32_t index = 0; index < source.surface_count; ++index) {
+        const SurfaceDataV6& old_surface = source.surfaces[index];
+        SurfaceData& new_surface = destination.surfaces[index];
+        new_surface.id = old_surface.id;
+        new_surface.enabled = old_surface.enabled;
+        std::copy(
+            std::begin(old_surface.control_points),
+            std::end(old_surface.control_points),
+            std::begin(new_surface.control_points));
+        new_surface.rotation_x = old_surface.rotation_x;
+        new_surface.rotation_y = old_surface.rotation_y;
+        new_surface.rotation_z = old_surface.rotation_z;
+        new_surface.size_x = old_surface.size_x;
+        new_surface.size_y = old_surface.size_y;
+        new_surface.position_x = old_surface.position_x;
+        new_surface.position_y = old_surface.position_y;
+        new_surface.position_z = old_surface.position_z;
+        new_surface.scale_x = old_surface.scale_x;
+        new_surface.scale_y = old_surface.scale_y;
+        new_surface.scale_z = old_surface.scale_z;
+        new_surface.divisions_x = old_surface.divisions_x;
+        new_surface.divisions_y = old_surface.divisions_y;
+        new_surface.transform_mode = old_surface.transform_mode;
+        new_surface.source_slot = old_surface.source_slot;
+        new_surface.image_size_mode = old_surface.image_size_mode;
+        new_surface.image_border_mode = old_surface.image_border_mode;
+        new_surface.opacity = old_surface.opacity;
+        new_surface.thickness = old_surface.thickness;
+        new_surface.diffuse = old_surface.diffuse;
+        new_surface.specular = old_surface.specular;
+        new_surface.shininess = old_surface.shininess;
+        new_surface.bend_x = 0.0F;
+        new_surface.bend_y = 0.0F;
+        new_surface.roll_angle = 0.0F;
+        new_surface.roll_length = 25.0F;
+        new_surface.roll_edge = kRollEdgeRight;
+        InitializeCornerCurls(new_surface);
+    }
+}
+
+void MigrateSceneV7(const SceneDataV7& source, SceneData& destination) {
+    destination = {};
+    destination.magic = kSceneMagic;
+    destination.schema_version = kSceneSchemaVersion;
+    destination.active = source.active;
+    destination.surface_count = source.surface_count;
+    destination.selected_surface = source.selected_surface;
+    destination.next_surface_id = source.next_surface_id;
+    for (std::uint32_t index = 0; index < source.surface_count; ++index) {
+        const SurfaceDataV7& old_surface = source.surfaces[index];
+        SurfaceData& new_surface = destination.surfaces[index];
+        new_surface.id = old_surface.id;
+        new_surface.enabled = old_surface.enabled;
+        std::copy(
+            std::begin(old_surface.control_points),
+            std::end(old_surface.control_points),
+            std::begin(new_surface.control_points));
+        new_surface.rotation_x = old_surface.rotation_x;
+        new_surface.rotation_y = old_surface.rotation_y;
+        new_surface.rotation_z = old_surface.rotation_z;
+        new_surface.size_x = old_surface.size_x;
+        new_surface.size_y = old_surface.size_y;
+        new_surface.position_x = old_surface.position_x;
+        new_surface.position_y = old_surface.position_y;
+        new_surface.position_z = old_surface.position_z;
+        new_surface.scale_x = old_surface.scale_x;
+        new_surface.scale_y = old_surface.scale_y;
+        new_surface.scale_z = old_surface.scale_z;
+        new_surface.divisions_x = old_surface.divisions_x;
+        new_surface.divisions_y = old_surface.divisions_y;
+        new_surface.transform_mode = old_surface.transform_mode;
+        new_surface.source_slot = old_surface.source_slot;
+        new_surface.image_size_mode = old_surface.image_size_mode;
+        new_surface.image_border_mode = old_surface.image_border_mode;
+        new_surface.opacity = old_surface.opacity;
+        new_surface.thickness = old_surface.thickness;
+        new_surface.diffuse = old_surface.diffuse;
+        new_surface.specular = old_surface.specular;
+        new_surface.shininess = old_surface.shininess;
+        new_surface.bend_x = old_surface.bend_x;
+        new_surface.bend_y = old_surface.bend_y;
+        new_surface.roll_angle = old_surface.roll_angle;
+        new_surface.roll_length = old_surface.roll_length;
+        new_surface.roll_edge = old_surface.roll_edge;
+        InitializeCornerCurls(new_surface);
+    }
+}
+
+void MigrateSceneV8(const SceneDataV8& source, SceneData& destination) {
+    destination = {};
+    destination.magic = kSceneMagic;
+    destination.schema_version = kSceneSchemaVersion;
+    destination.active = source.active;
+    destination.surface_count = source.surface_count;
+    destination.selected_surface = source.selected_surface;
+    destination.next_surface_id = source.next_surface_id;
+    for (std::uint32_t index = 0; index < source.surface_count; ++index) {
+        const SurfaceDataV8& old_surface = source.surfaces[index];
+        SurfaceData& new_surface = destination.surfaces[index];
+        new_surface.id = old_surface.id;
+        new_surface.enabled = old_surface.enabled;
+        std::copy(
+            std::begin(old_surface.control_points),
+            std::end(old_surface.control_points),
+            std::begin(new_surface.control_points));
+        new_surface.rotation_x = old_surface.rotation_x;
+        new_surface.rotation_y = old_surface.rotation_y;
+        new_surface.rotation_z = old_surface.rotation_z;
+        new_surface.size_x = old_surface.size_x;
+        new_surface.size_y = old_surface.size_y;
+        new_surface.position_x = old_surface.position_x;
+        new_surface.position_y = old_surface.position_y;
+        new_surface.position_z = old_surface.position_z;
+        new_surface.scale_x = old_surface.scale_x;
+        new_surface.scale_y = old_surface.scale_y;
+        new_surface.scale_z = old_surface.scale_z;
+        new_surface.divisions_x = old_surface.divisions_x;
+        new_surface.divisions_y = old_surface.divisions_y;
+        new_surface.transform_mode = old_surface.transform_mode;
+        new_surface.source_slot = old_surface.source_slot;
+        new_surface.image_size_mode = old_surface.image_size_mode;
+        new_surface.image_border_mode = old_surface.image_border_mode;
+        new_surface.opacity = old_surface.opacity;
+        new_surface.thickness = old_surface.thickness;
+        new_surface.diffuse = old_surface.diffuse;
+        new_surface.specular = old_surface.specular;
+        new_surface.shininess = old_surface.shininess;
+        new_surface.bend_x = old_surface.bend_x;
+        new_surface.bend_y = old_surface.bend_y;
+        new_surface.roll_angle = old_surface.roll_angle;
+        new_surface.roll_length = old_surface.roll_length;
+        new_surface.roll_edge = old_surface.roll_edge;
+        std::copy(
+            std::begin(old_surface.corner_curls),
+            std::end(old_surface.corner_curls),
+            std::begin(new_surface.corner_curls));
+        new_surface.selected_corner = old_surface.selected_corner;
+        InitializeEdgeTwists(new_surface);
+    }
+}
+
+void MigrateSceneV9(const SceneDataV9& source, SceneData& destination) {
+    destination = {};
+    destination.magic = kSceneMagic;
+    destination.schema_version = kSceneSchemaVersion;
+    destination.active = source.active;
+    destination.surface_count = source.surface_count;
+    destination.selected_surface = source.selected_surface;
+    destination.next_surface_id = source.next_surface_id;
+    for (std::uint32_t index = 0; index < source.surface_count; ++index) {
+        SurfaceData& new_surface = destination.surfaces[index];
+        std::memcpy(
+            &new_surface,
+            &source.surfaces[index],
+            sizeof(SurfaceDataV9));
+        new_surface.rotation_origin_mode = kRotationOriginCenter;
+        new_surface.rotation_origin_x = 50.0F;
+        new_surface.rotation_origin_y = 50.0F;
+    }
+}
+
+void MigrateSceneV11(const SceneDataV11& source, SceneData& destination) {
+    destination = {};
+    destination.magic = source.magic;
+    destination.schema_version = kSceneSchemaVersion;
+    destination.active = source.active;
+    destination.surface_count = source.surface_count;
+    destination.selected_surface = source.selected_surface;
+    destination.next_surface_id = source.next_surface_id;
+    std::copy(
+        std::begin(source.reserved),
+        std::end(source.reserved),
+        std::begin(destination.reserved));
+    for (std::uint32_t index = 0; index < source.surface_count; ++index) {
+        std::memcpy(
+            &destination.surfaces[index],
+            &source.surfaces[index],
+            sizeof(SurfaceDataV11));
+        destination.surfaces[index].back_source_slot = 0;
+    }
+}
+
+void MigrateSceneV10(const SceneDataV11& source, SceneData& destination) {
+    MigrateSceneV11(source, destination);
+    destination.schema_version = kSceneSchemaVersion;
+    destination.reserved[kAnimationStreamsInitializedIndex] = 0;
+}
+
+void MigrateSceneV12(const SceneDataV12& source, SceneData& destination) {
+    destination = {};
+    destination.magic = source.magic;
+    destination.schema_version = kSceneSchemaVersion;
+    destination.active = source.active;
+    destination.surface_count = source.surface_count;
+    destination.selected_surface = source.selected_surface;
+    destination.next_surface_id = source.next_surface_id;
+    std::copy(
+        std::begin(source.reserved),
+        std::end(source.reserved),
+        std::begin(destination.reserved));
+    for (std::uint32_t index = 0; index < source.surface_count; ++index) {
+        std::memcpy(
+            &destination.surfaces[index],
+            &source.surfaces[index],
+            sizeof(SurfaceDataV12));
+    }
+}
+
+void AssignLegacyAnimationBanks(SceneData& scene) {
+    std::uint32_t next_bank = 1;
+    for (std::uint32_t index = 0; index < scene.surface_count; ++index) {
+        if (index == scene.selected_surface) {
+            scene.surfaces[index].animation_bank = 0;
+        } else {
+            scene.surfaces[index].animation_bank = next_bank++;
+        }
+    }
+    scene.reserved[kAnimationBanksInitializedIndex] = 0;
+}
+
+void CaptureLegacySurface(PF_ParamDef* params[], SurfaceData& surface) {
+    for (int index = 0; index < 16; ++index) {
+        const PF_PointDef& point = params[kParamPoint00 + index]->u.td;
+        surface.control_points[index].x = static_cast<float>(FIX_2_FLOAT(point.x_value));
+        surface.control_points[index].y = static_cast<float>(FIX_2_FLOAT(point.y_value));
+        surface.control_points[index].z = static_cast<float>(
+            params[kParamDepth00 + index]->u.fs_d.value);
+    }
+    surface.rotation_x = static_cast<float>(
+        FIX_2_FLOAT(params[kParamRotationX]->u.ad.value));
+    surface.rotation_y = static_cast<float>(
+        FIX_2_FLOAT(params[kParamRotationY]->u.ad.value));
+    surface.rotation_z = static_cast<float>(
+        FIX_2_FLOAT(params[kParamRotationZ]->u.ad.value));
+    UpdateDerivedTransform(surface);
+}
+
+void CaptureScale(PF_ParamDef* params[], SurfaceData& surface) {
+    surface.scale_x = static_cast<float>(params[kParamSurfaceScaleX]->u.fs_d.value);
+    surface.scale_y = static_cast<float>(params[kParamSurfaceScaleY]->u.fs_d.value);
+    surface.scale_z = static_cast<float>(params[kParamSurfaceScaleZ]->u.fs_d.value);
+}
+
+void CaptureRotationOrigin(PF_ParamDef* params[], SurfaceData& surface) {
+    surface.rotation_origin_mode =
+        static_cast<std::uint32_t>(std::clamp<A_long>(
+            params[kParamSurfaceRotationOriginMode]->u.pd.value,
+            static_cast<A_long>(kRotationOriginCenter),
+            static_cast<A_long>(kRotationOriginCustom)));
+    surface.rotation_origin_x = static_cast<float>(std::clamp(
+        params[kParamSurfaceRotationOriginX]->u.fs_d.value,
+        -1000.0,
+        1000.0));
+    surface.rotation_origin_y = static_cast<float>(std::clamp(
+        params[kParamSurfaceRotationOriginY]->u.fs_d.value,
+        -1000.0,
+        1000.0));
+}
+
+std::uint32_t LegacyTessellation(PF_ParamDef* params[]) {
+    return static_cast<std::uint32_t>(std::clamp<A_long>(
+        params[kParamTessellation]->u.sd.value,
+        static_cast<A_long>(kMinimumDivisions),
+        static_cast<A_long>(kMaximumDivisions)));
+}
+
+std::uint32_t ResolveDivisions(
+    std::uint32_t divisions,
+    std::uint32_t legacy_tessellation) {
+    return divisions == 0 ? legacy_tessellation : divisions;
+}
+
+void CaptureLegacyDivisions(PF_ParamDef* params[], SurfaceData& surface) {
+    const std::uint32_t tessellation = LegacyTessellation(params);
+    surface.divisions_x = tessellation;
+    surface.divisions_y = tessellation;
+}
+
+void CaptureMaterial(PF_ParamDef* params[], SurfaceData& surface) {
+    surface.source_slot = static_cast<std::uint32_t>(std::clamp<A_long>(
+        params[kParamSurfaceSourceSlot]->u.pd.value - 1,
+        0,
+        static_cast<A_long>(kMaximumSurfaces - 1)));
+    surface.back_source_slot = static_cast<std::uint32_t>(std::clamp<A_long>(
+        params[kParamSurfaceBackSourceSlot]->u.pd.value - 1,
+        0,
+        static_cast<A_long>(kMaximumSurfaces)));
+    surface.image_size_mode = static_cast<std::uint32_t>(std::clamp<A_long>(
+        params[kParamSurfaceImageSize]->u.pd.value,
+        static_cast<A_long>(kImageSizeStretch),
+        static_cast<A_long>(kImageSizeFit)));
+    surface.image_border_mode = static_cast<std::uint32_t>(std::clamp<A_long>(
+        params[kParamSurfaceImageBorder]->u.pd.value,
+        static_cast<A_long>(kImageBorderClamp),
+        static_cast<A_long>(kImageBorderTransparent)));
+    surface.opacity = static_cast<float>(std::clamp(
+        params[kParamSurfaceOpacity]->u.fs_d.value,
+        0.0,
+        100.0));
+    surface.diffuse = static_cast<float>(std::clamp(
+        params[kParamSurfaceDiffuse]->u.fs_d.value,
+        0.0,
+        200.0));
+    surface.specular = static_cast<float>(std::clamp(
+        params[kParamSurfaceSpecular]->u.fs_d.value,
+        0.0,
+        200.0));
+    surface.shininess = static_cast<float>(std::clamp(
+        params[kParamSurfaceShininess]->u.fs_d.value,
+        1.0,
+        256.0));
+}
+
+void CaptureThickness(PF_ParamDef* params[], SurfaceData& surface) {
+    surface.thickness = static_cast<float>(std::clamp(
+        params[kParamSurfaceThickness]->u.fs_d.value,
+        0.0,
+        4000.0));
+}
+
+void CaptureDeform(PF_ParamDef* params[], SurfaceData& surface) {
+    surface.bend_x = static_cast<float>(std::clamp(
+        params[kParamSurfaceBendX]->u.fs_d.value,
+        -720.0,
+        720.0));
+    surface.bend_y = static_cast<float>(std::clamp(
+        params[kParamSurfaceBendY]->u.fs_d.value,
+        -720.0,
+        720.0));
+    surface.roll_edge = static_cast<std::uint32_t>(std::clamp<A_long>(
+        params[kParamSurfaceRollEdge]->u.pd.value,
+        static_cast<A_long>(kRollEdgeRight),
+        static_cast<A_long>(kRollEdgeTop)));
+    surface.roll_angle = static_cast<float>(std::clamp(
+        params[kParamSurfaceRollAngle]->u.fs_d.value,
+        -1080.0,
+        1080.0));
+    surface.roll_length = static_cast<float>(std::clamp(
+        params[kParamSurfaceRollLength]->u.fs_d.value,
+        0.0,
+        100.0));
+}
+
+void LoadDeformParams(PF_ParamDef* params[], const SurfaceData& surface) {
+    const float values[4] = {
+        surface.bend_x,
+        surface.bend_y,
+        surface.roll_angle,
+        surface.roll_length};
+    const PF_ParamIndex indices[4] = {
+        kParamSurfaceBendX,
+        kParamSurfaceBendY,
+        kParamSurfaceRollAngle,
+        kParamSurfaceRollLength};
+    for (int index = 0; index < 4; ++index) {
+        PF_ParamDef* param = params[indices[index]];
+        param->u.fs_d.value = values[index];
+        param->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+    }
+    PF_ParamDef* edge_param = params[kParamSurfaceRollEdge];
+    edge_param->u.pd.value = static_cast<A_long>(surface.roll_edge);
+    edge_param->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+}
+
+void CaptureCornerCurl(PF_ParamDef* params[], SurfaceData& surface) {
+    surface.selected_corner = static_cast<std::uint32_t>(std::clamp<A_long>(
+        params[kParamSurfaceCornerSelect]->u.pd.value,
+        static_cast<A_long>(kCornerTopLeft),
+        static_cast<A_long>(kCornerBottomLeft)));
+    for (std::size_t index = 0; index < 4; ++index) {
+        CornerCurlData& corner = surface.corner_curls[index];
+        corner.amount = static_cast<float>(std::clamp(
+            params[kCornerAmountParams[index]]->u.fs_d.value,
+            -100.0,
+            100.0));
+        corner.radius = static_cast<float>(std::clamp(
+            params[kCornerRadiusParams[index]]->u.fs_d.value,
+            0.1,
+            100.0));
+        corner.direction = static_cast<float>(std::clamp(
+            params[kCornerDirectionParams[index]]->u.fs_d.value,
+            0.0,
+            90.0));
+        corner.length = static_cast<float>(std::clamp(
+            params[kCornerLengthParams[index]]->u.fs_d.value,
+            0.0,
+            150.0));
+    }
+}
+
+void LoadCornerCurlValueParams(
+    PF_ParamDef* params[],
+    const SurfaceData& surface) {
+    for (std::size_t index = 0; index < 4; ++index) {
+        const CornerCurlData& corner = surface.corner_curls[index];
+        PF_ParamDef* amount = params[kCornerAmountParams[index]];
+        amount->u.fs_d.value = corner.amount;
+        amount->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+        PF_ParamDef* radius = params[kCornerRadiusParams[index]];
+        radius->u.fs_d.value = corner.radius;
+        radius->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+        PF_ParamDef* direction = params[kCornerDirectionParams[index]];
+        direction->u.fs_d.value = corner.direction;
+        direction->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+        PF_ParamDef* length = params[kCornerLengthParams[index]];
+        length->u.fs_d.value = corner.length;
+        length->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+    }
+}
+
+void LoadCornerCurlParams(PF_ParamDef* params[], const SurfaceData& surface) {
+    const std::uint32_t selected_corner = std::clamp<std::uint32_t>(
+        surface.selected_corner,
+        kCornerTopLeft,
+        kCornerBottomLeft);
+    PF_ParamDef* corner_select = params[kParamSurfaceCornerSelect];
+    corner_select->u.pd.value = static_cast<A_long>(selected_corner);
+    corner_select->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+    LoadCornerCurlValueParams(params, surface);
+}
+
+void CaptureEdgeTwist(PF_ParamDef* params[], SurfaceData& surface) {
+    surface.selected_twist_edge = static_cast<std::uint32_t>(std::clamp<A_long>(
+        params[kParamSurfaceTwistEdge]->u.pd.value,
+        static_cast<A_long>(kTwistEdgeLeft),
+        static_cast<A_long>(kTwistEdgeBottom)));
+    for (std::size_t index = 0; index < 4; ++index) {
+        EdgeTwistData& edge = surface.edge_twists[index];
+        edge.angle = static_cast<float>(std::clamp(
+            params[kTwistAngleParams[index]]->u.fs_d.value,
+            -180.0,
+            180.0));
+        edge.falloff = static_cast<float>(std::clamp(
+            params[kTwistFalloffParams[index]]->u.fs_d.value,
+            1.0,
+            100.0));
+    }
+}
+
+void LoadEdgeTwistValueParams(
+    PF_ParamDef* params[],
+    const SurfaceData& surface) {
+    for (std::size_t index = 0; index < 4; ++index) {
+        const EdgeTwistData& edge = surface.edge_twists[index];
+        PF_ParamDef* angle = params[kTwistAngleParams[index]];
+        angle->u.fs_d.value = edge.angle;
+        angle->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+        PF_ParamDef* falloff = params[kTwistFalloffParams[index]];
+        falloff->u.fs_d.value = edge.falloff;
+        falloff->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+    }
+}
+
+void LoadEdgeTwistParams(PF_ParamDef* params[], const SurfaceData& surface) {
+    const std::uint32_t selected_edge = std::clamp<std::uint32_t>(
+        surface.selected_twist_edge,
+        kTwistEdgeLeft,
+        kTwistEdgeBottom);
+    PF_ParamDef* edge_select = params[kParamSurfaceTwistEdge];
+    edge_select->u.pd.value = static_cast<A_long>(selected_edge);
+    edge_select->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+    LoadEdgeTwistValueParams(params, surface);
+}
+
+void ApplySizeAndPositionUi(PF_ParamDef* params[], SurfaceData& surface) {
+    const float desired_size_x = static_cast<float>(std::max(
+        0.001,
+        params[kParamSurfaceSizeX]->u.fs_d.value));
+    const float desired_size_y = static_cast<float>(std::max(
+        0.001,
+        params[kParamSurfaceSizeY]->u.fs_d.value));
+    const float ratio_x = desired_size_x / std::max(0.001F, surface.size_x);
+    const float ratio_y = desired_size_y / std::max(0.001F, surface.size_y);
+    for (StoredPoint3& point : surface.control_points) {
+        point.x = surface.position_x + (point.x - surface.position_x) * ratio_x;
+        point.y = surface.position_y + (point.y - surface.position_y) * ratio_y;
+    }
+    UpdateDerivedTransform(surface);
+
+    const PF_Point3DDef& desired = params[kParamSurfacePosition]->u.point3d_d;
+    const float offset_x = static_cast<float>(desired.x_value) - surface.position_x;
+    const float offset_y = static_cast<float>(desired.y_value) - surface.position_y;
+    const float offset_z = static_cast<float>(desired.z_value) - surface.position_z;
+    for (StoredPoint3& point : surface.control_points) {
+        point.x += offset_x;
+        point.y += offset_y;
+        point.z += offset_z;
+    }
+    UpdateDerivedTransform(surface);
+}
+
+void LoadMaterialParams(PF_ParamDef* params[], const SurfaceData& surface) {
+    PF_ParamDef* source_slot_param = params[kParamSurfaceSourceSlot];
+    source_slot_param->u.pd.value = static_cast<A_long>(surface.source_slot + 1);
+    source_slot_param->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+
+    PF_ParamDef* back_source_slot_param = params[kParamSurfaceBackSourceSlot];
+    back_source_slot_param->u.pd.value =
+        static_cast<A_long>(surface.back_source_slot + 1);
+    back_source_slot_param->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+
+    PF_ParamDef* image_size_param = params[kParamSurfaceImageSize];
+    image_size_param->u.pd.value = static_cast<A_long>(surface.image_size_mode);
+    image_size_param->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+
+    PF_ParamDef* image_border_param = params[kParamSurfaceImageBorder];
+    image_border_param->u.pd.value = static_cast<A_long>(surface.image_border_mode);
+    image_border_param->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+
+    PF_ParamDef* opacity_param = params[kParamSurfaceOpacity];
+    opacity_param->u.fs_d.value = surface.opacity;
+    opacity_param->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+
+    PF_ParamDef* diffuse_param = params[kParamSurfaceDiffuse];
+    diffuse_param->u.fs_d.value = surface.diffuse;
+    diffuse_param->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+
+    PF_ParamDef* specular_param = params[kParamSurfaceSpecular];
+    specular_param->u.fs_d.value = surface.specular;
+    specular_param->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+
+    PF_ParamDef* shininess_param = params[kParamSurfaceShininess];
+    shininess_param->u.fs_d.value = surface.shininess;
+    shininess_param->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+}
+
+void LoadSizeAndPositionParams(
+    PF_ParamDef* params[],
+    const SurfaceData& surface) {
+    PF_ParamDef* size_x_param = params[kParamSurfaceSizeX];
+    size_x_param->u.fs_d.value = surface.size_x;
+    size_x_param->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+    PF_ParamDef* size_y_param = params[kParamSurfaceSizeY];
+    size_y_param->u.fs_d.value = surface.size_y;
+    size_y_param->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+
+    PF_ParamDef* position_param = params[kParamSurfacePosition];
+    position_param->u.point3d_d.x_value = surface.position_x;
+    position_param->u.point3d_d.y_value = surface.position_y;
+    position_param->u.point3d_d.z_value = surface.position_z;
+    position_param->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+}
+
+void LoadTransformParams(PF_ParamDef* params[], const SurfaceData& surface) {
+    LoadSizeAndPositionParams(params, surface);
+
+    PF_ParamDef* origin_mode = params[kParamSurfaceRotationOriginMode];
+    origin_mode->u.pd.value = static_cast<A_long>(std::clamp<std::uint32_t>(
+        surface.rotation_origin_mode,
+        kRotationOriginCenter,
+        kRotationOriginCustom));
+    origin_mode->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+    PF_ParamDef* origin_x = params[kParamSurfaceRotationOriginX];
+    origin_x->u.fs_d.value = surface.rotation_origin_x;
+    origin_x->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+    PF_ParamDef* origin_y = params[kParamSurfaceRotationOriginY];
+    origin_y->u.fs_d.value = surface.rotation_origin_y;
+    origin_y->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+
+    const float scales[3] = {surface.scale_x, surface.scale_y, surface.scale_z};
+    for (int index = 0; index < 3; ++index) {
+        PF_ParamDef* scale_param = params[kParamSurfaceScaleX + index];
+        scale_param->u.fs_d.value = scales[index];
+        scale_param->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+    }
+
+    const std::uint32_t legacy_tessellation = LegacyTessellation(params);
+    const std::uint32_t divisions[2] = {
+        ResolveDivisions(surface.divisions_x, legacy_tessellation),
+        ResolveDivisions(surface.divisions_y, legacy_tessellation)};
+    for (int index = 0; index < 2; ++index) {
+        PF_ParamDef* divisions_param = params[kParamSurfaceDivisionsX + index];
+        divisions_param->u.sd.value = static_cast<A_long>(divisions[index]);
+        divisions_param->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+    }
+
+    LoadMaterialParams(params, surface);
+
+    PF_ParamDef* thickness_param = params[kParamSurfaceThickness];
+    thickness_param->u.fs_d.value = surface.thickness;
+    thickness_param->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+
+    LoadDeformParams(params, surface);
+    LoadCornerCurlParams(params, surface);
+    LoadEdgeTwistParams(params, surface);
+}
+
+void LoadLegacyGeometryParams(
+    PF_ParamDef* params[],
+    const SurfaceData& surface) {
+    for (int index = 0; index < 16; ++index) {
+        PF_ParamDef* point_param = params[kParamPoint00 + index];
+        point_param->u.td.x_value = FLOAT2FIX(surface.control_points[index].x);
+        point_param->u.td.y_value = FLOAT2FIX(surface.control_points[index].y);
+        point_param->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+
+        PF_ParamDef* depth_param = params[kParamDepth00 + index];
+        depth_param->u.fs_d.value = surface.control_points[index].z;
+        depth_param->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+    }
+}
+
+void LoadSurfaceIntoLegacyParams(PF_ParamDef* params[], const SurfaceData& surface) {
+    LoadLegacyGeometryParams(params, surface);
+
+    const float rotations[3] = {
+        surface.rotation_x,
+        surface.rotation_y,
+        surface.rotation_z};
+    for (int index = 0; index < 3; ++index) {
+        PF_ParamDef* rotation_param = params[kParamRotationX + index];
+        rotation_param->u.ad.value = FLOAT2FIX(rotations[index]);
+        rotation_param->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+    }
+
+    LoadTransformParams(params, surface);
+}
+
+void UpdateSurfaceUiParams(PF_ParamDef* params[], const SceneData& scene) {
+    PF_ParamDef* count_param = params[kParamSurfaceCount];
+    count_param->u.sd.value = static_cast<A_long>(scene.surface_count);
+    count_param->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+
+    PF_ParamDef* select_param = params[kParamSurfaceSelect];
+    select_param->u.pd.value = static_cast<A_long>(scene.selected_surface + 1);
+    select_param->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+}
+
+bool IsSurfaceEditorParam(PF_ParamIndex index) {
+    return (index >= kParamPoint00 && index <= kParamPoint33) ||
+           (index >= kParamDepth00 && index <= kParamDepth33) ||
+           (index >= kParamRotationX && index <= kParamRotationZ) ||
+           (index >= kParamSurfaceScaleX && index <= kParamSurfaceScaleZ);
+}
+
+std::array<Point3, 16> ToControlPoints(
+    const SurfaceData& surface,
+    double scale_x,
+    double scale_y,
+    double scale_z) {
+    std::array<Point3, 16> result{};
+    for (int index = 0; index < 16; ++index) {
+        result[static_cast<std::size_t>(index)] = {
+            static_cast<double>(surface.control_points[index].x) * scale_x,
+            static_cast<double>(surface.control_points[index].y) * scale_y,
+            static_cast<double>(surface.control_points[index].z) * scale_z};
+    }
+    return result;
+}
+
+double Bernstein(int index, double t) {
+    const double s = 1.0 - t;
+    switch (index) {
+        case 0: return s * s * s;
+        case 1: return 3.0 * t * s * s;
+        case 2: return 3.0 * t * t * s;
+        default: return t * t * t;
+    }
+}
+
+Point3 EvaluatePatch(const std::array<Point3, 16>& points, double u, double v) {
+    Point3 result;
+    for (int row = 0; row < 4; ++row) {
+        const double bv = Bernstein(row, v);
+        for (int column = 0; column < 4; ++column) {
+            const double weight = Bernstein(column, u) * bv;
+            const Point3& point = points[static_cast<size_t>(row * 4 + column)];
+            result.x += point.x * weight;
+            result.y += point.y * weight;
+            result.z += point.z * weight;
+        }
+    }
+    return result;
+}
+
+void ApplyArcDeform(
+    double& coordinate,
+    double& depth,
+    double neutral_coordinate,
+    double center,
+    double depth_center,
+    double extent,
+    double angle_radians) {
+    if (std::abs(angle_radians) <= 1.0e-7 || extent <= 1.0e-7) {
+        return;
+    }
+    const double radius = extent / angle_radians;
+    const double phase = (neutral_coordinate - center) / radius;
+    const double sine = std::sin(phase);
+    const double cosine = std::cos(phase);
+    const double base_coordinate = center + sine * radius;
+    const double base_depth = (1.0 - cosine) * radius;
+    const double local_coordinate = coordinate - neutral_coordinate;
+    const double local_depth = depth - depth_center;
+    coordinate = base_coordinate + cosine * local_coordinate - sine * local_depth;
+    depth = depth_center + base_depth + sine * local_coordinate + cosine * local_depth;
+}
+
+void ApplyRollDeform(
+    double& coordinate,
+    double& depth,
+    double neutral_coordinate,
+    double minimum,
+    double maximum,
+    double depth_center,
+    bool reverse,
+    double roll_length_percent,
+    double angle_radians) {
+    const double extent = maximum - minimum;
+    const double roll_extent = extent *
+                               std::clamp(roll_length_percent / 100.0, 0.0, 1.0);
+    if (roll_extent <= 1.0e-7 || std::abs(angle_radians) <= 1.0e-7) {
+        return;
+    }
+    const double oriented =
+        reverse ? maximum - neutral_coordinate : neutral_coordinate - minimum;
+    const double start = extent - roll_extent;
+    if (oriented <= start) {
+        return;
+    }
+    const double distance = oriented - start;
+    const double radius = roll_extent / angle_radians;
+    const double phase = distance / radius;
+    const double sine = std::sin(phase);
+    const double cosine = std::cos(phase);
+    const double rolled = start + std::sin(phase) * radius;
+    const double base_coordinate =
+        reverse ? maximum - rolled : minimum + rolled;
+    const double base_depth = (1.0 - cosine) * radius;
+    const double local_coordinate = coordinate - neutral_coordinate;
+    const double local_depth = depth - depth_center;
+    const double orientation = reverse ? -1.0 : 1.0;
+    coordinate = base_coordinate + cosine * local_coordinate -
+                 orientation * sine * local_depth;
+    depth = depth_center + base_depth +
+            orientation * sine * local_coordinate + cosine * local_depth;
+}
+
+Point3 CornerCurlDisplacement(
+    const CornerCurlData& curl,
+    std::uint32_t corner,
+    double u,
+    double v,
+    double extent_x,
+    double extent_y) {
+    constexpr double kPi = 3.14159265358979323846;
+    const double maximum_angle = std::clamp(
+                                     std::abs(static_cast<double>(curl.amount)) /
+                                         100.0,
+                                     0.0,
+                                     1.0) *
+                                 kPi;
+    const double minimum_extent = std::min(extent_x, extent_y);
+    const double curl_length = minimum_extent *
+                               std::clamp(
+                                   static_cast<double>(curl.length) / 100.0,
+                                   0.0,
+                                   1.5);
+    const double requested_radius = minimum_extent *
+                                    std::clamp(
+                                        static_cast<double>(curl.radius) / 100.0,
+                                        0.001,
+                                        1.0);
+    if (maximum_angle <= 1.0e-7 ||
+        curl_length <= 1.0e-7 ||
+        requested_radius <= 1.0e-7) {
+        return {};
+    }
+
+    constexpr double kDegreesToRadians = kPi / 180.0;
+    const double direction = std::clamp(
+                                 static_cast<double>(curl.direction),
+                                 0.0,
+                                 90.0) *
+                             kDegreesToRadians;
+    const double horizontal_sign =
+        corner == kCornerTopRight || corner == kCornerBottomRight ? -1.0 : 1.0;
+    const double vertical_sign =
+        corner == kCornerBottomRight || corner == kCornerBottomLeft ? -1.0 : 1.0;
+    const double direction_x = horizontal_sign * std::cos(direction);
+    const double direction_y = vertical_sign * std::sin(direction);
+    const double inward_x =
+        (horizontal_sign > 0.0 ? u : 1.0 - u) * extent_x;
+    const double inward_y =
+        (vertical_sign > 0.0 ? v : 1.0 - v) * extent_y;
+    const double inward_distance =
+        inward_x * std::cos(direction) + inward_y * std::sin(direction);
+    if (inward_distance < -1.0e-6 || inward_distance >= curl_length) {
+        return {};
+    }
+
+    const double distance_from_fold = curl_length - inward_distance;
+    const double bend_length = std::min(
+        curl_length,
+        requested_radius * maximum_angle);
+    const double radius = bend_length / maximum_angle;
+    double curled_distance = inward_distance;
+    double depth = 0.0;
+    if (distance_from_fold <= bend_length) {
+        const double phase = distance_from_fold / radius;
+        curled_distance = curl_length - std::sin(phase) * radius;
+        depth = (1.0 - std::cos(phase)) * radius;
+    } else {
+        const double straight_length = distance_from_fold - bend_length;
+        curled_distance =
+            curl_length - std::sin(maximum_angle) * radius -
+            std::cos(maximum_angle) * straight_length;
+        depth =
+            (1.0 - std::cos(maximum_angle)) * radius +
+            std::sin(maximum_angle) * straight_length;
+    }
+
+    const double displacement = curled_distance - inward_distance;
+    const double depth_sign = curl.amount < 0.0F ? -1.0 : 1.0;
+    return {
+        direction_x * displacement,
+        direction_y * displacement,
+        depth_sign * depth};
+}
+
+double EdgeTwistWeight(double distance_from_edge, double falloff_percent) {
+    const double range = std::clamp(falloff_percent / 100.0, 0.01, 1.0);
+    if (distance_from_edge >= range) {
+        return 0.0;
+    }
+    const double value = 1.0 - std::clamp(distance_from_edge / range, 0.0, 1.0);
+    return value * value * (3.0 - 2.0 * value);
+}
+
+void ApplyEdgeTwist(
+    Point3& point,
+    const SurfaceData& surface,
+    double u,
+    double v,
+    double pivot_x,
+    double pivot_y,
+    double pivot_z) {
+    constexpr double kDegreesToRadians = 3.14159265358979323846 / 180.0;
+    const EdgeTwistData& left = surface.edge_twists[kTwistEdgeLeft - 1];
+    const EdgeTwistData& right = surface.edge_twists[kTwistEdgeRight - 1];
+    const EdgeTwistData& top = surface.edge_twists[kTwistEdgeTop - 1];
+    const EdgeTwistData& bottom = surface.edge_twists[kTwistEdgeBottom - 1];
+    const double rotation_x =
+        (static_cast<double>(left.angle) * EdgeTwistWeight(u, left.falloff) +
+         static_cast<double>(right.angle) *
+             EdgeTwistWeight(1.0 - u, right.falloff)) *
+        kDegreesToRadians;
+    const double rotation_y =
+        (static_cast<double>(top.angle) * EdgeTwistWeight(v, top.falloff) +
+         static_cast<double>(bottom.angle) *
+             EdgeTwistWeight(1.0 - v, bottom.falloff)) *
+        kDegreesToRadians;
+    if (std::abs(rotation_x) <= 1.0e-7 && std::abs(rotation_y) <= 1.0e-7) {
+        return;
+    }
+
+    point.x -= pivot_x;
+    point.y -= pivot_y;
+    point.z -= pivot_z;
+    const double sin_x = std::sin(rotation_x);
+    const double cos_x = std::cos(rotation_x);
+    const double rotated_y = point.y * cos_x - point.z * sin_x;
+    const double rotated_z_x = point.y * sin_x + point.z * cos_x;
+    point.y = rotated_y;
+    point.z = rotated_z_x;
+    const double sin_y = std::sin(rotation_y);
+    const double cos_y = std::cos(rotation_y);
+    const double rotated_x = point.x * cos_y + point.z * sin_y;
+    const double rotated_z_y = -point.x * sin_y + point.z * cos_y;
+    point.x = rotated_x + pivot_x;
+    point.y += pivot_y;
+    point.z = rotated_z_y + pivot_z;
+}
+
+void ApplySurfaceDeform(
+    Point3& point,
+    const SurfaceData& surface,
+    double u,
+    double v,
+    double pivot_x,
+    double pivot_y,
+    double pivot_z,
+    double extent_x,
+    double extent_y) {
+    constexpr double kDegreesToRadians = 3.14159265358979323846 / 180.0;
+    const double minimum_x = pivot_x - extent_x * 0.5;
+    const double maximum_x = pivot_x + extent_x * 0.5;
+    const double minimum_y = pivot_y - extent_y * 0.5;
+    const double maximum_y = pivot_y + extent_y * 0.5;
+    const double neutral_x =
+        minimum_x + std::clamp(u, 0.0, 1.0) * extent_x;
+    const double neutral_y =
+        minimum_y + std::clamp(v, 0.0, 1.0) * extent_y;
+    const double roll_angle = static_cast<double>(surface.roll_angle) *
+                              kDegreesToRadians;
+    Point3 combined_corner_displacement{};
+    for (std::uint32_t corner = kCornerTopLeft;
+         corner <= kCornerBottomLeft;
+         ++corner) {
+        const Point3 displacement = CornerCurlDisplacement(
+            surface.corner_curls[corner - 1],
+            corner,
+            u,
+            v,
+            extent_x,
+            extent_y);
+        combined_corner_displacement.x += displacement.x;
+        combined_corner_displacement.y += displacement.y;
+        combined_corner_displacement.z += displacement.z;
+    }
+    point.x += combined_corner_displacement.x;
+    point.y += combined_corner_displacement.y;
+    point.z += combined_corner_displacement.z;
+    ApplyEdgeTwist(
+        point,
+        surface,
+        u,
+        v,
+        pivot_x,
+        pivot_y,
+        pivot_z);
+    if (surface.roll_edge == kRollEdgeRight ||
+        surface.roll_edge == kRollEdgeLeft) {
+        ApplyRollDeform(
+            point.x,
+            point.z,
+            neutral_x,
+            minimum_x,
+            maximum_x,
+            pivot_z,
+            surface.roll_edge == kRollEdgeLeft,
+            surface.roll_length,
+            roll_angle);
+    } else if (surface.roll_edge == kRollEdgeBottom ||
+               surface.roll_edge == kRollEdgeTop) {
+        ApplyRollDeform(
+            point.y,
+            point.z,
+            neutral_y,
+            minimum_y,
+            maximum_y,
+            pivot_z,
+            surface.roll_edge == kRollEdgeTop,
+            surface.roll_length,
+            roll_angle);
+    }
+    ApplyArcDeform(
+        point.x,
+        point.z,
+        neutral_x,
+        pivot_x,
+        pivot_z,
+        extent_x,
+        static_cast<double>(surface.bend_x) * kDegreesToRadians);
+    ApplyArcDeform(
+        point.y,
+        point.z,
+        neutral_y,
+        pivot_y,
+        pivot_z,
+        extent_y,
+        static_cast<double>(surface.bend_y) * kDegreesToRadians);
+}
+
+Point3 Cross(Point3 a, Point3 b) {
+    return {
+        a.y * b.z - a.z * b.y,
+        a.z * b.x - a.x * b.z,
+        a.x * b.y - a.y * b.x};
+}
+
+Point3 Normalize(Point3 vector) {
+    const double length = std::sqrt(
+        vector.x * vector.x + vector.y * vector.y + vector.z * vector.z);
+    if (length <= 1.0e-10) {
+        return {0.0, 0.0, 1.0};
+    }
+    return {vector.x / length, vector.y / length, vector.z / length};
+}
+
+double Dot(Point3 a, Point3 b) {
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+Point3 RotatePoint(
+    Point3 point,
+    double center_x,
+    double center_y,
+    double center_z,
+    double rotation_x,
+    double rotation_y,
+    double rotation_z) {
+    point.x -= center_x;
+    point.y -= center_y;
+    point.z -= center_z;
+
+    const double sin_x = std::sin(rotation_x);
+    const double cos_x = std::cos(rotation_x);
+    const double y_x = point.y * cos_x - point.z * sin_x;
+    const double z_x = point.y * sin_x + point.z * cos_x;
+    point.y = y_x;
+    point.z = z_x;
+
+    const double sin_y = std::sin(rotation_y);
+    const double cos_y = std::cos(rotation_y);
+    const double x_y = point.x * cos_y + point.z * sin_y;
+    const double z_y = -point.x * sin_y + point.z * cos_y;
+    point.x = x_y;
+    point.z = z_y;
+
+    const double sin_z = std::sin(rotation_z);
+    const double cos_z = std::cos(rotation_z);
+    const double x_z = point.x * cos_z - point.y * sin_z;
+    const double y_z = point.x * sin_z + point.y * cos_z;
+    point.x = x_z + center_x;
+    point.y = y_z + center_y;
+    point.z += center_z;
+    return point;
+}
+
+Point3 InverseRotateVector(
+    Point3 vector,
+    double rotation_x,
+    double rotation_y,
+    double rotation_z) {
+    const double sin_z = std::sin(rotation_z);
+    const double cos_z = std::cos(rotation_z);
+    const double x_z = vector.x * cos_z + vector.y * sin_z;
+    const double y_z = -vector.x * sin_z + vector.y * cos_z;
+    vector.x = x_z;
+    vector.y = y_z;
+
+    const double sin_y = std::sin(rotation_y);
+    const double cos_y = std::cos(rotation_y);
+    const double x_y = vector.x * cos_y - vector.z * sin_y;
+    const double z_y = vector.x * sin_y + vector.z * cos_y;
+    vector.x = x_y;
+    vector.z = z_y;
+
+    const double sin_x = std::sin(rotation_x);
+    const double cos_x = std::cos(rotation_x);
+    const double y_x = vector.y * cos_x + vector.z * sin_x;
+    const double z_x = -vector.y * sin_x + vector.z * cos_x;
+    vector.y = y_x;
+    vector.z = z_x;
+    return vector;
+}
+
+Vertex ProjectVertex(
+    const Point3& point,
+    Point3 normal,
+    double u,
+    double v,
+    const CameraState& camera) {
+    Point3 camera_point{
+        point.x - camera.position.x,
+        point.y - camera.position.y,
+        point.z - camera.position.z};
+    camera_point = InverseRotateVector(
+        camera_point,
+        camera.rotation_x,
+        camera.rotation_y,
+        camera.rotation_z);
+    const double camera_depth = camera_point.z;
+    Vertex vertex;
+    vertex.u = u;
+    vertex.v = v;
+    vertex.world_position = point;
+    vertex.normal = Normalize(normal);
+    vertex.visible = camera_depth > 1.0;
+    if (vertex.visible) {
+        vertex.inverse_depth = 1.0 / camera_depth;
+        if (camera.perspective) {
+            const double projection_scale = camera.focal_distance * vertex.inverse_depth;
+            vertex.x = camera.center_x + camera_point.x * projection_scale +
+                       camera.output_offset_x;
+            vertex.y = camera.center_y + camera_point.y * projection_scale +
+                       camera.output_offset_y;
+        } else {
+            vertex.x = camera.center_x + camera_point.x + camera.output_offset_x;
+            vertex.y = camera.center_y + camera_point.y + camera.output_offset_y;
+        }
+    }
+    return vertex;
+}
+
+double Edge(const Vertex& a, const Vertex& b, double x, double y) {
+    return (x - a.x) * (b.y - a.y) - (y - a.y) * (b.x - a.x);
+}
+
+Point2 MapImageCoordinates(
+    const SurfaceData& surface,
+    const PF_LayerDef& input,
+    double u,
+    double v) {
+    double pixel_aspect = 1.0;
+    if (input.pix_aspect_ratio.den != 0) {
+        pixel_aspect = static_cast<double>(input.pix_aspect_ratio.num) /
+                       static_cast<double>(input.pix_aspect_ratio.den);
+    }
+    const double image_aspect = std::max(
+        1.0e-6,
+        static_cast<double>(input.width) * pixel_aspect /
+            std::max(1.0, static_cast<double>(input.height)));
+    const double scaled_width = std::abs(
+        static_cast<double>(surface.size_x) *
+        static_cast<double>(surface.scale_x) / 100.0);
+    const double scaled_height = std::abs(
+        static_cast<double>(surface.size_y) *
+        static_cast<double>(surface.scale_y) / 100.0);
+    const double surface_aspect = std::max(1.0e-6, scaled_width) /
+                                  std::max(1.0e-6, scaled_height);
+
+    if (surface.image_size_mode == kImageSizeFill) {
+        if (image_aspect > surface_aspect) {
+            u = 0.5 + (u - 0.5) * (surface_aspect / image_aspect);
+        } else {
+            v = 0.5 + (v - 0.5) * (image_aspect / surface_aspect);
+        }
+    } else if (surface.image_size_mode == kImageSizeFit) {
+        if (image_aspect > surface_aspect) {
+            const double content_height = surface_aspect / image_aspect;
+            v = 0.5 + (v - 0.5) / std::max(1.0e-6, content_height);
+        } else {
+            const double content_width = image_aspect / surface_aspect;
+            u = 0.5 + (u - 0.5) / std::max(1.0e-6, content_width);
+        }
+    }
+    return {u, v};
+}
+
+bool ResolveBorderCoordinate(double& coordinate, std::uint32_t border_mode) {
+    if (coordinate >= 0.0 && coordinate <= 1.0) {
+        return true;
+    }
+    if (border_mode == kImageBorderTransparent) {
+        return false;
+    }
+    if (border_mode == kImageBorderClamp) {
+        coordinate = std::clamp(coordinate, 0.0, 1.0);
+    } else if (border_mode == kImageBorderRepeat) {
+        coordinate -= std::floor(coordinate);
+    } else if (border_mode == kImageBorderMirror) {
+        double mirrored = std::fmod(coordinate, 2.0);
+        if (mirrored < 0.0) {
+            mirrored += 2.0;
+        }
+        coordinate = mirrored <= 1.0 ? mirrored : 2.0 - mirrored;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+template <typename Pixel>
+Pixel ApplyOpacity(Pixel pixel, float opacity_percent) {
+    const double multiplier = std::clamp(
+        static_cast<double>(opacity_percent) / 100.0,
+        0.0,
+        1.0);
+    pixel.alpha = static_cast<decltype(pixel.alpha)>(
+        std::lround(static_cast<double>(pixel.alpha) * multiplier));
+    pixel.red = static_cast<decltype(pixel.red)>(
+        std::lround(static_cast<double>(pixel.red) * multiplier));
+    pixel.green = static_cast<decltype(pixel.green)>(
+        std::lround(static_cast<double>(pixel.green) * multiplier));
+    pixel.blue = static_cast<decltype(pixel.blue)>(
+        std::lround(static_cast<double>(pixel.blue) * multiplier));
+    return pixel;
+}
+
+template <typename Pixel>
+Pixel ApplyLighting(
+    Pixel pixel,
+    const SurfaceData& surface,
+    Point3 normal,
+    Point3 world_position,
+    const LightingState& lighting) {
+    if (!lighting.enabled) {
+        return pixel;
+    }
+    normal = Normalize(normal);
+    const Point3 view_direction = Normalize({
+        lighting.camera_position.x - world_position.x,
+        lighting.camera_position.y - world_position.y,
+        lighting.camera_position.z - world_position.z});
+    const double diffuse_term = std::max(0.0, Dot(normal, lighting.direction));
+    const Point3 half_vector = Normalize({
+        lighting.direction.x + view_direction.x,
+        lighting.direction.y + view_direction.y,
+        lighting.direction.z + view_direction.z});
+    const double specular_term = diffuse_term > 0.0
+                                     ? std::pow(
+                                           std::max(0.0, Dot(normal, half_vector)),
+                                           std::max(1.0, static_cast<double>(surface.shininess)))
+                                     : 0.0;
+    const double diffuse_factor =
+        lighting.ambient +
+        lighting.intensity * diffuse_term *
+            static_cast<double>(surface.diffuse) / 100.0;
+    const double specular_factor =
+        lighting.intensity * specular_term *
+        static_cast<double>(surface.specular) / 100.0;
+    const double alpha = static_cast<double>(pixel.alpha);
+    const auto shade = [&](auto channel) {
+        const double value = static_cast<double>(channel) * diffuse_factor +
+                             alpha * specular_factor;
+        const double maximum = std::is_same_v<Pixel, PF_Pixel16>
+                                   ? static_cast<double>(PF_MAX_CHAN16)
+                                   : static_cast<double>(PF_MAX_CHAN8);
+        return std::lround(std::clamp(value, 0.0, maximum));
+    };
+    pixel.red = static_cast<decltype(pixel.red)>(shade(pixel.red));
+    pixel.green = static_cast<decltype(pixel.green)>(shade(pixel.green));
+    pixel.blue = static_cast<decltype(pixel.blue)>(shade(pixel.blue));
+    return pixel;
+}
+
+template <typename Pixel>
+Pixel SampleTexture(
+    const SurfaceData& surface,
+    const PF_LayerDef& input,
+    double u,
+    double v,
+    A_long texture_filter) {
+    const Point2 mapped = MapImageCoordinates(surface, input, u, v);
+    u = mapped.x;
+    v = mapped.y;
+    if (!ResolveBorderCoordinate(u, surface.image_border_mode) ||
+        !ResolveBorderCoordinate(v, surface.image_border_mode)) {
+        return {};
+    }
+    const auto pixel_at = [&](int x, int y) -> Pixel {
+        const auto* row = reinterpret_cast<const Pixel*>(
+            reinterpret_cast<const A_u_char*>(input.data) + y * input.rowbytes);
+        return row[x];
+    };
+
+    if (texture_filter == kTextureFilterNearest) {
+        const int x = std::clamp(
+            static_cast<int>(std::lround(u * static_cast<double>(input.width - 1))),
+            0,
+            static_cast<int>(input.width - 1));
+        const int y = std::clamp(
+            static_cast<int>(std::lround(v * static_cast<double>(input.height - 1))),
+            0,
+            static_cast<int>(input.height - 1));
+        return ApplyOpacity(pixel_at(x, y), surface.opacity);
+    }
+
+    const double sample_x = u * static_cast<double>(input.width - 1);
+    const double sample_y = v * static_cast<double>(input.height - 1);
+    const int x0 = std::clamp(
+        static_cast<int>(std::floor(sample_x)),
+        0,
+        static_cast<int>(input.width - 1));
+    const int y0 = std::clamp(
+        static_cast<int>(std::floor(sample_y)),
+        0,
+        static_cast<int>(input.height - 1));
+    const int x1 = std::min(x0 + 1, static_cast<int>(input.width - 1));
+    const int y1 = std::min(y0 + 1, static_cast<int>(input.height - 1));
+    const double tx = sample_x - std::floor(sample_x);
+    const double ty = sample_y - std::floor(sample_y);
+    const Pixel p00 = pixel_at(x0, y0);
+    const Pixel p10 = pixel_at(x1, y0);
+    const Pixel p01 = pixel_at(x0, y1);
+    const Pixel p11 = pixel_at(x1, y1);
+    const auto interpolate = [&](auto c00, auto c10, auto c01, auto c11) {
+        const double top = static_cast<double>(c00) * (1.0 - tx) +
+                           static_cast<double>(c10) * tx;
+        const double bottom = static_cast<double>(c01) * (1.0 - tx) +
+                              static_cast<double>(c11) * tx;
+        return std::lround(top * (1.0 - ty) + bottom * ty);
+    };
+    Pixel result{};
+    result.alpha = static_cast<decltype(result.alpha)>(
+        interpolate(p00.alpha, p10.alpha, p01.alpha, p11.alpha));
+    result.red = static_cast<decltype(result.red)>(
+        interpolate(p00.red, p10.red, p01.red, p11.red));
+    result.green = static_cast<decltype(result.green)>(
+        interpolate(p00.green, p10.green, p01.green, p11.green));
+    result.blue = static_cast<decltype(result.blue)>(
+        interpolate(p00.blue, p10.blue, p01.blue, p11.blue));
+    return ApplyOpacity(result, surface.opacity);
+}
+
+template <typename Pixel>
+void ClearWorld(PF_LayerDef& output) {
+    for (A_long y = 0; y < output.height; ++y) {
+        auto* row = reinterpret_cast<Pixel*>(
+            reinterpret_cast<A_u_char*>(output.data) + y * output.rowbytes);
+        std::fill(row, row + output.width, Pixel{});
+    }
+}
+
+template <typename Pixel>
+void RasterizeTriangle(
+    const Vertex& a,
+    const Vertex& b,
+    const Vertex& c,
+    const SurfaceData& surface,
+    const PF_LayerDef& front_input,
+    const PF_LayerDef& back_input,
+    PF_LayerDef& output,
+    std::vector<float>& depth_buffer,
+    bool perspective,
+    const LightingState& lighting,
+    TextureFace texture_face) {
+    if (!a.visible || !b.visible || !c.visible) {
+        return;
+    }
+    const double area = Edge(a, b, c.x, c.y);
+    if (std::abs(area) < 1.0e-8) {
+        return;
+    }
+
+    const int min_x = std::max(0, static_cast<int>(std::floor(std::min({a.x, b.x, c.x}))));
+    const int max_x = std::min(
+        static_cast<int>(output.width - 1),
+        static_cast<int>(std::ceil(std::max({a.x, b.x, c.x}))));
+    const int min_y = std::max(0, static_cast<int>(std::floor(std::min({a.y, b.y, c.y}))));
+    const int max_y = std::min(
+        static_cast<int>(output.height - 1),
+        static_cast<int>(std::ceil(std::max({a.y, b.y, c.y}))));
+
+    for (int y = min_y; y <= max_y; ++y) {
+        auto* output_row = reinterpret_cast<Pixel*>(
+            reinterpret_cast<A_u_char*>(output.data) + y * output.rowbytes);
+        for (int x = min_x; x <= max_x; ++x) {
+            const double px = static_cast<double>(x) + 0.5;
+            const double py = static_cast<double>(y) + 0.5;
+            const double w0 = Edge(b, c, px, py) / area;
+            const double w1 = Edge(c, a, px, py) / area;
+            const double w2 = Edge(a, b, px, py) / area;
+            if (w0 >= -1.0e-6 && w1 >= -1.0e-6 && w2 >= -1.0e-6) {
+                const double inverse_depth =
+                    w0 * a.inverse_depth + w1 * b.inverse_depth + w2 * c.inverse_depth;
+                const size_t depth_index =
+                    static_cast<size_t>(y) * static_cast<size_t>(output.width) +
+                    static_cast<size_t>(x);
+                if (inverse_depth <= depth_buffer[depth_index]) {
+                    continue;
+                }
+
+                double u = w0 * a.u + w1 * b.u + w2 * c.u;
+                double v = w0 * a.v + w1 * b.v + w2 * c.v;
+                if (perspective && inverse_depth > 1.0e-12) {
+                    u = (w0 * a.u * a.inverse_depth +
+                         w1 * b.u * b.inverse_depth +
+                         w2 * c.u * c.inverse_depth) /
+                        inverse_depth;
+                    v = (w0 * a.v * a.inverse_depth +
+                         w1 * b.v * b.inverse_depth +
+                         w2 * c.v * c.inverse_depth) /
+                        inverse_depth;
+                }
+                const auto interpolate_attribute = [&](double av, double bv, double cv) {
+                    if (perspective && inverse_depth > 1.0e-12) {
+                        return (w0 * av * a.inverse_depth +
+                                w1 * bv * b.inverse_depth +
+                                w2 * cv * c.inverse_depth) /
+                               inverse_depth;
+                    }
+                    return w0 * av + w1 * bv + w2 * cv;
+                };
+                Point3 normal{
+                    interpolate_attribute(a.normal.x, b.normal.x, c.normal.x),
+                    interpolate_attribute(a.normal.y, b.normal.y, c.normal.y),
+                    interpolate_attribute(a.normal.z, b.normal.z, c.normal.z)};
+                const Point3 world_position{
+                    interpolate_attribute(
+                        a.world_position.x,
+                        b.world_position.x,
+                        c.world_position.x),
+                    interpolate_attribute(
+                        a.world_position.y,
+                        b.world_position.y,
+                        c.world_position.y),
+                    interpolate_attribute(
+                        a.world_position.z,
+                        b.world_position.z,
+                        c.world_position.z)};
+                normal = Normalize(normal);
+                const Point3 view_direction = Normalize({
+                    lighting.camera_position.x - world_position.x,
+                    lighting.camera_position.y - world_position.y,
+                    lighting.camera_position.z - world_position.z});
+                const bool geometric_back_facing =
+                    Dot(normal, view_direction) <= 0.0;
+                if (lighting.backface_culling && geometric_back_facing) {
+                    continue;
+                }
+                const bool use_back_texture =
+                    texture_face == TextureFace::Back ||
+                    (texture_face == TextureFace::Automatic &&
+                     geometric_back_facing);
+                Point3 shading_normal = normal;
+                if (texture_face == TextureFace::Automatic &&
+                    geometric_back_facing) {
+                    shading_normal = {
+                        -shading_normal.x,
+                        -shading_normal.y,
+                        -shading_normal.z};
+                }
+                Pixel sampled = SampleTexture<Pixel>(
+                    surface,
+                    use_back_texture ? back_input : front_input,
+                    u,
+                    v,
+                    lighting.texture_filter);
+                if (sampled.alpha == 0) {
+                    continue;
+                }
+                sampled = ApplyLighting(
+                    sampled,
+                    surface,
+                    shading_normal,
+                    world_position,
+                    lighting);
+                depth_buffer[depth_index] = static_cast<float>(inverse_depth);
+                output_row[x] = sampled;
+            }
+        }
+    }
+}
+
+template <typename Pixel>
+void DrawLine(PF_LayerDef& output, Point2 start, Point2 end) {
+    int x0 = static_cast<int>(std::lround(start.x));
+    int y0 = static_cast<int>(std::lround(start.y));
+    const int x1 = static_cast<int>(std::lround(end.x));
+    const int y1 = static_cast<int>(std::lround(end.y));
+    const int dx = std::abs(x1 - x0);
+    const int sx = x0 < x1 ? 1 : -1;
+    const int dy = -std::abs(y1 - y0);
+    const int sy = y0 < y1 ? 1 : -1;
+    int error = dx + dy;
+
+    Pixel line_pixel{};
+    if constexpr (std::is_same_v<Pixel, PF_Pixel16>) {
+        line_pixel.alpha = PF_MAX_CHAN16;
+        line_pixel.red = PF_MAX_CHAN16;
+        line_pixel.green = PF_MAX_CHAN16;
+        line_pixel.blue = PF_MAX_CHAN16;
+    } else {
+        line_pixel.alpha = PF_MAX_CHAN8;
+        line_pixel.red = PF_MAX_CHAN8;
+        line_pixel.green = PF_MAX_CHAN8;
+        line_pixel.blue = PF_MAX_CHAN8;
+    }
+
+    while (true) {
+        if (x0 >= 0 && x0 < output.width && y0 >= 0 && y0 < output.height) {
+            auto* row = reinterpret_cast<Pixel*>(
+                reinterpret_cast<A_u_char*>(output.data) + y0 * output.rowbytes);
+            row[x0] = line_pixel;
+        }
+        if (x0 == x1 && y0 == y1) {
+            break;
+        }
+        const int doubled = 2 * error;
+        if (doubled >= dy) {
+            error += dy;
+            x0 += sx;
+        }
+        if (doubled <= dx) {
+            error += dx;
+            y0 += sy;
+        }
+    }
+}
+
+struct SurfaceEvaluationState {
+    std::array<Point3, 16> control_points{};
+    double pivot_x{};
+    double pivot_y{};
+    double pivot_z{};
+    double rotation_origin_x{};
+    double rotation_origin_y{};
+    double rotation_origin_z{};
+    double scale_x{1.0};
+    double scale_y{1.0};
+    double scale_z{1.0};
+    double deform_extent_x{1.0};
+    double deform_extent_y{1.0};
+    double rotation_x{};
+    double rotation_y{};
+    double rotation_z{};
+    double half_thickness{};
+};
+
+SurfaceEvaluationState BuildSurfaceEvaluationState(
+    const SurfaceData& surface,
+    const CameraState& camera,
+    double render_scale_x,
+    double render_scale_y,
+    double render_scale_z) {
+    SurfaceEvaluationState state;
+    state.control_points =
+        ToControlPoints(surface, render_scale_x, render_scale_y, render_scale_z);
+    constexpr double kDegreesToRadians = 3.14159265358979323846 / 180.0;
+    state.rotation_x = surface.rotation_x * kDegreesToRadians;
+    state.rotation_y = surface.rotation_y * kDegreesToRadians;
+    state.rotation_z = surface.rotation_z * kDegreesToRadians;
+    state.pivot_x = surface.transform_mode != 0
+                        ? static_cast<double>(surface.position_x) * render_scale_x
+                        : camera.center_x;
+    state.pivot_y = surface.transform_mode != 0
+                        ? static_cast<double>(surface.position_y) * render_scale_y
+                        : camera.center_y;
+    state.pivot_z = surface.transform_mode != 0
+                        ? static_cast<double>(surface.position_z) * render_scale_z
+                        : 0.0;
+    state.scale_x = surface.transform_mode != 0
+                        ? static_cast<double>(surface.scale_x) / 100.0
+                        : 1.0;
+    state.scale_y = surface.transform_mode != 0
+                        ? static_cast<double>(surface.scale_y) / 100.0
+                        : 1.0;
+    state.scale_z = surface.transform_mode != 0
+                        ? static_cast<double>(surface.scale_z) / 100.0
+                        : 1.0;
+    double origin_x_percent = 50.0;
+    double origin_y_percent = 50.0;
+    switch (surface.rotation_origin_mode) {
+        case kRotationOriginLeftEdge:
+            origin_x_percent = 0.0;
+            break;
+        case kRotationOriginRightEdge:
+            origin_x_percent = 100.0;
+            break;
+        case kRotationOriginTopEdge:
+            origin_y_percent = 0.0;
+            break;
+        case kRotationOriginBottomEdge:
+            origin_y_percent = 100.0;
+            break;
+        case kRotationOriginCustom:
+            origin_x_percent = static_cast<double>(surface.rotation_origin_x);
+            origin_y_percent = static_cast<double>(surface.rotation_origin_y);
+            break;
+        default:
+            break;
+    }
+    state.rotation_origin_x =
+        state.pivot_x + (origin_x_percent / 100.0 - 0.5) *
+                            static_cast<double>(surface.size_x) *
+                            render_scale_x * state.scale_x;
+    state.rotation_origin_y =
+        state.pivot_y + (origin_y_percent / 100.0 - 0.5) *
+                            static_cast<double>(surface.size_y) *
+                            render_scale_y * state.scale_y;
+    state.rotation_origin_z = state.pivot_z;
+    state.deform_extent_x = std::max(
+        1.0e-6,
+        static_cast<double>(surface.size_x) * render_scale_x *
+            std::abs(state.scale_x));
+    state.deform_extent_y = std::max(
+        1.0e-6,
+        static_cast<double>(surface.size_y) * render_scale_y *
+            std::abs(state.scale_y));
+    state.half_thickness =
+        std::max(0.0, static_cast<double>(surface.thickness)) *
+        render_scale_z * std::abs(state.scale_z) * 0.5;
+    return state;
+}
+
+Point3 EvaluateTransformedPoint(
+    const SurfaceData& surface,
+    const SurfaceEvaluationState& state,
+    double u,
+    double v) {
+    Point3 point = EvaluatePatch(state.control_points, u, v);
+    point.x = state.pivot_x + (point.x - state.pivot_x) * state.scale_x;
+    point.y = state.pivot_y + (point.y - state.pivot_y) * state.scale_y;
+    point.z = state.pivot_z + (point.z - state.pivot_z) * state.scale_z;
+    ApplySurfaceDeform(
+        point,
+        surface,
+        u,
+        v,
+        state.pivot_x,
+        state.pivot_y,
+        state.pivot_z,
+        state.deform_extent_x,
+        state.deform_extent_y);
+    return RotatePoint(
+        point,
+        state.rotation_origin_x,
+        state.rotation_origin_y,
+        state.rotation_origin_z,
+        state.rotation_x,
+        state.rotation_y,
+        state.rotation_z);
+}
+
+Point3 EvaluateSurfaceNormal(
+    const SurfaceData& surface,
+    const SurfaceEvaluationState& state,
+    double u,
+    double v) {
+    constexpr double kDerivativeStep = 1.0e-4;
+    const double u0 = std::max(0.0, u - kDerivativeStep);
+    const double u1 = std::min(1.0, u + kDerivativeStep);
+    const double v0 = std::max(0.0, v - kDerivativeStep);
+    const double v1 = std::min(1.0, v + kDerivativeStep);
+    const Point3 point_u0 = EvaluateTransformedPoint(surface, state, u0, v);
+    const Point3 point_u1 = EvaluateTransformedPoint(surface, state, u1, v);
+    const Point3 point_v0 = EvaluateTransformedPoint(surface, state, u, v0);
+    const Point3 point_v1 = EvaluateTransformedPoint(surface, state, u, v1);
+    return Normalize(Cross(
+        {point_u1.x - point_u0.x,
+         point_u1.y - point_u0.y,
+         point_u1.z - point_u0.z},
+        {point_v1.x - point_v0.x,
+         point_v1.y - point_v0.y,
+         point_v1.z - point_v0.z}));
+}
+
+template <typename Pixel>
+void RasterizeSurface(
+    const SurfaceData& surface,
+    const PF_LayerDef& front_input,
+    const PF_LayerDef& back_input,
+    PF_LayerDef& output,
+    std::vector<float>& depth_buffer,
+    int legacy_tessellation,
+    const CameraState& camera,
+    const LightingState& lighting,
+    double scale_x,
+    double scale_y,
+    double scale_z,
+    bool wireframe) {
+    const SurfaceEvaluationState evaluation = BuildSurfaceEvaluationState(
+        surface,
+        camera,
+        scale_x,
+        scale_y,
+        scale_z);
+    const int divisions_x = static_cast<int>(ResolveDivisions(
+        surface.divisions_x,
+        static_cast<std::uint32_t>(legacy_tessellation)));
+    const int divisions_y = static_cast<int>(ResolveDivisions(
+        surface.divisions_y,
+        static_cast<std::uint32_t>(legacy_tessellation)));
+    const int stride = divisions_x + 1;
+    const bool has_thickness = evaluation.half_thickness > 1.0e-6;
+    std::array<Vertex, 33 * 33> front_vertices{};
+    std::array<Vertex, 33 * 33> back_vertices{};
+
+    for (int row = 0; row <= divisions_y; ++row) {
+        const double v = static_cast<double>(row) / divisions_y;
+        for (int column = 0; column <= divisions_x; ++column) {
+            const double u = static_cast<double>(column) / divisions_x;
+            const Point3 point = EvaluateTransformedPoint(surface, evaluation, u, v);
+            const Point3 normal = EvaluateSurfaceNormal(surface, evaluation, u, v);
+            Point3 front_point = point;
+            Point3 back_point = point;
+            if (has_thickness) {
+                front_point.x -= normal.x * evaluation.half_thickness;
+                front_point.y -= normal.y * evaluation.half_thickness;
+                front_point.z -= normal.z * evaluation.half_thickness;
+                back_point.x += normal.x * evaluation.half_thickness;
+                back_point.y += normal.y * evaluation.half_thickness;
+                back_point.z += normal.z * evaluation.half_thickness;
+            }
+            const size_t vertex_index = static_cast<size_t>(row * stride + column);
+            front_vertices[vertex_index] = ProjectVertex(
+                front_point,
+                {-normal.x, -normal.y, -normal.z},
+                u,
+                v,
+                camera);
+            if (has_thickness) {
+                back_vertices[vertex_index] = ProjectVertex(
+                    back_point,
+                    normal,
+                    u,
+                    v,
+                    camera);
+            }
+        }
+    }
+
+    const auto raster_quad = [&](const Vertex& top_left,
+                                 const Vertex& top_right,
+                                 const Vertex& bottom_right,
+                                 const Vertex& bottom_left,
+                                 TextureFace texture_face) {
+        RasterizeTriangle<Pixel>(
+            top_left,
+            top_right,
+            bottom_right,
+            surface,
+            front_input,
+            back_input,
+            output,
+            depth_buffer,
+            camera.perspective,
+            lighting,
+            texture_face);
+        RasterizeTriangle<Pixel>(
+            top_left,
+            bottom_right,
+            bottom_left,
+            surface,
+            front_input,
+            back_input,
+            output,
+            depth_buffer,
+            camera.perspective,
+            lighting,
+            texture_face);
+    };
+
+    const auto raster_side_quad = [&](Vertex top_left,
+                                      Vertex top_right,
+                                      Vertex bottom_right,
+                                      Vertex bottom_left) {
+        const Point3 edge_a{
+            top_right.world_position.x - top_left.world_position.x,
+            top_right.world_position.y - top_left.world_position.y,
+            top_right.world_position.z - top_left.world_position.z};
+        const Point3 edge_b{
+            bottom_left.world_position.x - top_left.world_position.x,
+            bottom_left.world_position.y - top_left.world_position.y,
+            bottom_left.world_position.z - top_left.world_position.z};
+        Point3 face_normal = Normalize(Cross(edge_a, edge_b));
+        const Point3 face_center{
+            (top_left.world_position.x + top_right.world_position.x +
+             bottom_right.world_position.x + bottom_left.world_position.x) * 0.25,
+            (top_left.world_position.y + top_right.world_position.y +
+             bottom_right.world_position.y + bottom_left.world_position.y) * 0.25,
+            (top_left.world_position.z + top_right.world_position.z +
+             bottom_right.world_position.z + bottom_left.world_position.z) * 0.25};
+        const Point3 outward{
+            face_center.x - evaluation.pivot_x,
+            face_center.y - evaluation.pivot_y,
+            face_center.z - evaluation.pivot_z};
+        if (Dot(face_normal, outward) < 0.0) {
+            face_normal = {-face_normal.x, -face_normal.y, -face_normal.z};
+        }
+        top_left.normal = face_normal;
+        top_right.normal = face_normal;
+        bottom_right.normal = face_normal;
+        bottom_left.normal = face_normal;
+        raster_quad(
+            top_left,
+            top_right,
+            bottom_right,
+            bottom_left,
+            TextureFace::Front);
+    };
+
+    const auto raster_grid = [&](const std::array<Vertex, 33 * 33>& vertices,
+                                 TextureFace texture_face) {
+        for (int row = 0; row < divisions_y; ++row) {
+            for (int column = 0; column < divisions_x; ++column) {
+                const Vertex& top_left =
+                    vertices[static_cast<size_t>(row * stride + column)];
+                const Vertex& top_right =
+                    vertices[static_cast<size_t>(row * stride + column + 1)];
+                const Vertex& bottom_left =
+                    vertices[static_cast<size_t>((row + 1) * stride + column)];
+                const Vertex& bottom_right =
+                    vertices[static_cast<size_t>((row + 1) * stride + column + 1)];
+                raster_quad(
+                    top_left,
+                    top_right,
+                    bottom_right,
+                    bottom_left,
+                    texture_face);
+            }
+        }
+    };
+
+    raster_grid(
+        front_vertices,
+        has_thickness ? TextureFace::Front : TextureFace::Automatic);
+    if (has_thickness) {
+        raster_grid(back_vertices, TextureFace::Back);
+
+        for (int column = 0; column < divisions_x; ++column) {
+            const size_t top_left = static_cast<size_t>(column);
+            const size_t top_right = static_cast<size_t>(column + 1);
+            raster_side_quad(
+                front_vertices[top_left],
+                front_vertices[top_right],
+                back_vertices[top_right],
+                back_vertices[top_left]);
+
+            const size_t bottom_left =
+                static_cast<size_t>(divisions_y * stride + column);
+            const size_t bottom_right = bottom_left + 1;
+            raster_side_quad(
+                front_vertices[bottom_left],
+                front_vertices[bottom_right],
+                back_vertices[bottom_right],
+                back_vertices[bottom_left]);
+        }
+        for (int row = 0; row < divisions_y; ++row) {
+            const size_t left_top = static_cast<size_t>(row * stride);
+            const size_t left_bottom = static_cast<size_t>((row + 1) * stride);
+            raster_side_quad(
+                front_vertices[left_top],
+                front_vertices[left_bottom],
+                back_vertices[left_bottom],
+                back_vertices[left_top]);
+
+            const size_t right_top =
+                static_cast<size_t>(row * stride + divisions_x);
+            const size_t right_bottom =
+                static_cast<size_t>((row + 1) * stride + divisions_x);
+            raster_side_quad(
+                front_vertices[right_top],
+                front_vertices[right_bottom],
+                back_vertices[right_bottom],
+                back_vertices[right_top]);
+        }
+    }
+
+    if (wireframe) {
+        const auto draw_grid = [&](const std::array<Vertex, 33 * 33>& vertices) {
+            for (int row = 0; row <= divisions_y; ++row) {
+                for (int column = 0; column < divisions_x; ++column) {
+                    const Vertex& a =
+                        vertices[static_cast<size_t>(row * stride + column)];
+                    const Vertex& b =
+                        vertices[static_cast<size_t>(row * stride + column + 1)];
+                    if (a.visible && b.visible) {
+                        DrawLine<Pixel>(output, {a.x, a.y}, {b.x, b.y});
+                    }
+                }
+            }
+            for (int column = 0; column <= divisions_x; ++column) {
+                for (int row = 0; row < divisions_y; ++row) {
+                    const Vertex& a =
+                        vertices[static_cast<size_t>(row * stride + column)];
+                    const Vertex& b =
+                        vertices[static_cast<size_t>((row + 1) * stride + column)];
+                    if (a.visible && b.visible) {
+                        DrawLine<Pixel>(output, {a.x, a.y}, {b.x, b.y});
+                    }
+                }
+            }
+        };
+
+        draw_grid(front_vertices);
+        if (has_thickness) {
+            draw_grid(back_vertices);
+            for (int column = 0; column <= divisions_x; ++column) {
+                const size_t top = static_cast<size_t>(column);
+                const size_t bottom =
+                    static_cast<size_t>(divisions_y * stride + column);
+                if (front_vertices[top].visible && back_vertices[top].visible) {
+                    DrawLine<Pixel>(
+                        output,
+                        {front_vertices[top].x, front_vertices[top].y},
+                        {back_vertices[top].x, back_vertices[top].y});
+                }
+                if (front_vertices[bottom].visible && back_vertices[bottom].visible) {
+                    DrawLine<Pixel>(
+                        output,
+                        {front_vertices[bottom].x, front_vertices[bottom].y},
+                        {back_vertices[bottom].x, back_vertices[bottom].y});
+                }
+            }
+            for (int row = 1; row < divisions_y; ++row) {
+                const size_t left = static_cast<size_t>(row * stride);
+                const size_t right =
+                    static_cast<size_t>(row * stride + divisions_x);
+                if (front_vertices[left].visible && back_vertices[left].visible) {
+                    DrawLine<Pixel>(
+                        output,
+                        {front_vertices[left].x, front_vertices[left].y},
+                        {back_vertices[left].x, back_vertices[left].y});
+                }
+                if (front_vertices[right].visible && back_vertices[right].visible) {
+                    DrawLine<Pixel>(
+                        output,
+                        {front_vertices[right].x, front_vertices[right].y},
+                        {back_vertices[right].x, back_vertices[right].y});
+                }
+            }
+        }
+    }
+}
+
+CameraState BuildCameraState(
+    PF_ParamDef* params[],
+    double center_x,
+    double center_y,
+    double output_offset_x,
+    double output_offset_y,
+    double scale_x,
+    double scale_y,
+    double scale_z) {
+    constexpr double kDegreesToRadians = 3.14159265358979323846 / 180.0;
+    const double camera_distance = std::max(
+        1.0,
+        static_cast<double>(params[kParamCameraDistance]->u.sd.value) * scale_z);
+    CameraState camera;
+    camera.center_x = center_x;
+    camera.center_y = center_y;
+    camera.output_offset_x = output_offset_x;
+    camera.output_offset_y = output_offset_y;
+    camera.focal_distance = camera_distance;
+    camera.perspective = params[kParamPerspective]->u.bd.value != FALSE;
+    camera.position = {
+        center_x + params[kParamCameraOffsetX]->u.fs_d.value * scale_x,
+        center_y + params[kParamCameraOffsetY]->u.fs_d.value * scale_y,
+        -camera_distance + params[kParamCameraOffsetZ]->u.fs_d.value * scale_z};
+    camera.rotation_x =
+        FIX_2_FLOAT(params[kParamCameraRotationX]->u.ad.value) * kDegreesToRadians;
+    camera.rotation_y =
+        FIX_2_FLOAT(params[kParamCameraRotationY]->u.ad.value) * kDegreesToRadians;
+    camera.rotation_z =
+        FIX_2_FLOAT(params[kParamCameraRotationZ]->u.ad.value) * kDegreesToRadians;
+    return camera;
+}
+
+SceneData ResolveSceneForFrame(
+    PF_InData* in_data,
+    PF_ParamDef* params[],
+    A_long input_width,
+    A_long input_height) {
+    SceneData scene{};
+    bool has_active_scene = false;
+    PF_Handle scene_handle = params[kParamSceneData]->u.arb_d.value;
+    if (scene_handle) {
+        const auto* scene_ptr =
+            static_cast<const SceneData*>(PF_LOCK_HANDLE(scene_handle));
+        if (scene_ptr) {
+            scene = *scene_ptr;
+            has_active_scene = IsValidScene(scene) && scene.active != 0;
+            PF_UNLOCK_HANDLE(scene_handle);
+        }
+    }
+
+    if (!has_active_scene) {
+        InitializeScene(scene, input_width, input_height);
+        CaptureLegacySurface(params, scene.surfaces[0]);
+    } else {
+        for (std::uint32_t index = 0; index < scene.surface_count; ++index) {
+            SurfaceData& surface = scene.surfaces[index];
+            if (scene.reserved[kAnimationBanksInitializedIndex] == 0 &&
+                surface.animation_bank != 0) {
+                continue;
+            }
+            auto view = BuildAnimationParameterView(params, surface.animation_bank);
+            PF_ParamDef** surface_params = view.data();
+            CaptureLegacySurface(surface_params, surface);
+            ApplySizeAndPositionUi(surface_params, surface);
+            CaptureScale(surface_params, surface);
+            CaptureRotationOrigin(surface_params, surface);
+            CaptureMaterial(surface_params, surface);
+            CaptureThickness(surface_params, surface);
+            CaptureDeform(surface_params, surface);
+            if (scene.reserved[kAnimationStreamsInitializedIndex] != 0) {
+                CaptureCornerCurl(surface_params, surface);
+                CaptureEdgeTwist(surface_params, surface);
+            }
+        }
+    }
+    return scene;
+}
+
+void IncludeProjectedVertex(Bounds2D& bounds, const Vertex& vertex) {
+    if (!vertex.visible || !std::isfinite(vertex.x) || !std::isfinite(vertex.y)) {
+        return;
+    }
+    bounds.minimum_x = std::min(bounds.minimum_x, vertex.x);
+    bounds.minimum_y = std::min(bounds.minimum_y, vertex.y);
+    bounds.maximum_x = std::max(bounds.maximum_x, vertex.x);
+    bounds.maximum_y = std::max(bounds.maximum_y, vertex.y);
+}
+
+void AccumulateSurfaceBounds(
+    Bounds2D& bounds,
+    const SurfaceData& surface,
+    int legacy_tessellation,
+    const CameraState& camera,
+    double scale_x,
+    double scale_y,
+    double scale_z) {
+    const SurfaceEvaluationState evaluation = BuildSurfaceEvaluationState(
+        surface,
+        camera,
+        scale_x,
+        scale_y,
+        scale_z);
+    const int divisions_x = static_cast<int>(ResolveDivisions(
+        surface.divisions_x,
+        static_cast<std::uint32_t>(legacy_tessellation)));
+    const int divisions_y = static_cast<int>(ResolveDivisions(
+        surface.divisions_y,
+        static_cast<std::uint32_t>(legacy_tessellation)));
+    const bool has_thickness = evaluation.half_thickness > 1.0e-6;
+
+    for (int row = 0; row <= divisions_y; ++row) {
+        const double v = static_cast<double>(row) / divisions_y;
+        for (int column = 0; column <= divisions_x; ++column) {
+            const double u = static_cast<double>(column) / divisions_x;
+            const Point3 point = EvaluateTransformedPoint(surface, evaluation, u, v);
+            const Point3 normal = EvaluateSurfaceNormal(surface, evaluation, u, v);
+            Point3 front_point = point;
+            front_point.x -= normal.x * evaluation.half_thickness;
+            front_point.y -= normal.y * evaluation.half_thickness;
+            front_point.z -= normal.z * evaluation.half_thickness;
+            IncludeProjectedVertex(
+                bounds,
+                ProjectVertex(
+                    front_point,
+                    {-normal.x, -normal.y, -normal.z},
+                    u,
+                    v,
+                    camera));
+            if (has_thickness) {
+                Point3 back_point = point;
+                back_point.x += normal.x * evaluation.half_thickness;
+                back_point.y += normal.y * evaluation.half_thickness;
+                back_point.z += normal.z * evaluation.half_thickness;
+                IncludeProjectedVertex(
+                    bounds,
+                    ProjectVertex(back_point, normal, u, v, camera));
+            }
+        }
+    }
+}
+
+void LimitExpandedAxis(
+    double desired_minimum,
+    double desired_maximum,
+    A_long source_size,
+    A_long maximum_size,
+    A_long& output_minimum,
+    A_long& output_maximum) {
+    constexpr double kSafeCoordinateLimit = 100000000.0;
+    desired_minimum = std::clamp(
+        desired_minimum,
+        -kSafeCoordinateLimit,
+        kSafeCoordinateLimit);
+    desired_maximum = std::clamp(
+        desired_maximum,
+        -kSafeCoordinateLimit,
+        kSafeCoordinateLimit);
+    A_long minimum = static_cast<A_long>(std::floor(desired_minimum));
+    A_long maximum = static_cast<A_long>(std::ceil(desired_maximum));
+    minimum = std::min<A_long>(minimum, 0);
+    maximum = std::max<A_long>(maximum, source_size);
+    if (maximum - minimum <= maximum_size) {
+        output_minimum = minimum;
+        output_maximum = maximum;
+        return;
+    }
+
+    const double left_expansion = std::max(0.0, -desired_minimum);
+    const double right_expansion = std::max(0.0, desired_maximum - source_size);
+    const A_long available = std::max<A_long>(0, maximum_size - source_size);
+    const double total_expansion = left_expansion + right_expansion;
+    A_long allocated_left = available / 2;
+    if (total_expansion > 1.0e-6) {
+        allocated_left = static_cast<A_long>(std::lround(
+            static_cast<double>(available) * left_expansion / total_expansion));
+    }
+    allocated_left = std::clamp<A_long>(allocated_left, 0, available);
+    output_minimum = -allocated_left;
+    output_maximum = source_size + (available - allocated_left);
+}
+
+PF_Err FrameSetup(
+    PF_InData* in_data,
+    PF_OutData* out_data,
+    PF_ParamDef* params[]) {
+    const PF_LayerDef& input = params[kParamInput]->u.ld;
+    if (input.width <= 0 || input.height <= 0) {
+        return PF_Err_BAD_CALLBACK_PARAM;
+    }
+
+    const A_long mode = std::clamp<A_long>(
+        params[kParamOutputBoundsMode]->u.pd.value,
+        kOutputBoundsSource,
+        kOutputBoundsFixed);
+    const double scale_x = static_cast<double>(in_data->downsample_x.num) /
+                           std::max<A_u_long>(1U, in_data->downsample_x.den);
+    const double scale_y = static_cast<double>(in_data->downsample_y.num) /
+                           std::max<A_u_long>(1U, in_data->downsample_y.den);
+    const double scale_z = (scale_x + scale_y) * 0.5;
+    const A_long padding_x = static_cast<A_long>(std::lround(
+        std::max<A_long>(0, params[kParamOutputPaddingX]->u.sd.value) * scale_x));
+    const A_long padding_y = static_cast<A_long>(std::lround(
+        std::max<A_long>(0, params[kParamOutputPaddingY]->u.sd.value) * scale_y));
+
+    A_long minimum_x = 0;
+    A_long minimum_y = 0;
+    A_long maximum_x = input.width;
+    A_long maximum_y = input.height;
+
+    if (mode == kOutputBoundsFixed) {
+        LimitExpandedAxis(
+            -static_cast<double>(padding_x),
+            static_cast<double>(input.width + padding_x),
+            input.width,
+            PF_MAX_WORLD_WIDTH,
+            minimum_x,
+            maximum_x);
+        LimitExpandedAxis(
+            -static_cast<double>(padding_y),
+            static_cast<double>(input.height + padding_y),
+            input.height,
+            PF_MAX_WORLD_HEIGHT,
+            minimum_y,
+            maximum_y);
+    } else if (mode == kOutputBoundsAuto) {
+        const int legacy_tessellation = std::clamp(
+            static_cast<int>(params[kParamTessellation]->u.sd.value), 2, 32);
+        const SceneData scene =
+            ResolveSceneForFrame(in_data, params, input.width, input.height);
+        CameraState camera = BuildCameraState(
+            params,
+            static_cast<double>(input.width) * 0.5,
+            static_cast<double>(input.height) * 0.5,
+            0.0,
+            0.0,
+            scale_x,
+            scale_y,
+            scale_z);
+        Bounds2D bounds{
+            0.0,
+            0.0,
+            static_cast<double>(input.width),
+            static_cast<double>(input.height)};
+        for (std::uint32_t index = 0; index < scene.surface_count; ++index) {
+            if (scene.surfaces[index].enabled != 0) {
+                AccumulateSurfaceBounds(
+                    bounds,
+                    scene.surfaces[index],
+                    legacy_tessellation,
+                    camera,
+                    scale_x,
+                    scale_y,
+                    scale_z);
+            }
+        }
+        LimitExpandedAxis(
+            bounds.minimum_x - padding_x,
+            bounds.maximum_x + padding_x,
+            input.width,
+            PF_MAX_WORLD_WIDTH,
+            minimum_x,
+            maximum_x);
+        LimitExpandedAxis(
+            bounds.minimum_y - padding_y,
+            bounds.maximum_y + padding_y,
+            input.height,
+            PF_MAX_WORLD_HEIGHT,
+            minimum_y,
+            maximum_y);
+    }
+
+    out_data->width = std::max<A_long>(1, maximum_x - minimum_x);
+    out_data->height = std::max<A_long>(1, maximum_y - minimum_y);
+    out_data->origin.h = -minimum_x;
+    out_data->origin.v = -minimum_y;
+    return PF_Err_NONE;
+}
+
+template <typename Pixel>
+PF_Err RenderSurface(PF_InData* in_data, PF_ParamDef* params[], PF_LayerDef* output) {
+    const PF_LayerDef& input = params[kParamInput]->u.ld;
+    if (!input.data || !output->data || input.width <= 0 || input.height <= 0) {
+        return PF_Err_BAD_CALLBACK_PARAM;
+    }
+
+    const double scale_x = static_cast<double>(in_data->downsample_x.num) /
+                           static_cast<double>(in_data->downsample_x.den);
+    const double scale_y = static_cast<double>(in_data->downsample_y.num) /
+                           static_cast<double>(in_data->downsample_y.den);
+    const double scale_z = (scale_x + scale_y) * 0.5;
+    const bool wireframe = params[kParamWireframe]->u.bd.value != FALSE;
+    constexpr double kDegreesToRadians = 3.14159265358979323846 / 180.0;
+    CameraState camera = BuildCameraState(
+        params,
+        static_cast<double>(input.width) * 0.5,
+        static_cast<double>(input.height) * 0.5,
+        static_cast<double>(in_data->output_origin_x),
+        static_cast<double>(in_data->output_origin_y),
+        scale_x,
+        scale_y,
+        scale_z);
+
+    LightingState lighting;
+    lighting.enabled = params[kParamLightingEnabled]->u.bd.value != FALSE;
+    lighting.backface_culling =
+        params[kParamBackfaceCulling]->u.bd.value != FALSE;
+    lighting.texture_filter = std::clamp<A_long>(
+        params[kParamTextureFilter]->u.pd.value,
+        kTextureFilterNearest,
+        kTextureFilterBilinear);
+    lighting.intensity = std::clamp(
+        params[kParamLightIntensity]->u.fs_d.value / 100.0,
+        0.0,
+        4.0);
+    lighting.ambient = std::clamp(
+        params[kParamAmbientLight]->u.fs_d.value / 100.0,
+        0.0,
+        1.0);
+    const double light_rotation_x =
+        FIX_2_FLOAT(params[kParamLightRotationX]->u.ad.value) * kDegreesToRadians;
+    const double light_rotation_y =
+        FIX_2_FLOAT(params[kParamLightRotationY]->u.ad.value) * kDegreesToRadians;
+    lighting.direction = Normalize(RotatePoint(
+        {0.0, 0.0, -1.0},
+        0.0,
+        0.0,
+        0.0,
+        light_rotation_x,
+        light_rotation_y,
+        0.0));
+    lighting.camera_position = camera.position;
+    const int legacy_tessellation = std::clamp(
+        static_cast<int>(params[kParamTessellation]->u.sd.value), 2, 32);
+
+    const SceneData scene =
+        ResolveSceneForFrame(in_data, params, input.width, input.height);
+
+    ClearWorld<Pixel>(*output);
+    std::vector<float> depth_buffer(
+        static_cast<size_t>(output->width) * static_cast<size_t>(output->height),
+        -std::numeric_limits<float>::infinity());
+
+    for (std::uint32_t index = 0; index < scene.surface_count; ++index) {
+        const SurfaceData& surface = scene.surfaces[index];
+        if (surface.enabled == 0) {
+            continue;
+        }
+
+        PF_ParamDef front_checkout{};
+        const PF_Err front_checkout_error = PF_CHECKOUT_PARAM(
+            in_data,
+            kParamSurfaceSourceLayer1 + static_cast<PF_ParamIndex>(surface.source_slot),
+            in_data->current_time,
+            in_data->time_step,
+            in_data->time_scale,
+            &front_checkout);
+        if (front_checkout_error != PF_Err_NONE) {
+            return front_checkout_error;
+        }
+
+        const std::uint32_t back_slot = surface.back_source_slot == 0
+                                            ? surface.source_slot
+                                            : surface.back_source_slot - 1;
+        const bool separate_back_checkout = back_slot != surface.source_slot;
+        PF_ParamDef back_checkout{};
+        if (separate_back_checkout) {
+            const PF_Err back_checkout_error = PF_CHECKOUT_PARAM(
+                in_data,
+                kParamSurfaceSourceLayer1 + static_cast<PF_ParamIndex>(back_slot),
+                in_data->current_time,
+                in_data->time_step,
+                in_data->time_scale,
+                &back_checkout);
+            if (back_checkout_error != PF_Err_NONE) {
+                PF_CHECKIN_PARAM(in_data, &front_checkout);
+                return back_checkout_error;
+            }
+        }
+
+        const PF_LayerDef& front_texture = front_checkout.u.ld.data
+                                               ? front_checkout.u.ld
+                                               : input;
+        const PF_LayerDef& back_texture = separate_back_checkout
+                                              ? (back_checkout.u.ld.data
+                                                     ? back_checkout.u.ld
+                                                     : input)
+                                              : front_texture;
+        RasterizeSurface<Pixel>(
+            surface,
+            front_texture,
+            back_texture,
+            *output,
+            depth_buffer,
+            legacy_tessellation,
+            camera,
+            lighting,
+            scale_x,
+            scale_y,
+            scale_z,
+            wireframe);
+
+        if (separate_back_checkout) {
+            const PF_Err back_checkin_error =
+                PF_CHECKIN_PARAM(in_data, &back_checkout);
+            if (back_checkin_error != PF_Err_NONE) {
+                PF_CHECKIN_PARAM(in_data, &front_checkout);
+                return back_checkin_error;
+            }
+        }
+        const PF_Err front_checkin_error =
+            PF_CHECKIN_PARAM(in_data, &front_checkout);
+        if (front_checkin_error != PF_Err_NONE) {
+            return front_checkin_error;
+        }
+    }
+
+    return PF_Err_NONE;
+}
+
+void* SceneRefcon() {
+    return reinterpret_cast<void*>(static_cast<std::uintptr_t>(kSceneMagic));
+}
+
+PF_Err CreateSceneHandle(
+    PF_InData* in_data,
+    PF_ArbitraryH* destination,
+    double width,
+    double height) {
+    if (!destination) {
+        return PF_Err_BAD_CALLBACK_PARAM;
+    }
+    PF_Handle handle = PF_NEW_HANDLE(sizeof(SceneData));
+    if (!handle) {
+        return PF_Err_OUT_OF_MEMORY;
+    }
+    auto* scene = static_cast<SceneData*>(PF_LOCK_HANDLE(handle));
+    if (!scene) {
+        PF_DISPOSE_HANDLE(handle);
+        return PF_Err_OUT_OF_MEMORY;
+    }
+    InitializeScene(*scene, width, height);
+    PF_UNLOCK_HANDLE(handle);
+    *destination = handle;
+    return PF_Err_NONE;
+}
+
+PF_Err CopySceneHandle(
+    PF_InData* in_data,
+    PF_ArbitraryH source,
+    PF_ArbitraryH* destination) {
+    PF_Err error = CreateSceneHandle(in_data, destination, in_data->width, in_data->height);
+    if (error != PF_Err_NONE || !source) {
+        return error;
+    }
+
+    const auto* source_scene = static_cast<const SceneData*>(PF_LOCK_HANDLE(source));
+    auto* destination_scene = static_cast<SceneData*>(PF_LOCK_HANDLE(*destination));
+    if (!source_scene || !destination_scene) {
+        if (source_scene) {
+            PF_UNLOCK_HANDLE(source);
+        }
+        if (destination_scene) {
+            PF_UNLOCK_HANDLE(*destination);
+        }
+        PF_DISPOSE_HANDLE(*destination);
+        *destination = nullptr;
+        return PF_Err_OUT_OF_MEMORY;
+    }
+    *destination_scene = *source_scene;
+    PF_UNLOCK_HANDLE(*destination);
+    PF_UNLOCK_HANDLE(source);
+    return PF_Err_NONE;
+}
+
+PF_Err HandleArbitrary(PF_InData* in_data, PF_ArbParamsExtra* extra) {
+    if (!extra) {
+        return PF_Err_BAD_CALLBACK_PARAM;
+    }
+
+    switch (extra->which_function) {
+        case PF_Arbitrary_NEW_FUNC:
+            if (extra->u.new_func_params.refconPV != SceneRefcon()) {
+                return PF_Err_UNRECOGNIZED_PARAM_TYPE;
+            }
+            return CreateSceneHandle(
+                in_data,
+                extra->u.new_func_params.arbPH,
+                in_data->width,
+                in_data->height);
+
+        case PF_Arbitrary_DISPOSE_FUNC:
+            if (extra->u.dispose_func_params.arbH) {
+                PF_DISPOSE_HANDLE(extra->u.dispose_func_params.arbH);
+            }
+            return PF_Err_NONE;
+
+        case PF_Arbitrary_COPY_FUNC:
+            return CopySceneHandle(
+                in_data,
+                extra->u.copy_func_params.src_arbH,
+                extra->u.copy_func_params.dst_arbPH);
+
+        case PF_Arbitrary_FLAT_SIZE_FUNC:
+            *extra->u.flat_size_func_params.flat_data_sizePLu = sizeof(SceneData);
+            return PF_Err_NONE;
+
+        case PF_Arbitrary_FLATTEN_FUNC: {
+            if (!extra->u.flatten_func_params.arbH ||
+                !extra->u.flatten_func_params.flat_dataPV ||
+                extra->u.flatten_func_params.buf_sizeLu < sizeof(SceneData)) {
+                return PF_Err_BAD_CALLBACK_PARAM;
+            }
+            const auto* scene = static_cast<const SceneData*>(
+                PF_LOCK_HANDLE(extra->u.flatten_func_params.arbH));
+            if (!scene) {
+                return PF_Err_OUT_OF_MEMORY;
+            }
+            std::memcpy(
+                extra->u.flatten_func_params.flat_dataPV,
+                scene,
+                sizeof(SceneData));
+            PF_UNLOCK_HANDLE(extra->u.flatten_func_params.arbH);
+            return PF_Err_NONE;
+        }
+
+        case PF_Arbitrary_UNFLATTEN_FUNC: {
+            if (!extra->u.unflatten_func_params.flat_dataPV) {
+                return PF_Err_INTERNAL_STRUCT_DAMAGED;
+            }
+            SceneData flat_scene{};
+            if (extra->u.unflatten_func_params.buf_sizeLu == sizeof(SceneData)) {
+                std::memcpy(
+                    &flat_scene,
+                    extra->u.unflatten_func_params.flat_dataPV,
+                    sizeof(SceneData));
+                if (!IsValidScene(flat_scene)) {
+                    return PF_Err_INTERNAL_STRUCT_DAMAGED;
+                }
+            } else if (
+                extra->u.unflatten_func_params.buf_sizeLu == sizeof(SceneDataV12)) {
+                SceneDataV12 old_scene{};
+                std::memcpy(
+                    &old_scene,
+                    extra->u.unflatten_func_params.flat_dataPV,
+                    sizeof(SceneDataV12));
+                if (old_scene.magic != kSceneMagic ||
+                    old_scene.schema_version != 12 ||
+                    old_scene.surface_count < 1 ||
+                    old_scene.surface_count > kMaximumSurfaces ||
+                    old_scene.selected_surface >= old_scene.surface_count) {
+                    return PF_Err_INTERNAL_STRUCT_DAMAGED;
+                }
+                MigrateSceneV12(old_scene, flat_scene);
+            } else if (
+                extra->u.unflatten_func_params.buf_sizeLu == sizeof(SceneDataV11)) {
+                SceneDataV11 old_scene{};
+                std::memcpy(
+                    &old_scene,
+                    extra->u.unflatten_func_params.flat_dataPV,
+                    sizeof(SceneDataV11));
+                if (old_scene.magic != kSceneMagic ||
+                    (old_scene.schema_version != 10 &&
+                     old_scene.schema_version != 11) ||
+                    old_scene.surface_count < 1 ||
+                    old_scene.surface_count > kMaximumSurfaces ||
+                    old_scene.selected_surface >= old_scene.surface_count) {
+                    return PF_Err_INTERNAL_STRUCT_DAMAGED;
+                }
+                if (old_scene.schema_version == 10) {
+                    MigrateSceneV10(old_scene, flat_scene);
+                } else {
+                    MigrateSceneV11(old_scene, flat_scene);
+                }
+            } else if (
+                extra->u.unflatten_func_params.buf_sizeLu == sizeof(SceneDataV9)) {
+                SceneDataV9 old_scene{};
+                std::memcpy(
+                    &old_scene,
+                    extra->u.unflatten_func_params.flat_dataPV,
+                    sizeof(SceneDataV9));
+                if (!IsValidSceneV9(old_scene)) {
+                    return PF_Err_INTERNAL_STRUCT_DAMAGED;
+                }
+                MigrateSceneV9(old_scene, flat_scene);
+            } else if (
+                extra->u.unflatten_func_params.buf_sizeLu == sizeof(SceneDataV8)) {
+                SceneDataV8 old_scene{};
+                std::memcpy(
+                    &old_scene,
+                    extra->u.unflatten_func_params.flat_dataPV,
+                    sizeof(SceneDataV8));
+                if (!IsValidSceneV8(old_scene)) {
+                    return PF_Err_INTERNAL_STRUCT_DAMAGED;
+                }
+                MigrateSceneV8(old_scene, flat_scene);
+            } else if (
+                extra->u.unflatten_func_params.buf_sizeLu == sizeof(SceneDataV7)) {
+                SceneDataV7 old_scene{};
+                std::memcpy(
+                    &old_scene,
+                    extra->u.unflatten_func_params.flat_dataPV,
+                    sizeof(SceneDataV7));
+                if (!IsValidSceneV7(old_scene)) {
+                    return PF_Err_INTERNAL_STRUCT_DAMAGED;
+                }
+                MigrateSceneV7(old_scene, flat_scene);
+            } else if (
+                extra->u.unflatten_func_params.buf_sizeLu == sizeof(SceneDataV6)) {
+                SceneDataV6 old_scene{};
+                std::memcpy(
+                    &old_scene,
+                    extra->u.unflatten_func_params.flat_dataPV,
+                    sizeof(SceneDataV6));
+                if (!IsValidSceneV6(old_scene)) {
+                    return PF_Err_INTERNAL_STRUCT_DAMAGED;
+                }
+                MigrateSceneV6(old_scene, flat_scene);
+            } else if (
+                extra->u.unflatten_func_params.buf_sizeLu == sizeof(SceneDataV5)) {
+                std::uint32_t schema_version = 0;
+                std::memcpy(
+                    &schema_version,
+                    static_cast<const std::uint8_t*>(
+                        extra->u.unflatten_func_params.flat_dataPV) +
+                        sizeof(std::uint32_t),
+                    sizeof(schema_version));
+                if (schema_version == 5) {
+                    SceneDataV5 old_scene{};
+                    std::memcpy(
+                        &old_scene,
+                        extra->u.unflatten_func_params.flat_dataPV,
+                        sizeof(SceneDataV5));
+                    if (!IsValidSceneV5(old_scene)) {
+                        return PF_Err_INTERNAL_STRUCT_DAMAGED;
+                    }
+                    MigrateSceneV5(old_scene, flat_scene);
+                } else if (schema_version == 4) {
+                    SceneDataV4 old_scene{};
+                    std::memcpy(
+                        &old_scene,
+                        extra->u.unflatten_func_params.flat_dataPV,
+                        sizeof(SceneDataV4));
+                    if (!IsValidSceneV4(old_scene)) {
+                        return PF_Err_INTERNAL_STRUCT_DAMAGED;
+                    }
+                    MigrateSceneV4(old_scene, flat_scene);
+                } else {
+                    return PF_Err_INTERNAL_STRUCT_DAMAGED;
+                }
+            } else if (
+                extra->u.unflatten_func_params.buf_sizeLu == sizeof(SceneDataV3)) {
+                std::uint32_t schema_version = 0;
+                std::memcpy(
+                    &schema_version,
+                    static_cast<const std::uint8_t*>(
+                        extra->u.unflatten_func_params.flat_dataPV) +
+                        sizeof(std::uint32_t),
+                    sizeof(schema_version));
+                if (schema_version == 3) {
+                    SceneDataV3 old_scene{};
+                    std::memcpy(
+                        &old_scene,
+                        extra->u.unflatten_func_params.flat_dataPV,
+                        sizeof(SceneDataV3));
+                    if (!IsValidSceneV3(old_scene)) {
+                        return PF_Err_INTERNAL_STRUCT_DAMAGED;
+                    }
+                    MigrateSceneV3(old_scene, flat_scene);
+                } else if (schema_version == 2) {
+                    SceneDataV2 old_scene{};
+                    std::memcpy(
+                        &old_scene,
+                        extra->u.unflatten_func_params.flat_dataPV,
+                        sizeof(SceneDataV2));
+                    if (!IsValidSceneV2(old_scene)) {
+                        return PF_Err_INTERNAL_STRUCT_DAMAGED;
+                    }
+                    MigrateSceneV2(old_scene, flat_scene);
+                } else {
+                    return PF_Err_INTERNAL_STRUCT_DAMAGED;
+                }
+            } else if (extra->u.unflatten_func_params.buf_sizeLu == sizeof(SceneDataV1)) {
+                SceneDataV1 old_scene{};
+                std::memcpy(
+                    &old_scene,
+                    extra->u.unflatten_func_params.flat_dataPV,
+                    sizeof(SceneDataV1));
+                if (!IsValidSceneV1(old_scene)) {
+                    return PF_Err_INTERNAL_STRUCT_DAMAGED;
+                }
+                MigrateSceneV1(old_scene, flat_scene);
+            } else {
+                return PF_Err_INTERNAL_STRUCT_DAMAGED;
+            }
+            if (flat_scene.reserved[kAnimationBanksInitializedIndex] == 0) {
+                AssignLegacyAnimationBanks(flat_scene);
+            }
+            if (!IsValidScene(flat_scene)) {
+                return PF_Err_INTERNAL_STRUCT_DAMAGED;
+            }
+            PF_Err error = CreateSceneHandle(
+                in_data,
+                extra->u.unflatten_func_params.arbPH,
+                in_data->width,
+                in_data->height);
+            if (error != PF_Err_NONE) {
+                return error;
+            }
+            auto* scene = static_cast<SceneData*>(
+                PF_LOCK_HANDLE(*extra->u.unflatten_func_params.arbPH));
+            if (!scene) {
+                PF_DISPOSE_HANDLE(*extra->u.unflatten_func_params.arbPH);
+                *extra->u.unflatten_func_params.arbPH = nullptr;
+                return PF_Err_OUT_OF_MEMORY;
+            }
+            *scene = flat_scene;
+            PF_UNLOCK_HANDLE(*extra->u.unflatten_func_params.arbPH);
+            return PF_Err_NONE;
+        }
+
+        case PF_Arbitrary_INTERP_FUNC: {
+            PF_ArbitraryH source = extra->u.interp_func_params.tF < 0.5
+                                       ? extra->u.interp_func_params.left_arbH
+                                       : extra->u.interp_func_params.right_arbH;
+            return CopySceneHandle(
+                in_data,
+                source,
+                extra->u.interp_func_params.interpPH);
+        }
+
+        case PF_Arbitrary_COMPARE_FUNC: {
+            PF_ArbCompareResult result = PF_ArbCompare_NOT_EQUAL;
+            PF_Handle first_handle = extra->u.compare_func_params.a_arbH;
+            PF_Handle second_handle = extra->u.compare_func_params.b_arbH;
+            if (first_handle && second_handle) {
+                const auto* first = static_cast<const SceneData*>(PF_LOCK_HANDLE(first_handle));
+                const auto* second = static_cast<const SceneData*>(PF_LOCK_HANDLE(second_handle));
+                if (first && second && std::memcmp(first, second, sizeof(SceneData)) == 0) {
+                    result = PF_ArbCompare_EQUAL;
+                }
+                if (second) {
+                    PF_UNLOCK_HANDLE(second_handle);
+                }
+                if (first) {
+                    PF_UNLOCK_HANDLE(first_handle);
+                }
+            } else if (!first_handle && !second_handle) {
+                result = PF_ArbCompare_EQUAL;
+            }
+            *extra->u.compare_func_params.compareP = result;
+            return PF_Err_NONE;
+        }
+
+        case PF_Arbitrary_PRINT_SIZE_FUNC:
+            *extra->u.print_size_func_params.print_sizePLu = kScenePrintSize;
+            return PF_Err_NONE;
+
+        case PF_Arbitrary_PRINT_FUNC: {
+            if (!extra->u.print_func_params.print_bufferPC ||
+                extra->u.print_func_params.print_sizeLu == 0) {
+                return PF_Err_BAD_CALLBACK_PARAM;
+            }
+            std::uint32_t count = 1;
+            if (extra->u.print_func_params.arbH) {
+                const auto* scene = static_cast<const SceneData*>(
+                    PF_LOCK_HANDLE(extra->u.print_func_params.arbH));
+                if (scene && IsValidScene(*scene)) {
+                    count = scene->surface_count;
+                }
+                if (scene) {
+                    PF_UNLOCK_HANDLE(extra->u.print_func_params.arbH);
+                }
+            }
+            std::snprintf(
+                extra->u.print_func_params.print_bufferPC,
+                extra->u.print_func_params.print_sizeLu,
+                "SurfaceLab scene v%u (%u surface%s)",
+                kSceneSchemaVersion,
+                count,
+                count == 1 ? "" : "s");
+            return PF_Err_NONE;
+        }
+
+        case PF_Arbitrary_SCAN_FUNC:
+            return CreateSceneHandle(
+                in_data,
+                extra->u.scan_func_params.arbPH,
+                in_data->width,
+                in_data->height);
+    }
+    return PF_Err_UNRECOGNIZED_PARAM_TYPE;
+}
+
+std::uint32_t FindSurfaceForAnimationBank(
+    const SceneData& scene,
+    std::uint32_t bank) {
+    for (std::uint32_t index = 0; index < scene.surface_count; ++index) {
+        if (scene.surfaces[index].animation_bank == bank) {
+            return index;
+        }
+    }
+    return scene.selected_surface;
+}
+
+std::uint32_t FindAvailableAnimationBank(const SceneData& scene) {
+    std::array<bool, kMaximumSurfaces> used{};
+    for (std::uint32_t index = 0; index < scene.surface_count; ++index) {
+        used[scene.surfaces[index].animation_bank] = true;
+    }
+    for (std::uint32_t bank = 0; bank < kMaximumSurfaces; ++bank) {
+        if (!used[bank]) {
+            return bank;
+        }
+    }
+    return kMaximumSurfaces - 1;
+}
+
+void LoadSurfaceIntoAnimationBank(
+    PF_ParamDef* params[],
+    const SurfaceData& surface) {
+    auto view = BuildAnimationParameterView(params, surface.animation_bank);
+    LoadSurfaceIntoLegacyParams(view.data(), surface);
+}
+
+void InitializeAdditionalAnimationBanks(
+    PF_ParamDef* params[],
+    SceneData& scene) {
+    if (scene.reserved[kAnimationBanksInitializedIndex] != 0) {
+        return;
+    }
+    for (std::uint32_t index = 0; index < scene.surface_count; ++index) {
+        if (scene.surfaces[index].animation_bank != 0) {
+            LoadSurfaceIntoAnimationBank(params, scene.surfaces[index]);
+        }
+    }
+    scene.reserved[kAnimationBanksInitializedIndex] = 1;
+}
+
+void CaptureSurfaceAtCurrentFrame(
+    PF_ParamDef* params[],
+    SurfaceData& surface) {
+    auto view = BuildAnimationParameterView(params, surface.animation_bank);
+    PF_ParamDef** surface_params = view.data();
+    CaptureLegacySurface(surface_params, surface);
+    ApplySizeAndPositionUi(surface_params, surface);
+    CaptureScale(surface_params, surface);
+    CaptureRotationOrigin(surface_params, surface);
+    surface.divisions_x = static_cast<std::uint32_t>(std::clamp<A_long>(
+        surface_params[kParamSurfaceDivisionsX]->u.sd.value,
+        static_cast<A_long>(kMinimumDivisions),
+        static_cast<A_long>(kMaximumDivisions)));
+    surface.divisions_y = static_cast<std::uint32_t>(std::clamp<A_long>(
+        surface_params[kParamSurfaceDivisionsY]->u.sd.value,
+        static_cast<A_long>(kMinimumDivisions),
+        static_cast<A_long>(kMaximumDivisions)));
+    CaptureMaterial(surface_params, surface);
+    CaptureThickness(surface_params, surface);
+    CaptureDeform(surface_params, surface);
+    CaptureCornerCurl(surface_params, surface);
+    CaptureEdgeTwist(surface_params, surface);
+}
+
+[[maybe_unused]] PF_Err UserChangedParam(
+    PF_InData* in_data,
+    PF_ParamDef* params[],
+    const PF_UserChangedParamExtra* extra) {
+    if (!extra || !params[kParamSceneData]) {
+        return PF_Err_BAD_CALLBACK_PARAM;
+    }
+    PF_Handle scene_handle = params[kParamSceneData]->u.arb_d.value;
+    if (!scene_handle) {
+        return PF_Err_NONE;
+    }
+    auto* scene = static_cast<SceneData*>(PF_LOCK_HANDLE(scene_handle));
+    if (!scene) {
+        return PF_Err_OUT_OF_MEMORY;
+    }
+    if (!IsValidScene(*scene)) {
+        InitializeScene(*scene, in_data->width, in_data->height);
+    }
+
+    bool scene_changed = false;
+    const PF_ParamIndex changed_index = extra->param_index;
+    if (scene->reserved[kAnimationStreamsInitializedIndex] == 0) {
+        const bool preserve_changed_value =
+            IsCornerCurlValueParam(changed_index) ||
+            IsEdgeTwistValueParam(changed_index);
+        const double changed_value = preserve_changed_value
+                                         ? params[changed_index]->u.fs_d.value
+                                         : 0.0;
+        SurfaceData& selected = scene->surfaces[scene->selected_surface];
+        LoadCornerCurlValueParams(params, selected);
+        LoadEdgeTwistValueParams(params, selected);
+        if (preserve_changed_value) {
+            params[changed_index]->u.fs_d.value = changed_value;
+        }
+        scene->reserved[kAnimationStreamsInitializedIndex] = 1;
+        scene_changed = true;
+    }
+
+    if (changed_index == kParamSurfaceSelect) {
+        if (scene->active != 0) {
+            CaptureLegacySurface(params, scene->surfaces[scene->selected_surface]);
+            CaptureScale(params, scene->surfaces[scene->selected_surface]);
+            CaptureRotationOrigin(params, scene->surfaces[scene->selected_surface]);
+            CaptureMaterial(params, scene->surfaces[scene->selected_surface]);
+            CaptureThickness(params, scene->surfaces[scene->selected_surface]);
+            CaptureDeform(params, scene->surfaces[scene->selected_surface]);
+            CaptureCornerCurl(params, scene->surfaces[scene->selected_surface]);
+            CaptureEdgeTwist(params, scene->surfaces[scene->selected_surface]);
+            const A_long requested = params[kParamSurfaceSelect]->u.pd.value - 1;
+            scene->selected_surface = static_cast<std::uint32_t>(std::clamp<A_long>(
+                requested,
+                0,
+                static_cast<A_long>(scene->surface_count - 1)));
+            LoadSurfaceIntoLegacyParams(params, scene->surfaces[scene->selected_surface]);
+            scene_changed = true;
+        }
+        UpdateSurfaceUiParams(params, *scene);
+    } else if (
+        changed_index == kParamAddSurface ||
+        changed_index == kParamDuplicateSurface ||
+        changed_index == kParamDeleteSurface) {
+        if (scene->active == 0) {
+            scene->active = 1;
+            scene->surface_count = 1;
+            scene->selected_surface = 0;
+            CaptureLegacySurface(params, scene->surfaces[0]);
+            CaptureScale(params, scene->surfaces[0]);
+            CaptureRotationOrigin(params, scene->surfaces[0]);
+            CaptureLegacyDivisions(params, scene->surfaces[0]);
+            CaptureMaterial(params, scene->surfaces[0]);
+            CaptureThickness(params, scene->surfaces[0]);
+            CaptureDeform(params, scene->surfaces[0]);
+            CaptureCornerCurl(params, scene->surfaces[0]);
+            CaptureEdgeTwist(params, scene->surfaces[0]);
+            scene_changed = true;
+        } else {
+            CaptureLegacySurface(params, scene->surfaces[scene->selected_surface]);
+            CaptureScale(params, scene->surfaces[scene->selected_surface]);
+            CaptureRotationOrigin(params, scene->surfaces[scene->selected_surface]);
+            CaptureMaterial(params, scene->surfaces[scene->selected_surface]);
+            CaptureThickness(params, scene->surfaces[scene->selected_surface]);
+            CaptureDeform(params, scene->surfaces[scene->selected_surface]);
+            CaptureCornerCurl(params, scene->surfaces[scene->selected_surface]);
+            CaptureEdgeTwist(params, scene->surfaces[scene->selected_surface]);
+        }
+
+        if (changed_index == kParamAddSurface && scene->surface_count < kMaximumSurfaces) {
+            std::array<bool, kMaximumSurfaces> used_source_slots{};
+            for (std::uint32_t index = 0; index < scene->surface_count; ++index) {
+                used_source_slots[scene->surfaces[index].source_slot] = true;
+            }
+            std::uint32_t available_source_slot = 0;
+            while (available_source_slot + 1 < kMaximumSurfaces &&
+                   used_source_slots[available_source_slot]) {
+                ++available_source_slot;
+            }
+            const std::uint32_t new_index = scene->surface_count++;
+            InitializeFlatSurface(
+                scene->surfaces[new_index],
+                scene->next_surface_id++,
+                in_data->width,
+                in_data->height,
+                true);
+            scene->surfaces[new_index].source_slot = available_source_slot;
+            scene->selected_surface = new_index;
+            scene_changed = true;
+        } else if (
+            changed_index == kParamDuplicateSurface &&
+            scene->surface_count < kMaximumSurfaces) {
+            const SurfaceData source = scene->surfaces[scene->selected_surface];
+            const std::uint32_t new_index = scene->surface_count++;
+            scene->surfaces[new_index] = source;
+            scene->surfaces[new_index].id = scene->next_surface_id++;
+            scene->selected_surface = new_index;
+            scene_changed = true;
+        } else if (changed_index == kParamDeleteSurface && scene->surface_count > 1) {
+            for (std::uint32_t index = scene->selected_surface;
+                 index + 1 < scene->surface_count;
+                 ++index) {
+                scene->surfaces[index] = scene->surfaces[index + 1];
+            }
+            scene->surfaces[scene->surface_count - 1] = {};
+            --scene->surface_count;
+            scene->selected_surface = std::min(
+                scene->selected_surface,
+                scene->surface_count - 1);
+            scene_changed = true;
+        }
+
+        LoadSurfaceIntoLegacyParams(params, scene->surfaces[scene->selected_surface]);
+        UpdateSurfaceUiParams(params, *scene);
+    } else if (changed_index == kParamSurfaceCornerSelect) {
+        if (scene->active == 0) {
+            scene->active = 1;
+            scene->surface_count = 1;
+            scene->selected_surface = 0;
+            CaptureLegacyDivisions(params, scene->surfaces[0]);
+        }
+        SurfaceData& surface = scene->surfaces[scene->selected_surface];
+        surface.selected_corner = static_cast<std::uint32_t>(std::clamp<A_long>(
+            params[kParamSurfaceCornerSelect]->u.pd.value,
+            static_cast<A_long>(kCornerTopLeft),
+            static_cast<A_long>(kCornerBottomLeft)));
+        CaptureCornerCurl(params, surface);
+        scene_changed = true;
+    } else if (changed_index == kParamSurfaceTwistEdge) {
+        if (scene->active == 0) {
+            scene->active = 1;
+            scene->surface_count = 1;
+            scene->selected_surface = 0;
+            CaptureLegacyDivisions(params, scene->surfaces[0]);
+        }
+        SurfaceData& surface = scene->surfaces[scene->selected_surface];
+        surface.selected_twist_edge =
+            static_cast<std::uint32_t>(std::clamp<A_long>(
+                params[kParamSurfaceTwistEdge]->u.pd.value,
+                static_cast<A_long>(kTwistEdgeLeft),
+                static_cast<A_long>(kTwistEdgeBottom)));
+        CaptureEdgeTwist(params, surface);
+        scene_changed = true;
+    } else if (
+        changed_index == kParamSurfaceSizeX ||
+        changed_index == kParamSurfaceSizeY ||
+        changed_index == kParamSurfacePosition ||
+        changed_index == kParamSurfaceRotationOriginMode ||
+        changed_index == kParamSurfaceRotationOriginX ||
+        changed_index == kParamSurfaceRotationOriginY ||
+        (changed_index >= kParamSurfaceScaleX &&
+         changed_index <= kParamSurfaceScaleZ) ||
+        changed_index == kParamSurfaceDivisionsX ||
+        changed_index == kParamSurfaceDivisionsY ||
+        changed_index == kParamSurfaceSourceSlot ||
+        changed_index == kParamSurfaceBackSourceSlot ||
+        changed_index == kParamSurfaceImageSize ||
+        changed_index == kParamSurfaceImageBorder ||
+        changed_index == kParamSurfaceOpacity ||
+        changed_index == kParamSurfaceDiffuse ||
+        changed_index == kParamSurfaceSpecular ||
+        changed_index == kParamSurfaceShininess ||
+        changed_index == kParamSurfaceBendX ||
+        changed_index == kParamSurfaceBendY ||
+        changed_index == kParamSurfaceRollEdge ||
+        changed_index == kParamSurfaceRollAngle ||
+        changed_index == kParamSurfaceRollLength ||
+        IsCornerCurlValueParam(changed_index) ||
+        IsEdgeTwistValueParam(changed_index) ||
+        changed_index == kParamSurfaceThickness) {
+        if (scene->active == 0) {
+            scene->active = 1;
+            scene->surface_count = 1;
+            scene->selected_surface = 0;
+            CaptureLegacyDivisions(params, scene->surfaces[0]);
+        }
+
+        SurfaceData& surface = scene->surfaces[scene->selected_surface];
+        CaptureLegacySurface(params, surface);
+
+        if (changed_index == kParamSurfaceSizeX || changed_index == kParamSurfaceSizeY) {
+            const bool change_x = changed_index == kParamSurfaceSizeX;
+            const float current_size = change_x ? surface.size_x : surface.size_y;
+            const float desired_size = static_cast<float>(std::max(
+                0.001,
+                params[changed_index]->u.fs_d.value));
+            const float ratio = desired_size / std::max(0.001F, current_size);
+            for (StoredPoint3& point : surface.control_points) {
+                if (change_x) {
+                    point.x = surface.position_x +
+                              (point.x - surface.position_x) * ratio;
+                } else {
+                    point.y = surface.position_y +
+                              (point.y - surface.position_y) * ratio;
+                }
+            }
+            UpdateDerivedTransform(surface);
+        } else if (changed_index == kParamSurfacePosition) {
+            const PF_Point3DDef& desired = params[kParamSurfacePosition]->u.point3d_d;
+            const float offset_x = static_cast<float>(desired.x_value) - surface.position_x;
+            const float offset_y = static_cast<float>(desired.y_value) - surface.position_y;
+            const float offset_z = static_cast<float>(desired.z_value) - surface.position_z;
+            for (StoredPoint3& point : surface.control_points) {
+                point.x += offset_x;
+                point.y += offset_y;
+                point.z += offset_z;
+            }
+            UpdateDerivedTransform(surface);
+        } else if (changed_index == kParamSurfaceRotationOriginMode ||
+                   changed_index == kParamSurfaceRotationOriginX ||
+                   changed_index == kParamSurfaceRotationOriginY) {
+            CaptureRotationOrigin(params, surface);
+        } else if (changed_index >= kParamSurfaceScaleX &&
+                   changed_index <= kParamSurfaceScaleZ) {
+            CaptureScale(params, surface);
+        } else if (changed_index == kParamSurfaceDivisionsX ||
+                   changed_index == kParamSurfaceDivisionsY) {
+            const std::uint32_t divisions = static_cast<std::uint32_t>(
+                std::clamp<A_long>(
+                    params[changed_index]->u.sd.value,
+                    static_cast<A_long>(kMinimumDivisions),
+                    static_cast<A_long>(kMaximumDivisions)));
+            if (changed_index == kParamSurfaceDivisionsX) {
+                surface.divisions_x = divisions;
+            } else {
+                surface.divisions_y = divisions;
+            }
+        } else if (changed_index == kParamSurfaceThickness) {
+            CaptureThickness(params, surface);
+        } else if (changed_index == kParamSurfaceBendX ||
+                   changed_index == kParamSurfaceBendY ||
+                   changed_index == kParamSurfaceRollEdge ||
+                   changed_index == kParamSurfaceRollAngle ||
+                   changed_index == kParamSurfaceRollLength) {
+            CaptureDeform(params, surface);
+        } else if (IsCornerCurlValueParam(changed_index)) {
+            CaptureCornerCurl(params, surface);
+        } else if (IsEdgeTwistValueParam(changed_index)) {
+            CaptureEdgeTwist(params, surface);
+        } else {
+            CaptureMaterial(params, surface);
+        }
+
+        if (changed_index == kParamSurfaceSizeX ||
+            changed_index == kParamSurfaceSizeY ||
+            changed_index == kParamSurfacePosition ||
+            (changed_index >= kParamSurfaceScaleX &&
+             changed_index <= kParamSurfaceScaleZ)) {
+            surface.transform_mode = 1;
+        }
+        if (changed_index == kParamSurfaceSizeX ||
+            changed_index == kParamSurfaceSizeY ||
+            changed_index == kParamSurfacePosition) {
+            LoadLegacyGeometryParams(params, surface);
+        }
+        UpdateSurfaceUiParams(params, *scene);
+        scene_changed = true;
+    } else if (scene->active != 0 && IsSurfaceEditorParam(changed_index)) {
+        CaptureLegacySurface(params, scene->surfaces[scene->selected_surface]);
+        if (changed_index >= kParamSurfaceScaleX &&
+            changed_index <= kParamSurfaceScaleZ) {
+            CaptureScale(params, scene->surfaces[scene->selected_surface]);
+            scene->surfaces[scene->selected_surface].transform_mode = 1;
+        }
+        LoadSizeAndPositionParams(
+            params,
+            scene->surfaces[scene->selected_surface]);
+        scene_changed = true;
+    }
+
+    PF_UNLOCK_HANDLE(scene_handle);
+    if (scene_changed) {
+        params[kParamSceneData]->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+    }
+    return PF_Err_NONE;
+}
+
+PF_Err UserChangedParamV15(
+    PF_InData* in_data,
+    PF_ParamDef* params[],
+    const PF_UserChangedParamExtra* extra) {
+    if (!extra || !params[kParamSceneData]) {
+        return PF_Err_BAD_CALLBACK_PARAM;
+    }
+    PF_Handle scene_handle = params[kParamSceneData]->u.arb_d.value;
+    if (!scene_handle) {
+        return PF_Err_NONE;
+    }
+    auto* scene = static_cast<SceneData*>(PF_LOCK_HANDLE(scene_handle));
+    if (!scene) {
+        return PF_Err_OUT_OF_MEMORY;
+    }
+    if (!IsValidScene(*scene)) {
+        InitializeScene(*scene, in_data->width, in_data->height);
+    }
+
+    bool scene_changed = false;
+    const PF_ParamIndex raw_changed_index = extra->param_index;
+    const AnimationParamAddress address =
+        ResolveAnimationParam(raw_changed_index);
+    const PF_ParamIndex changed_index =
+        address.valid ? address.canonical : raw_changed_index;
+
+    if (scene->reserved[kAnimationStreamsInitializedIndex] == 0) {
+        const bool preserve_changed_value =
+            address.valid &&
+            (IsCornerCurlValueParam(changed_index) ||
+             IsEdgeTwistValueParam(changed_index));
+        const double changed_value = preserve_changed_value
+                                         ? params[raw_changed_index]->u.fs_d.value
+                                         : 0.0;
+        SurfaceData& selected = scene->surfaces[scene->selected_surface];
+        auto selected_view =
+            BuildAnimationParameterView(params, selected.animation_bank);
+        LoadCornerCurlValueParams(selected_view.data(), selected);
+        LoadEdgeTwistValueParams(selected_view.data(), selected);
+        if (preserve_changed_value) {
+            params[raw_changed_index]->u.fs_d.value = changed_value;
+        }
+        scene->reserved[kAnimationStreamsInitializedIndex] = 1;
+        scene_changed = true;
+    }
+
+    if (scene->reserved[kAnimationBanksInitializedIndex] == 0) {
+        InitializeAdditionalAnimationBanks(params, *scene);
+        scene_changed = true;
+    }
+
+    if (raw_changed_index == kParamSurfaceSelect) {
+        if (scene->active != 0) {
+            CaptureSurfaceAtCurrentFrame(
+                params,
+                scene->surfaces[scene->selected_surface]);
+            const A_long requested =
+                params[kParamSurfaceSelect]->u.pd.value - 1;
+            scene->selected_surface = static_cast<std::uint32_t>(
+                std::clamp<A_long>(
+                    requested,
+                    0,
+                    static_cast<A_long>(scene->surface_count - 1)));
+            scene_changed = true;
+        }
+        UpdateSurfaceUiParams(params, *scene);
+    } else if (
+        raw_changed_index == kParamAddSurface ||
+        raw_changed_index == kParamDuplicateSurface ||
+        raw_changed_index == kParamDeleteSurface) {
+        if (scene->active == 0) {
+            scene->active = 1;
+            scene->surface_count = 1;
+            scene->selected_surface = 0;
+            CaptureSurfaceAtCurrentFrame(params, scene->surfaces[0]);
+            scene_changed = true;
+        } else {
+            CaptureSurfaceAtCurrentFrame(
+                params,
+                scene->surfaces[scene->selected_surface]);
+        }
+
+        if (raw_changed_index == kParamAddSurface &&
+            scene->surface_count < kMaximumSurfaces) {
+            std::array<bool, kMaximumSurfaces> used_source_slots{};
+            for (std::uint32_t index = 0; index < scene->surface_count; ++index) {
+                used_source_slots[scene->surfaces[index].source_slot] = true;
+            }
+            std::uint32_t available_source_slot = 0;
+            while (available_source_slot + 1 < kMaximumSurfaces &&
+                   used_source_slots[available_source_slot]) {
+                ++available_source_slot;
+            }
+            const std::uint32_t available_bank =
+                FindAvailableAnimationBank(*scene);
+            const std::uint32_t new_index = scene->surface_count++;
+            InitializeFlatSurface(
+                scene->surfaces[new_index],
+                scene->next_surface_id++,
+                in_data->width,
+                in_data->height,
+                true);
+            scene->surfaces[new_index].source_slot = available_source_slot;
+            scene->surfaces[new_index].animation_bank = available_bank;
+            scene->selected_surface = new_index;
+            LoadSurfaceIntoAnimationBank(params, scene->surfaces[new_index]);
+            scene_changed = true;
+        } else if (
+            raw_changed_index == kParamDuplicateSurface &&
+            scene->surface_count < kMaximumSurfaces) {
+            const std::uint32_t available_bank =
+                FindAvailableAnimationBank(*scene);
+            const SurfaceData source =
+                scene->surfaces[scene->selected_surface];
+            const std::uint32_t new_index = scene->surface_count++;
+            scene->surfaces[new_index] = source;
+            scene->surfaces[new_index].id = scene->next_surface_id++;
+            scene->surfaces[new_index].animation_bank = available_bank;
+            scene->selected_surface = new_index;
+            LoadSurfaceIntoAnimationBank(params, scene->surfaces[new_index]);
+            scene_changed = true;
+        } else if (
+            raw_changed_index == kParamDeleteSurface &&
+            scene->surface_count > 1) {
+            for (std::uint32_t index = scene->selected_surface;
+                 index + 1 < scene->surface_count;
+                 ++index) {
+                scene->surfaces[index] = scene->surfaces[index + 1];
+            }
+            scene->surfaces[scene->surface_count - 1] = {};
+            --scene->surface_count;
+            scene->selected_surface = std::min(
+                scene->selected_surface,
+                scene->surface_count - 1);
+            scene_changed = true;
+        }
+        UpdateSurfaceUiParams(params, *scene);
+    } else if (address.valid) {
+        if (scene->active == 0) {
+            scene->active = 1;
+            scene->surface_count = 1;
+            scene->selected_surface = 0;
+        }
+        const std::uint32_t surface_index =
+            FindSurfaceForAnimationBank(*scene, address.bank);
+        SurfaceData& surface = scene->surfaces[surface_index];
+        auto view = BuildAnimationParameterView(params, address.bank);
+        PF_ParamDef** surface_params = view.data();
+
+        if ((changed_index >= kParamPoint00 &&
+             changed_index <= kParamPoint33) ||
+            (changed_index >= kParamDepth00 &&
+             changed_index <= kParamDepth33) ||
+            (changed_index >= kParamRotationX &&
+             changed_index <= kParamRotationZ)) {
+            CaptureLegacySurface(surface_params, surface);
+            LoadSizeAndPositionParams(surface_params, surface);
+        } else {
+            CaptureLegacySurface(surface_params, surface);
+            if (changed_index == kParamSurfaceSizeX ||
+                changed_index == kParamSurfaceSizeY) {
+                const bool change_x = changed_index == kParamSurfaceSizeX;
+                const float current_size =
+                    change_x ? surface.size_x : surface.size_y;
+                const float desired_size = static_cast<float>(std::max(
+                    0.001,
+                    surface_params[changed_index]->u.fs_d.value));
+                const float ratio =
+                    desired_size / std::max(0.001F, current_size);
+                for (StoredPoint3& point : surface.control_points) {
+                    if (change_x) {
+                        point.x = surface.position_x +
+                                  (point.x - surface.position_x) * ratio;
+                    } else {
+                        point.y = surface.position_y +
+                                  (point.y - surface.position_y) * ratio;
+                    }
+                }
+                UpdateDerivedTransform(surface);
+            } else if (changed_index == kParamSurfacePosition) {
+                const PF_Point3DDef& desired =
+                    surface_params[kParamSurfacePosition]->u.point3d_d;
+                const float offset_x =
+                    static_cast<float>(desired.x_value) - surface.position_x;
+                const float offset_y =
+                    static_cast<float>(desired.y_value) - surface.position_y;
+                const float offset_z =
+                    static_cast<float>(desired.z_value) - surface.position_z;
+                for (StoredPoint3& point : surface.control_points) {
+                    point.x += offset_x;
+                    point.y += offset_y;
+                    point.z += offset_z;
+                }
+                UpdateDerivedTransform(surface);
+            } else if (
+                changed_index == kParamSurfaceRotationOriginMode ||
+                changed_index == kParamSurfaceRotationOriginX ||
+                changed_index == kParamSurfaceRotationOriginY) {
+                CaptureRotationOrigin(surface_params, surface);
+            } else if (
+                changed_index >= kParamSurfaceScaleX &&
+                changed_index <= kParamSurfaceScaleZ) {
+                CaptureScale(surface_params, surface);
+            } else if (
+                changed_index == kParamSurfaceDivisionsX ||
+                changed_index == kParamSurfaceDivisionsY) {
+                const std::uint32_t divisions =
+                    static_cast<std::uint32_t>(std::clamp<A_long>(
+                        surface_params[changed_index]->u.sd.value,
+                        static_cast<A_long>(kMinimumDivisions),
+                        static_cast<A_long>(kMaximumDivisions)));
+                if (changed_index == kParamSurfaceDivisionsX) {
+                    surface.divisions_x = divisions;
+                } else {
+                    surface.divisions_y = divisions;
+                }
+            } else if (changed_index == kParamSurfaceThickness) {
+                CaptureThickness(surface_params, surface);
+            } else if (
+                changed_index == kParamSurfaceBendX ||
+                changed_index == kParamSurfaceBendY ||
+                changed_index == kParamSurfaceRollEdge ||
+                changed_index == kParamSurfaceRollAngle ||
+                changed_index == kParamSurfaceRollLength) {
+                CaptureDeform(surface_params, surface);
+            } else if (IsCornerCurlValueParam(changed_index)) {
+                CaptureCornerCurl(surface_params, surface);
+            } else if (IsEdgeTwistValueParam(changed_index)) {
+                CaptureEdgeTwist(surface_params, surface);
+            } else {
+                CaptureMaterial(surface_params, surface);
+            }
+
+            if (changed_index == kParamSurfaceSizeX ||
+                changed_index == kParamSurfaceSizeY ||
+                changed_index == kParamSurfacePosition ||
+                (changed_index >= kParamSurfaceScaleX &&
+                 changed_index <= kParamSurfaceScaleZ)) {
+                surface.transform_mode = 1;
+            }
+            if (changed_index == kParamSurfaceSizeX ||
+                changed_index == kParamSurfaceSizeY ||
+                changed_index == kParamSurfacePosition) {
+                LoadLegacyGeometryParams(surface_params, surface);
+            }
+        }
+        UpdateSurfaceUiParams(params, *scene);
+        scene_changed = true;
+    }
+
+    PF_UNLOCK_HANDLE(scene_handle);
+    if (scene_changed) {
+        params[kParamSceneData]->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+    }
+    return PF_Err_NONE;
+}
+
+enum GizmoDragTarget : A_intptr_t {
+    kGizmoDragNone = 0,
+    kGizmoDragControlPoint = 1,
+    kGizmoDragSurface = 2,
+    kGizmoDragRotationOrigin = 3
+};
+
+constexpr double kGizmoControlHitRadius = 9.0;
+constexpr double kGizmoOriginHitRadius = 11.0;
+constexpr int kGizmoCurveSamples = 18;
+constexpr int kGizmoHitSubdivisions = 8;
+
+bool LayerPointToFrame(
+    PF_InData* in_data,
+    PF_EventExtra* event_extra,
+    const Point2& layer_point,
+    Point2& frame_point) {
+    if (!event_extra || !event_extra->contextH ||
+        (*event_extra->contextH)->w_type != PF_Window_COMP) {
+        return false;
+    }
+    PF_FixedPoint point{
+        FLOAT2FIX(layer_point.x),
+        FLOAT2FIX(layer_point.y)};
+    if (event_extra->cbs.layer_to_comp(
+            event_extra->cbs.refcon,
+            event_extra->contextH,
+            in_data->current_time,
+            in_data->time_scale,
+            &point) != PF_Err_NONE) {
+        return false;
+    }
+    if (event_extra->cbs.source_to_frame(
+            event_extra->cbs.refcon,
+            event_extra->contextH,
+            &point) != PF_Err_NONE) {
+        return false;
+    }
+    frame_point = {FIX_2_FLOAT(point.x), FIX_2_FLOAT(point.y)};
+    return std::isfinite(frame_point.x) && std::isfinite(frame_point.y);
+}
+
+bool ProjectWorldPointToFrame(
+    PF_InData* in_data,
+    PF_EventExtra* event_extra,
+    const CameraState& camera,
+    const Point3& world_point,
+    Point2& frame_point) {
+    const Vertex projected = ProjectVertex(
+        world_point,
+        {0.0, 0.0, -1.0},
+        0.0,
+        0.0,
+        camera);
+    if (!projected.visible || !std::isfinite(projected.x) ||
+        !std::isfinite(projected.y)) {
+        return false;
+    }
+    return LayerPointToFrame(
+        in_data,
+        event_extra,
+        {projected.x, projected.y},
+        frame_point);
+}
+
+bool ProjectSurfacePointToFrame(
+    PF_InData* in_data,
+    PF_EventExtra* event_extra,
+    const SurfaceData& surface,
+    const CameraState& camera,
+    double u,
+    double v,
+    Point2& frame_point) {
+    const SurfaceEvaluationState evaluation =
+        BuildSurfaceEvaluationState(surface, camera, 1.0, 1.0, 1.0);
+    return ProjectWorldPointToFrame(
+        in_data,
+        event_extra,
+        camera,
+        EvaluateTransformedPoint(surface, evaluation, u, v),
+        frame_point);
+}
+
+bool ProjectRotationOriginToFrame(
+    PF_InData* in_data,
+    PF_EventExtra* event_extra,
+    const SurfaceData& surface,
+    const CameraState& camera,
+    Point2& frame_point) {
+    const SurfaceEvaluationState evaluation =
+        BuildSurfaceEvaluationState(surface, camera, 1.0, 1.0, 1.0);
+    return ProjectWorldPointToFrame(
+        in_data,
+        event_extra,
+        camera,
+        {evaluation.rotation_origin_x,
+         evaluation.rotation_origin_y,
+         evaluation.rotation_origin_z},
+        frame_point);
+}
+
+CameraState BuildGizmoCamera(
+    PF_ParamDef* params[],
+    A_long input_width,
+    A_long input_height) {
+    return BuildCameraState(
+        params,
+        static_cast<double>(input_width) * 0.5,
+        static_cast<double>(input_height) * 0.5,
+        0.0,
+        0.0,
+        1.0,
+        1.0,
+        1.0);
+}
+
+double SquaredDistance(const Point2& first, const Point2& second) {
+    const double dx = first.x - second.x;
+    const double dy = first.y - second.y;
+    return dx * dx + dy * dy;
+}
+
+double Cross2D(const Point2& a, const Point2& b, const Point2& c) {
+    return (b.x - a.x) * (c.y - a.y) -
+           (b.y - a.y) * (c.x - a.x);
+}
+
+bool PointInTriangle(
+    const Point2& point,
+    const Point2& a,
+    const Point2& b,
+    const Point2& c) {
+    const double first = Cross2D(a, b, point);
+    const double second = Cross2D(b, c, point);
+    const double third = Cross2D(c, a, point);
+    const bool has_negative = first < 0.0 || second < 0.0 || third < 0.0;
+    const bool has_positive = first > 0.0 || second > 0.0 || third > 0.0;
+    return !(has_negative && has_positive);
+}
+
+bool HitProjectedSurface(
+    PF_InData* in_data,
+    PF_EventExtra* event_extra,
+    const SurfaceData& surface,
+    const CameraState& camera,
+    const Point2& mouse) {
+    constexpr int stride = kGizmoHitSubdivisions + 1;
+    std::array<Point2, stride * stride> points{};
+    std::array<bool, stride * stride> visible{};
+    for (int row = 0; row <= kGizmoHitSubdivisions; ++row) {
+        for (int column = 0; column <= kGizmoHitSubdivisions; ++column) {
+            const int index = row * stride + column;
+            visible[static_cast<std::size_t>(index)] =
+                ProjectSurfacePointToFrame(
+                    in_data,
+                    event_extra,
+                    surface,
+                    camera,
+                    static_cast<double>(column) / kGizmoHitSubdivisions,
+                    static_cast<double>(row) / kGizmoHitSubdivisions,
+                    points[static_cast<std::size_t>(index)]);
+        }
+    }
+    for (int row = 0; row < kGizmoHitSubdivisions; ++row) {
+        for (int column = 0; column < kGizmoHitSubdivisions; ++column) {
+            const int top_left = row * stride + column;
+            const int top_right = top_left + 1;
+            const int bottom_left = top_left + stride;
+            const int bottom_right = bottom_left + 1;
+            if (visible[static_cast<std::size_t>(top_left)] &&
+                visible[static_cast<std::size_t>(top_right)] &&
+                visible[static_cast<std::size_t>(bottom_left)] &&
+                visible[static_cast<std::size_t>(bottom_right)] &&
+                (PointInTriangle(
+                     mouse,
+                     points[static_cast<std::size_t>(top_left)],
+                     points[static_cast<std::size_t>(top_right)],
+                     points[static_cast<std::size_t>(bottom_right)]) ||
+                 PointInTriangle(
+                     mouse,
+                     points[static_cast<std::size_t>(top_left)],
+                     points[static_cast<std::size_t>(bottom_right)],
+                     points[static_cast<std::size_t>(bottom_left)]))) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+bool SolveProjectedDelta(
+    const Point2& base,
+    const Point2& perturbed_x,
+    const Point2& perturbed_y,
+    const Point2& target,
+    double epsilon_x,
+    double epsilon_y,
+    double& delta_x,
+    double& delta_y) {
+    const double j00 = (perturbed_x.x - base.x) / epsilon_x;
+    const double j10 = (perturbed_x.y - base.y) / epsilon_x;
+    const double j01 = (perturbed_y.x - base.x) / epsilon_y;
+    const double j11 = (perturbed_y.y - base.y) / epsilon_y;
+    const double screen_x = target.x - base.x;
+    const double screen_y = target.y - base.y;
+
+    // Damped least squares remains usable when the surface is nearly edge-on.
+    constexpr double damping = 1.0e-4;
+    const double a = j00 * j00 + j10 * j10 + damping;
+    const double b = j00 * j01 + j10 * j11;
+    const double c = j01 * j01 + j11 * j11 + damping;
+    const double rhs_x = j00 * screen_x + j10 * screen_y;
+    const double rhs_y = j01 * screen_x + j11 * screen_y;
+    const double determinant = a * c - b * b;
+    if (std::abs(determinant) < 1.0e-10) {
+        return false;
+    }
+    delta_x = (rhs_x * c - rhs_y * b) / determinant;
+    delta_y = (a * rhs_y - b * rhs_x) / determinant;
+    delta_x = std::clamp(delta_x, -2000.0, 2000.0);
+    delta_y = std::clamp(delta_y, -2000.0, 2000.0);
+    return std::isfinite(delta_x) && std::isfinite(delta_y);
+}
+
+void MarkSurfaceDerivedGeometryParams(
+    PF_ParamDef* surface_params[],
+    const SurfaceData& surface) {
+    PF_ParamDef* size_x = surface_params[kParamSurfaceSizeX];
+    PF_ParamDef* size_y = surface_params[kParamSurfaceSizeY];
+    PF_ParamDef* position = surface_params[kParamSurfacePosition];
+    size_x->u.fs_d.value = surface.size_x;
+    size_y->u.fs_d.value = surface.size_y;
+    position->u.point3d_d.x_value = surface.position_x;
+    position->u.point3d_d.y_value = surface.position_y;
+    position->u.point3d_d.z_value = surface.position_z;
+    size_x->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+    size_y->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+    position->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+}
+
+bool DragControlPoint(
+    PF_InData* in_data,
+    PF_ParamDef* params[],
+    PF_EventExtra* event_extra,
+    SurfaceData surface,
+    const CameraState& camera,
+    std::uint32_t control_index,
+    const Point2& mouse) {
+    if (control_index >= 16) {
+        return false;
+    }
+    const int row = static_cast<int>(control_index / 4);
+    const int column = static_cast<int>(control_index % 4);
+    const double u = static_cast<double>(column) / 3.0;
+    const double v = static_cast<double>(row) / 3.0;
+    Point2 base;
+    Point2 perturbed_x;
+    Point2 perturbed_y;
+    if (!ProjectSurfacePointToFrame(
+            in_data, event_extra, surface, camera, u, v, base)) {
+        return false;
+    }
+    constexpr double epsilon = 1.0;
+    SurfaceData x_surface = surface;
+    x_surface.control_points[control_index].x += epsilon;
+    UpdateDerivedTransform(x_surface);
+    SurfaceData y_surface = surface;
+    y_surface.control_points[control_index].y += epsilon;
+    UpdateDerivedTransform(y_surface);
+    if (!ProjectSurfacePointToFrame(
+            in_data, event_extra, x_surface, camera, u, v, perturbed_x) ||
+        !ProjectSurfacePointToFrame(
+            in_data, event_extra, y_surface, camera, u, v, perturbed_y)) {
+        return false;
+    }
+    double delta_x = 0.0;
+    double delta_y = 0.0;
+    if (!SolveProjectedDelta(
+            base,
+            perturbed_x,
+            perturbed_y,
+            mouse,
+            epsilon,
+            epsilon,
+            delta_x,
+            delta_y)) {
+        return false;
+    }
+    surface.control_points[control_index].x += static_cast<float>(delta_x);
+    surface.control_points[control_index].y += static_cast<float>(delta_y);
+    UpdateDerivedTransform(surface);
+    auto view = BuildAnimationParameterView(params, surface.animation_bank);
+    PF_ParamDef** surface_params = view.data();
+    PF_ParamDef* point = surface_params[kParamPoint00 + control_index];
+    point->u.td.x_value = FLOAT2FIX(surface.control_points[control_index].x);
+    point->u.td.y_value = FLOAT2FIX(surface.control_points[control_index].y);
+    point->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+    MarkSurfaceDerivedGeometryParams(surface_params, surface);
+    return true;
+}
+
+bool DragSurfacePosition(
+    PF_InData* in_data,
+    PF_ParamDef* params[],
+    PF_EventExtra* event_extra,
+    SurfaceData surface,
+    const CameraState& camera,
+    const Point2& mouse) {
+    Point2 base;
+    Point2 perturbed_x;
+    Point2 perturbed_y;
+    if (!ProjectSurfacePointToFrame(
+            in_data, event_extra, surface, camera, 0.5, 0.5, base)) {
+        return false;
+    }
+    constexpr float epsilon = 1.0F;
+    SurfaceData x_surface = surface;
+    SurfaceData y_surface = surface;
+    for (StoredPoint3& point : x_surface.control_points) {
+        point.x += epsilon;
+    }
+    for (StoredPoint3& point : y_surface.control_points) {
+        point.y += epsilon;
+    }
+    UpdateDerivedTransform(x_surface);
+    UpdateDerivedTransform(y_surface);
+    if (!ProjectSurfacePointToFrame(
+            in_data, event_extra, x_surface, camera, 0.5, 0.5, perturbed_x) ||
+        !ProjectSurfacePointToFrame(
+            in_data, event_extra, y_surface, camera, 0.5, 0.5, perturbed_y)) {
+        return false;
+    }
+    double delta_x = 0.0;
+    double delta_y = 0.0;
+    if (!SolveProjectedDelta(
+            base,
+            perturbed_x,
+            perturbed_y,
+            mouse,
+            epsilon,
+            epsilon,
+            delta_x,
+            delta_y)) {
+        return false;
+    }
+    auto view = BuildAnimationParameterView(params, surface.animation_bank);
+    PF_ParamDef* position = view[kParamSurfacePosition];
+    position->u.point3d_d.x_value = surface.position_x + delta_x;
+    position->u.point3d_d.y_value = surface.position_y + delta_y;
+    position->u.point3d_d.z_value = surface.position_z;
+    position->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+    return true;
+}
+
+bool DragRotationOrigin(
+    PF_InData* in_data,
+    PF_ParamDef* params[],
+    PF_EventExtra* event_extra,
+    SurfaceData surface,
+    const CameraState& camera,
+    const Point2& mouse) {
+    // Switching to Custom preserves the current preset pivot before dragging.
+    if (surface.rotation_origin_mode != kRotationOriginCustom) {
+        switch (surface.rotation_origin_mode) {
+            case kRotationOriginLeftEdge:
+                surface.rotation_origin_x = 0.0F;
+                surface.rotation_origin_y = 50.0F;
+                break;
+            case kRotationOriginRightEdge:
+                surface.rotation_origin_x = 100.0F;
+                surface.rotation_origin_y = 50.0F;
+                break;
+            case kRotationOriginTopEdge:
+                surface.rotation_origin_x = 50.0F;
+                surface.rotation_origin_y = 0.0F;
+                break;
+            case kRotationOriginBottomEdge:
+                surface.rotation_origin_x = 50.0F;
+                surface.rotation_origin_y = 100.0F;
+                break;
+            default:
+                surface.rotation_origin_x = 50.0F;
+                surface.rotation_origin_y = 50.0F;
+                break;
+        }
+        surface.rotation_origin_mode = kRotationOriginCustom;
+    }
+    Point2 base;
+    Point2 perturbed_x;
+    Point2 perturbed_y;
+    if (!ProjectRotationOriginToFrame(
+            in_data, event_extra, surface, camera, base)) {
+        return false;
+    }
+    constexpr float epsilon = 1.0F;
+    SurfaceData x_surface = surface;
+    SurfaceData y_surface = surface;
+    x_surface.rotation_origin_x += epsilon;
+    y_surface.rotation_origin_y += epsilon;
+    if (!ProjectRotationOriginToFrame(
+            in_data, event_extra, x_surface, camera, perturbed_x) ||
+        !ProjectRotationOriginToFrame(
+            in_data, event_extra, y_surface, camera, perturbed_y)) {
+        return false;
+    }
+    double delta_x = 0.0;
+    double delta_y = 0.0;
+    if (!SolveProjectedDelta(
+            base,
+            perturbed_x,
+            perturbed_y,
+            mouse,
+            epsilon,
+            epsilon,
+            delta_x,
+            delta_y)) {
+        return false;
+    }
+    auto view = BuildAnimationParameterView(params, surface.animation_bank);
+    PF_ParamDef* mode = view[kParamSurfaceRotationOriginMode];
+    PF_ParamDef* origin_x = view[kParamSurfaceRotationOriginX];
+    PF_ParamDef* origin_y = view[kParamSurfaceRotationOriginY];
+    mode->u.pd.value = static_cast<A_long>(kRotationOriginCustom);
+    origin_x->u.fs_d.value = std::clamp(
+        static_cast<double>(surface.rotation_origin_x) + delta_x,
+        -1000.0,
+        1000.0);
+    origin_y->u.fs_d.value = std::clamp(
+        static_cast<double>(surface.rotation_origin_y) + delta_y,
+        -1000.0,
+        1000.0);
+    mode->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+    origin_x->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+    origin_y->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+    return true;
+}
+
+PF_Err DrawSurfaceGizmo(
+    PF_InData* in_data,
+    PF_OutData* out_data,
+    PF_EventExtra* event_extra,
+    const SurfaceData& surface,
+    const CameraState& camera) {
+    PF_Err error = PF_Err_NONE;
+    DRAWBOT_Suites drawbot_suites{};
+    DRAWBOT_DrawRef drawing_ref = nullptr;
+    DRAWBOT_SurfaceRef drawing_surface = nullptr;
+    DRAWBOT_SupplierRef supplier = nullptr;
+    error = AEFX_AcquireDrawbotSuites(in_data, out_data, &drawbot_suites);
+    if (error != PF_Err_NONE) {
+        return error;
+    }
+    AEGP_SuiteHandler suites(in_data->pica_basicP);
+    error = suites.EffectCustomUISuite1()->PF_GetDrawingReference(
+        event_extra->contextH,
+        &drawing_ref);
+    if (error == PF_Err_NONE && drawing_ref) {
+        error = suites.DrawbotSuiteCurrent()->GetSurface(
+            drawing_ref,
+            &drawing_surface);
+    }
+    if (error == PF_Err_NONE && drawing_ref) {
+        error = drawbot_suites.drawbot_suiteP->GetSupplier(
+            drawing_ref,
+            &supplier);
+    }
+    if (error != PF_Err_NONE || !drawing_surface || !supplier) {
+        AEFX_ReleaseDrawbotSuites(in_data, out_data);
+        return error;
+    }
+
+    const DRAWBOT_ColorRGBA cage_color{0.15F, 0.78F, 1.0F, 0.88F};
+    const DRAWBOT_ColorRGBA boundary_color{0.08F, 0.88F, 1.0F, 1.0F};
+    const DRAWBOT_ColorRGBA point_color{0.92F, 0.96F, 1.0F, 1.0F};
+    const DRAWBOT_ColorRGBA origin_color{1.0F, 0.58F, 0.12F, 1.0F};
+
+    {
+        DRAWBOT_PathP cage_path(drawbot_suites.supplier_suiteP, supplier);
+        for (int row = 0; row < 4; ++row) {
+            bool started = false;
+            for (int sample = 0; sample <= kGizmoCurveSamples; ++sample) {
+                Point2 point;
+                if (!ProjectSurfacePointToFrame(
+                        in_data,
+                        event_extra,
+                        surface,
+                        camera,
+                        static_cast<double>(sample) / kGizmoCurveSamples,
+                        static_cast<double>(row) / 3.0,
+                        point)) {
+                    started = false;
+                    continue;
+                }
+                if (!started) {
+                    drawbot_suites.path_suiteP->MoveTo(
+                        cage_path,
+                        static_cast<float>(point.x),
+                        static_cast<float>(point.y));
+                    started = true;
+                } else {
+                    drawbot_suites.path_suiteP->LineTo(
+                        cage_path,
+                        static_cast<float>(point.x),
+                        static_cast<float>(point.y));
+                }
+            }
+        }
+        for (int column = 0; column < 4; ++column) {
+            bool started = false;
+            for (int sample = 0; sample <= kGizmoCurveSamples; ++sample) {
+                Point2 point;
+                if (!ProjectSurfacePointToFrame(
+                        in_data,
+                        event_extra,
+                        surface,
+                        camera,
+                        static_cast<double>(column) / 3.0,
+                        static_cast<double>(sample) / kGizmoCurveSamples,
+                        point)) {
+                    started = false;
+                    continue;
+                }
+                if (!started) {
+                    drawbot_suites.path_suiteP->MoveTo(
+                        cage_path,
+                        static_cast<float>(point.x),
+                        static_cast<float>(point.y));
+                    started = true;
+                } else {
+                    drawbot_suites.path_suiteP->LineTo(
+                        cage_path,
+                        static_cast<float>(point.x),
+                        static_cast<float>(point.y));
+                }
+            }
+        }
+        DRAWBOT_PenP cage_pen(
+            drawbot_suites.supplier_suiteP,
+            supplier,
+            &cage_color,
+            1.0F);
+        drawbot_suites.surface_suiteP->StrokePath(
+            drawing_surface,
+            cage_pen,
+            cage_path);
+    }
+
+    {
+        DRAWBOT_PathP boundary_path(drawbot_suites.supplier_suiteP, supplier);
+        const std::array<std::array<double, 4>, 4> edges{{
+            {{0.0, 0.0, 1.0, 0.0}},
+            {{1.0, 0.0, 1.0, 1.0}},
+            {{1.0, 1.0, 0.0, 1.0}},
+            {{0.0, 1.0, 0.0, 0.0}}}};
+        for (const auto& edge : edges) {
+            bool started = false;
+            for (int sample = 0; sample <= kGizmoCurveSamples; ++sample) {
+                const double t =
+                    static_cast<double>(sample) / kGizmoCurveSamples;
+                Point2 point;
+                if (!ProjectSurfacePointToFrame(
+                        in_data,
+                        event_extra,
+                        surface,
+                        camera,
+                        edge[0] + (edge[2] - edge[0]) * t,
+                        edge[1] + (edge[3] - edge[1]) * t,
+                        point)) {
+                    started = false;
+                    continue;
+                }
+                if (!started) {
+                    drawbot_suites.path_suiteP->MoveTo(
+                        boundary_path,
+                        static_cast<float>(point.x),
+                        static_cast<float>(point.y));
+                    started = true;
+                } else {
+                    drawbot_suites.path_suiteP->LineTo(
+                        boundary_path,
+                        static_cast<float>(point.x),
+                        static_cast<float>(point.y));
+                }
+            }
+        }
+        DRAWBOT_PenP boundary_pen(
+            drawbot_suites.supplier_suiteP,
+            supplier,
+            &boundary_color,
+            2.0F);
+        drawbot_suites.surface_suiteP->StrokePath(
+            drawing_surface,
+            boundary_pen,
+            boundary_path);
+    }
+
+    for (int row = 0; row < 4; ++row) {
+        for (int column = 0; column < 4; ++column) {
+            Point2 point;
+            if (!ProjectSurfacePointToFrame(
+                    in_data,
+                    event_extra,
+                    surface,
+                    camera,
+                    static_cast<double>(column) / 3.0,
+                    static_cast<double>(row) / 3.0,
+                    point)) {
+                continue;
+            }
+            const bool corner =
+                (row == 0 || row == 3) && (column == 0 || column == 3);
+            const float radius = corner ? 4.5F : 3.5F;
+            DRAWBOT_RectF32 rect{
+                static_cast<float>(point.x) - radius,
+                static_cast<float>(point.y) - radius,
+                radius * 2.0F,
+                radius * 2.0F};
+            suites.SurfaceSuiteCurrent()->PaintRect(
+                drawing_surface,
+                &point_color,
+                &rect);
+        }
+    }
+
+    Point2 center;
+    if (ProjectSurfacePointToFrame(
+            in_data, event_extra, surface, camera, 0.5, 0.5, center)) {
+        DRAWBOT_PathP center_path(drawbot_suites.supplier_suiteP, supplier);
+        drawbot_suites.path_suiteP->MoveTo(
+            center_path,
+            static_cast<float>(center.x - 7.0),
+            static_cast<float>(center.y));
+        drawbot_suites.path_suiteP->LineTo(
+            center_path,
+            static_cast<float>(center.x + 7.0),
+            static_cast<float>(center.y));
+        drawbot_suites.path_suiteP->MoveTo(
+            center_path,
+            static_cast<float>(center.x),
+            static_cast<float>(center.y - 7.0));
+        drawbot_suites.path_suiteP->LineTo(
+            center_path,
+            static_cast<float>(center.x),
+            static_cast<float>(center.y + 7.0));
+        DRAWBOT_PenP center_pen(
+            drawbot_suites.supplier_suiteP,
+            supplier,
+            &boundary_color,
+            1.5F);
+        drawbot_suites.surface_suiteP->StrokePath(
+            drawing_surface,
+            center_pen,
+            center_path);
+    }
+
+    Point2 origin;
+    if (ProjectRotationOriginToFrame(
+            in_data, event_extra, surface, camera, origin)) {
+        DRAWBOT_PathP origin_path(drawbot_suites.supplier_suiteP, supplier);
+        drawbot_suites.path_suiteP->MoveTo(
+            origin_path,
+            static_cast<float>(origin.x),
+            static_cast<float>(origin.y - 7.0));
+        drawbot_suites.path_suiteP->LineTo(
+            origin_path,
+            static_cast<float>(origin.x + 7.0),
+            static_cast<float>(origin.y));
+        drawbot_suites.path_suiteP->LineTo(
+            origin_path,
+            static_cast<float>(origin.x),
+            static_cast<float>(origin.y + 7.0));
+        drawbot_suites.path_suiteP->LineTo(
+            origin_path,
+            static_cast<float>(origin.x - 7.0),
+            static_cast<float>(origin.y));
+        drawbot_suites.path_suiteP->LineTo(
+            origin_path,
+            static_cast<float>(origin.x),
+            static_cast<float>(origin.y - 7.0));
+        DRAWBOT_PenP origin_pen(
+            drawbot_suites.supplier_suiteP,
+            supplier,
+            &origin_color,
+            2.0F);
+        drawbot_suites.surface_suiteP->StrokePath(
+            drawing_surface,
+            origin_pen,
+            origin_path);
+    }
+
+    AEFX_ReleaseDrawbotSuites(in_data, out_data);
+    return error;
+}
+
+PF_Err HandleSurfaceGizmoEvent(
+    PF_InData* in_data,
+    PF_OutData* out_data,
+    PF_ParamDef* params[],
+    PF_EventExtra* event_extra) {
+    if (!event_extra || !event_extra->contextH ||
+        (*event_extra->contextH)->w_type != PF_Window_COMP) {
+        return PF_Err_NONE;
+    }
+    const A_long input_width =
+        params[kParamInput]->u.ld.width > 0
+            ? params[kParamInput]->u.ld.width
+            : in_data->width;
+    const A_long input_height =
+        params[kParamInput]->u.ld.height > 0
+            ? params[kParamInput]->u.ld.height
+            : in_data->height;
+    SceneData scene =
+        ResolveSceneForFrame(in_data, params, input_width, input_height);
+    if (scene.surface_count == 0 ||
+        scene.selected_surface >= scene.surface_count) {
+        return PF_Err_NONE;
+    }
+    SurfaceData surface = scene.surfaces[scene.selected_surface];
+    const CameraState camera =
+        BuildGizmoCamera(params, input_width, input_height);
+
+    if (event_extra->e_type == PF_Event_DRAW) {
+        const PF_Err error = DrawSurfaceGizmo(
+            in_data,
+            out_data,
+            event_extra,
+            surface,
+            camera);
+        if (error == PF_Err_NONE) {
+            event_extra->evt_out_flags = PF_EO_HANDLED_EVENT;
+        }
+        return error;
+    }
+
+    const Point2 mouse{
+        static_cast<double>(event_extra->u.do_click.screen_point.h),
+        static_cast<double>(event_extra->u.do_click.screen_point.v)};
+    if (event_extra->e_type == PF_Event_DO_CLICK) {
+        double closest_distance =
+            kGizmoControlHitRadius * kGizmoControlHitRadius;
+        int closest_control = -1;
+        for (int row = 0; row < 4; ++row) {
+            for (int column = 0; column < 4; ++column) {
+                Point2 point;
+                if (!ProjectSurfacePointToFrame(
+                        in_data,
+                        event_extra,
+                        surface,
+                        camera,
+                        static_cast<double>(column) / 3.0,
+                        static_cast<double>(row) / 3.0,
+                        point)) {
+                    continue;
+                }
+                const double distance = SquaredDistance(point, mouse);
+                if (distance <= closest_distance) {
+                    closest_distance = distance;
+                    closest_control = row * 4 + column;
+                }
+            }
+        }
+        Point2 origin;
+        const bool hit_origin =
+            ProjectRotationOriginToFrame(
+                in_data, event_extra, surface, camera, origin) &&
+            SquaredDistance(origin, mouse) <=
+                kGizmoOriginHitRadius * kGizmoOriginHitRadius;
+        if (hit_origin) {
+            event_extra->u.do_click.continue_refcon[0] =
+                kGizmoDragRotationOrigin;
+        } else if (closest_control >= 0) {
+            event_extra->u.do_click.continue_refcon[0] =
+                kGizmoDragControlPoint;
+            event_extra->u.do_click.continue_refcon[1] = closest_control;
+        } else if (HitProjectedSurface(
+                       in_data,
+                       event_extra,
+                       surface,
+                       camera,
+                       mouse)) {
+            event_extra->u.do_click.continue_refcon[0] = kGizmoDragSurface;
+        } else {
+            return PF_Err_NONE;
+        }
+        event_extra->u.do_click.send_drag = TRUE;
+        event_extra->evt_out_flags = PF_EO_HANDLED_EVENT;
+        return PF_Err_NONE;
+    }
+
+    if (event_extra->e_type == PF_Event_DRAG) {
+        bool changed = false;
+        switch (event_extra->u.do_click.continue_refcon[0]) {
+            case kGizmoDragControlPoint:
+                changed = DragControlPoint(
+                    in_data,
+                    params,
+                    event_extra,
+                    surface,
+                    camera,
+                    static_cast<std::uint32_t>(
+                        event_extra->u.do_click.continue_refcon[1]),
+                    mouse);
+                break;
+            case kGizmoDragSurface:
+                changed = DragSurfacePosition(
+                    in_data,
+                    params,
+                    event_extra,
+                    surface,
+                    camera,
+                    mouse);
+                break;
+            case kGizmoDragRotationOrigin:
+                changed = DragRotationOrigin(
+                    in_data,
+                    params,
+                    event_extra,
+                    surface,
+                    camera,
+                    mouse);
+                break;
+            default:
+                break;
+        }
+        if (changed) {
+            event_extra->evt_out_flags = static_cast<PF_EventOutFlags>(
+                PF_EO_HANDLED_EVENT | PF_EO_ALWAYS_UPDATE | PF_EO_UPDATE_NOW);
+        }
+        if (event_extra->u.do_click.last_time) {
+            event_extra->u.do_click.send_drag = FALSE;
+            event_extra->u.do_click.continue_refcon[0] = kGizmoDragNone;
+        } else if (changed) {
+            event_extra->u.do_click.send_drag = TRUE;
+        }
+    }
+    return PF_Err_NONE;
+}
+
+PF_Err About(PF_OutData* out_data) {
+    std::snprintf(
+        out_data->return_msg,
+        sizeof(out_data->return_msg),
+        "SurfaceLab v%d.%d.%d\rBicubic surface prototype for After Effects.",
+        static_cast<int>(kMajorVersion),
+        static_cast<int>(kMinorVersion),
+        static_cast<int>(kBugVersion));
+    return PF_Err_NONE;
+}
+
+PF_Err GlobalSetup(PF_InData* in_data, PF_OutData* out_data) {
+    AEGP_SuiteHandler suites(in_data->pica_basicP);
+    PF_Handle global_handle =
+        suites.HandleSuite1()->host_new_handle(sizeof(GlobalData));
+    if (!global_handle) {
+        return PF_Err_OUT_OF_MEMORY;
+    }
+    auto* global = static_cast<GlobalData*>(
+        suites.HandleSuite1()->host_lock_handle(global_handle));
+    if (!global) {
+        suites.HandleSuite1()->host_dispose_handle(global_handle);
+        return PF_Err_OUT_OF_MEMORY;
+    }
+    *global = {};
+    const A_Err registration_error =
+        suites.UtilitySuite3()->AEGP_RegisterWithAEGP(
+            nullptr,
+            "SurfaceLab",
+            &global->plugin_id);
+    suites.HandleSuite1()->host_unlock_handle(global_handle);
+    if (registration_error != A_Err_NONE) {
+        suites.HandleSuite1()->host_dispose_handle(global_handle);
+        return static_cast<PF_Err>(registration_error);
+    }
+    out_data->global_data = global_handle;
+    out_data->my_version = PF_VERSION(
+        kMajorVersion,
+        kMinorVersion,
+        kBugVersion,
+        PF_Stage_DEVELOP,
+        kBuildVersion);
+    out_data->out_flags =
+        PF_OutFlag_DEEP_COLOR_AWARE | PF_OutFlag_I_EXPAND_BUFFER |
+        PF_OutFlag_SEND_UPDATE_PARAMS_UI | PF_OutFlag_CUSTOM_UI;
+    out_data->out_flags2 = PF_OutFlag2_SUPPORTS_THREADED_RENDERING;
+    return PF_Err_NONE;
+}
+
+PF_Err GlobalSetdown(PF_InData* in_data) {
+    if (in_data->global_data) {
+        AEGP_SuiteHandler suites(in_data->pica_basicP);
+        suites.HandleSuite1()->host_dispose_handle(in_data->global_data);
+    }
+    return PF_Err_NONE;
+}
+
+PF_Err UpdateParameterUi(
+    PF_InData* in_data,
+    PF_OutData* out_data,
+    PF_ParamDef* params[]) {
+    if (!in_data->global_data || !params) {
+        return PF_Err_NONE;
+    }
+    AEGP_SuiteHandler suites(in_data->pica_basicP);
+    auto* global = static_cast<GlobalData*>(
+        suites.HandleSuite1()->host_lock_handle(in_data->global_data));
+    if (!global) {
+        return PF_Err_OUT_OF_MEMORY;
+    }
+    const AEGP_PluginID plugin_id = global->plugin_id;
+    suites.HandleSuite1()->host_unlock_handle(in_data->global_data);
+
+    AEGP_EffectRefH effect = nullptr;
+    A_Err error = suites.PFInterfaceSuite1()->AEGP_GetNewEffectForEffect(
+        plugin_id,
+        in_data->effect_ref,
+        &effect);
+    if (error != A_Err_NONE || !effect) {
+        return static_cast<PF_Err>(error);
+    }
+
+    const auto set_hidden = [&](PF_ParamIndex parameter, bool hidden) -> A_Err {
+        AEGP_StreamRefH stream = nullptr;
+        A_Err stream_error =
+            suites.StreamSuite2()->AEGP_GetNewEffectStreamByIndex(
+                plugin_id,
+                effect,
+                parameter,
+                &stream);
+        if (stream_error == A_Err_NONE && stream) {
+            stream_error =
+                suites.DynamicStreamSuite2()->AEGP_SetDynamicStreamFlag(
+                    stream,
+                    AEGP_DynStreamFlag_HIDDEN,
+                    FALSE,
+                    hidden ? TRUE : FALSE);
+        }
+        if (stream) {
+            const A_Err dispose_error =
+                suites.StreamSuite2()->AEGP_DisposeStream(stream);
+            if (stream_error == A_Err_NONE) {
+                stream_error = dispose_error;
+            }
+        }
+        return stream_error;
+    };
+
+    std::uint32_t selected_bank = 0;
+    PF_Handle scene_handle = params[kParamSceneData]->u.arb_d.value;
+    if (scene_handle) {
+        const auto* scene = static_cast<const SceneData*>(
+            PF_LOCK_HANDLE(scene_handle));
+        if (scene && IsValidScene(*scene)) {
+            selected_bank = scene->surfaces[scene->selected_surface].animation_bank;
+        }
+        if (scene) {
+            PF_UNLOCK_HANDLE(scene_handle);
+        }
+    }
+
+    error = set_hidden(kParamSurfaceCornerSelect, true);
+    if (error == A_Err_NONE) {
+        error = set_hidden(kParamSurfaceTwistEdge, true);
+    }
+    for (std::size_t property = 0;
+         property < static_cast<std::size_t>(kSurfaceAnimationPropertyCount) &&
+         error == A_Err_NONE;
+         ++property) {
+        error = set_hidden(
+            PrimaryAnimationParam(property),
+            selected_bank != 0);
+    }
+    for (std::uint32_t bank = 1;
+         bank < kMaximumSurfaces && error == A_Err_NONE;
+         ++bank) {
+        error = set_hidden(AnimationBankTopicParam(bank), bank != selected_bank);
+    }
+
+    const A_Err dispose_error = suites.EffectSuite2()->AEGP_DisposeEffect(effect);
+    if (error == A_Err_NONE) {
+        error = dispose_error;
+    }
+    if (error == A_Err_NONE) {
+        out_data->out_flags |= PF_OutFlag_REFRESH_UI;
+    }
+    return static_cast<PF_Err>(error);
+}
+
+PF_Err AddSurfaceAnimationBankParams(
+    PF_InData* in_data,
+    std::uint32_t bank) {
+    PF_ParamDef def;
+    const A_long disk_base = 10000 + static_cast<A_long>(bank) * 100;
+    A_long property = 0;
+    char topic_name[32];
+    std::snprintf(topic_name, sizeof(topic_name), "Surface %u Animation", bank + 1);
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_TOPIC(topic_name, disk_base);
+
+    for (int row = 0; row < 4; ++row) {
+        for (int column = 0; column < 4; ++column) {
+            char name[32];
+            std::snprintf(name, sizeof(name), "Control %d,%d", row + 1, column + 1);
+            AEFX_CLR_STRUCT(def);
+            def.flags = PF_ParamFlag_SUPERVISE;
+            PF_ADD_POINT(
+                name,
+                100.0 * static_cast<double>(column) / 3.0,
+                100.0 * static_cast<double>(row) / 3.0,
+                FALSE,
+                disk_base + 1 + property++);
+        }
+    }
+    for (int row = 0; row < 4; ++row) {
+        for (int column = 0; column < 4; ++column) {
+            char name[32];
+            std::snprintf(name, sizeof(name), "Depth %d,%d", row + 1, column + 1);
+            AEFX_CLR_STRUCT(def);
+            def.flags = PF_ParamFlag_SUPERVISE;
+            PF_ADD_FLOAT_SLIDERX(
+                name,
+                -4000.0,
+                4000.0,
+                -2000.0,
+                2000.0,
+                0.0,
+                PF_Precision_TENTHS,
+                0,
+                PF_ParamFlag_SUPERVISE,
+                disk_base + 1 + property++);
+        }
+    }
+    const char* rotation_names[3] = {"Rotation X", "Rotation Y", "Rotation Z"};
+    for (int index = 0; index < 3; ++index) {
+        AEFX_CLR_STRUCT(def);
+        def.flags = PF_ParamFlag_SUPERVISE;
+        PF_ADD_ANGLE(rotation_names[index], 0.0, disk_base + 1 + property++);
+    }
+
+    const char* size_names[2] = {"Size X", "Size Y"};
+    const double size_defaults[2] = {
+        std::max(1.0, static_cast<double>(in_data->width)),
+        std::max(1.0, static_cast<double>(in_data->height))};
+    for (int index = 0; index < 2; ++index) {
+        AEFX_CLR_STRUCT(def);
+        def.flags = PF_ParamFlag_SUPERVISE;
+        PF_ADD_FLOAT_SLIDERX(
+            size_names[index],
+            0.001,
+            30000.0,
+            1.0,
+            10000.0,
+            size_defaults[index],
+            PF_Precision_TENTHS,
+            0,
+            PF_ParamFlag_SUPERVISE,
+            disk_base + 1 + property++);
+    }
+
+    AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_SUPERVISE;
+    def.param_type = PF_Param_POINT_3D;
+    PF_STRNNCPY(def.PF_DEF_NAME, "Position", sizeof(def.PF_DEF_NAME));
+    def.u.point3d_d.x_value = def.u.point3d_d.x_dephault =
+        static_cast<double>(in_data->width) * 0.5;
+    def.u.point3d_d.y_value = def.u.point3d_d.y_dephault =
+        static_cast<double>(in_data->height) * 0.5;
+    def.u.point3d_d.z_value = def.u.point3d_d.z_dephault = 0.0;
+    def.uu.id = disk_base + 1 + property++;
+    PF_Err error = PF_ADD_PARAM(in_data, -1, &def);
+    if (error != PF_Err_NONE) {
+        return error;
+    }
+
+    AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_SUPERVISE | PF_ParamFlag_CANNOT_INTERP;
+    PF_ADD_POPUP(
+        "Origin Mode",
+        6,
+        static_cast<A_long>(kRotationOriginCenter),
+        "Center|Left Edge|Right Edge|Top Edge|Bottom Edge|Custom",
+        disk_base + 1 + property++);
+    const char* origin_names[2] = {"Custom Origin X", "Custom Origin Y"};
+    for (int index = 0; index < 2; ++index) {
+        AEFX_CLR_STRUCT(def);
+        def.flags = PF_ParamFlag_SUPERVISE;
+        PF_ADD_FLOAT_SLIDERX(
+            origin_names[index],
+            -1000.0,
+            1000.0,
+            -200.0,
+            300.0,
+            50.0,
+            PF_Precision_TENTHS,
+            PF_ValueDisplayFlag_PERCENT,
+            PF_ParamFlag_SUPERVISE,
+            disk_base + 1 + property++);
+    }
+
+    const char* scale_names[3] = {"Scale X", "Scale Y", "Scale Z"};
+    for (int index = 0; index < 3; ++index) {
+        AEFX_CLR_STRUCT(def);
+        def.flags = PF_ParamFlag_SUPERVISE;
+        PF_ADD_FLOAT_SLIDERX(
+            scale_names[index],
+            -1000.0,
+            1000.0,
+            -400.0,
+            400.0,
+            100.0,
+            PF_Precision_TENTHS,
+            PF_ValueDisplayFlag_PERCENT,
+            PF_ParamFlag_SUPERVISE,
+            disk_base + 1 + property++);
+    }
+
+    const char* divisions_names[2] = {"Divisions X", "Divisions Y"};
+    for (int index = 0; index < 2; ++index) {
+        AEFX_CLR_STRUCT(def);
+        def.flags = PF_ParamFlag_SUPERVISE | PF_ParamFlag_CANNOT_TIME_VARY;
+        PF_ADD_SLIDER(
+            divisions_names[index],
+            static_cast<A_long>(kMinimumDivisions),
+            static_cast<A_long>(kMaximumDivisions),
+            static_cast<A_long>(kMinimumDivisions),
+            static_cast<A_long>(kMaximumDivisions),
+            static_cast<A_long>(kDefaultDivisions),
+            disk_base + 1 + property++);
+    }
+
+    AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_SUPERVISE;
+    PF_ADD_FLOAT_SLIDERX(
+        "Thickness", 0.0, 4000.0, 0.0, 1000.0, 0.0,
+        PF_Precision_TENTHS, 0, PF_ParamFlag_SUPERVISE,
+        disk_base + 1 + property++);
+    const char* bend_names[2] = {"Bend X", "Bend Y"};
+    for (int index = 0; index < 2; ++index) {
+        AEFX_CLR_STRUCT(def);
+        PF_ADD_FLOAT_SLIDERX(
+            bend_names[index], -720.0, 720.0, -360.0, 360.0, 0.0,
+            PF_Precision_TENTHS, 0, PF_ParamFlag_SUPERVISE,
+            disk_base + 1 + property++);
+    }
+    AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_SUPERVISE | PF_ParamFlag_CANNOT_INTERP;
+    PF_ADD_POPUP(
+        "Roll Edge", 4, static_cast<A_long>(kRollEdgeRight),
+        "Right|Left|Bottom|Top", disk_base + 1 + property++);
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_FLOAT_SLIDERX(
+        "Roll Angle", -1080.0, 1080.0, -720.0, 720.0, 0.0,
+        PF_Precision_TENTHS, 0, PF_ParamFlag_SUPERVISE,
+        disk_base + 1 + property++);
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_FLOAT_SLIDERX(
+        "Roll Length", 0.0, 100.0, 0.0, 100.0, 25.0,
+        PF_Precision_TENTHS, PF_ValueDisplayFlag_PERCENT,
+        PF_ParamFlag_SUPERVISE, disk_base + 1 + property++);
+
+    const char* corner_names[4] = {"TL", "TR", "BR", "BL"};
+    for (int corner = 0; corner < 4; ++corner) {
+        char name[32];
+        std::snprintf(name, sizeof(name), "%s Curl Amount", corner_names[corner]);
+        AEFX_CLR_STRUCT(def);
+        PF_ADD_FLOAT_SLIDERX(
+            name, -100.0, 100.0, -100.0, 100.0, 0.0,
+            PF_Precision_TENTHS, PF_ValueDisplayFlag_PERCENT,
+            PF_ParamFlag_SUPERVISE, disk_base + 1 + property++);
+        std::snprintf(name, sizeof(name), "%s Curl Radius", corner_names[corner]);
+        AEFX_CLR_STRUCT(def);
+        PF_ADD_FLOAT_SLIDERX(
+            name, 0.1, 100.0, 1.0, 50.0, 15.0,
+            PF_Precision_TENTHS, PF_ValueDisplayFlag_PERCENT,
+            PF_ParamFlag_SUPERVISE, disk_base + 1 + property++);
+        std::snprintf(name, sizeof(name), "%s Curl Direction", corner_names[corner]);
+        AEFX_CLR_STRUCT(def);
+        PF_ADD_FLOAT_SLIDERX(
+            name, 0.0, 90.0, 0.0, 90.0, 45.0,
+            PF_Precision_TENTHS, 0, PF_ParamFlag_SUPERVISE,
+            disk_base + 1 + property++);
+        std::snprintf(name, sizeof(name), "%s Curl Length", corner_names[corner]);
+        AEFX_CLR_STRUCT(def);
+        PF_ADD_FLOAT_SLIDERX(
+            name, 0.0, 150.0, 0.0, 100.0, 30.0,
+            PF_Precision_TENTHS, PF_ValueDisplayFlag_PERCENT,
+            PF_ParamFlag_SUPERVISE, disk_base + 1 + property++);
+    }
+
+    const char* edge_names[4] = {"Left", "Right", "Top", "Bottom"};
+    for (int edge = 0; edge < 4; ++edge) {
+        char name[32];
+        std::snprintf(name, sizeof(name), "%s Twist Angle", edge_names[edge]);
+        AEFX_CLR_STRUCT(def);
+        PF_ADD_FLOAT_SLIDERX(
+            name, -180.0, 180.0, -180.0, 180.0, 0.0,
+            PF_Precision_TENTHS, 0, PF_ParamFlag_SUPERVISE,
+            disk_base + 1 + property++);
+        std::snprintf(name, sizeof(name), "%s Twist Falloff", edge_names[edge]);
+        AEFX_CLR_STRUCT(def);
+        PF_ADD_FLOAT_SLIDERX(
+            name, 1.0, 100.0, 1.0, 100.0, 100.0,
+            PF_Precision_TENTHS, PF_ValueDisplayFlag_PERCENT,
+            PF_ParamFlag_SUPERVISE, disk_base + 1 + property++);
+    }
+
+    AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_SUPERVISE | PF_ParamFlag_CANNOT_TIME_VARY;
+    PF_ADD_POPUP(
+        "Front Source", 8, 1,
+        "Slot 1|Slot 2|Slot 3|Slot 4|Slot 5|Slot 6|Slot 7|Slot 8",
+        disk_base + 1 + property++);
+    AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_SUPERVISE | PF_ParamFlag_CANNOT_TIME_VARY;
+    PF_ADD_POPUP(
+        "Back Source", 9, 1,
+        "Same as Front|Slot 1|Slot 2|Slot 3|Slot 4|Slot 5|Slot 6|Slot 7|Slot 8",
+        disk_base + 1 + property++);
+    AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_SUPERVISE | PF_ParamFlag_CANNOT_INTERP;
+    PF_ADD_POPUP(
+        "Image Size", 3, static_cast<A_long>(kImageSizeStretch),
+        "Stretch|Fill|Fit", disk_base + 1 + property++);
+    AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_SUPERVISE | PF_ParamFlag_CANNOT_INTERP;
+    PF_ADD_POPUP(
+        "Image Border", 4, static_cast<A_long>(kImageBorderClamp),
+        "Clamp|Repeat|Mirror|Transparent", disk_base + 1 + property++);
+
+    const char* material_names[4] = {
+        "Opacity", "Diffuse", "Specular", "Shininess"};
+    const double material_minimums[4] = {0.0, 0.0, 0.0, 1.0};
+    const double material_maximums[4] = {100.0, 200.0, 200.0, 256.0};
+    const double material_defaults[4] = {100.0, 100.0, 50.0, 32.0};
+    for (int index = 0; index < 4; ++index) {
+        AEFX_CLR_STRUCT(def);
+        PF_ADD_FLOAT_SLIDERX(
+            material_names[index],
+            material_minimums[index],
+            material_maximums[index],
+            material_minimums[index],
+            index == 3 ? 128.0 : material_maximums[index],
+            material_defaults[index],
+            PF_Precision_TENTHS,
+            index == 3 ? 0 : PF_ValueDisplayFlag_PERCENT,
+            PF_ParamFlag_SUPERVISE,
+            disk_base + 1 + property++);
+    }
+
+    if (property != kSurfaceAnimationPropertyCount) {
+        return PF_Err_INTERNAL_STRUCT_DAMAGED;
+    }
+    AEFX_CLR_STRUCT(def);
+    PF_END_TOPIC(disk_base + 99);
+    return PF_Err_NONE;
+}
+
+PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
+    PF_ParamDef def;
+    AEFX_CLR_STRUCT(def);
+
+    PF_ADD_SLIDER(
+        "Tessellation",
+        2,
+        32,
+        2,
+        32,
+        12,
+        kDiskTessellation);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_CHECKBOX("Wireframe", "Show tessellation", FALSE, 0, kDiskWireframe);
+
+    for (int row = 0; row < 4; ++row) {
+        for (int column = 0; column < 4; ++column) {
+            const int index = row * 4 + column;
+            char name[32];
+            std::snprintf(name, sizeof(name), "Control %d,%d", row + 1, column + 1);
+            AEFX_CLR_STRUCT(def);
+            def.flags = PF_ParamFlag_SUPERVISE;
+            PF_ADD_POINT(
+                name,
+                100.0 * static_cast<double>(column) / 3.0,
+                100.0 * static_cast<double>(row) / 3.0,
+                FALSE,
+                kDiskPoint00 + index);
+        }
+    }
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_CHECKBOX(
+        "Perspective",
+        "Use internal perspective camera",
+        TRUE,
+        0,
+        kDiskPerspective);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_SLIDER(
+        "Camera Distance",
+        100,
+        10000,
+        100,
+        5000,
+        2000,
+        kDiskCameraDistance);
+
+    AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_SUPERVISE;
+    PF_ADD_ANGLE("Rotation X", 0.0, kDiskRotationX);
+    AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_SUPERVISE;
+    PF_ADD_ANGLE("Rotation Y", 0.0, kDiskRotationY);
+    AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_SUPERVISE;
+    PF_ADD_ANGLE("Rotation Z", 0.0, kDiskRotationZ);
+
+    for (int row = 0; row < 4; ++row) {
+        for (int column = 0; column < 4; ++column) {
+            const int index = row * 4 + column;
+            char name[32];
+            std::snprintf(name, sizeof(name), "Depth %d,%d", row + 1, column + 1);
+            AEFX_CLR_STRUCT(def);
+            def.flags = PF_ParamFlag_SUPERVISE;
+            PF_ADD_FLOAT_SLIDERX(
+                name,
+                -4000.0,
+                4000.0,
+                -2000.0,
+                2000.0,
+                0.0,
+                PF_Precision_TENTHS,
+                0,
+                PF_ParamFlag_SUPERVISE,
+                kDiskDepth00 + index);
+        }
+    }
+
+    PF_ArbitraryH default_scene = nullptr;
+    PF_Err error = CreateSceneHandle(
+        in_data,
+        &default_scene,
+        in_data->width,
+        in_data->height);
+    if (error != PF_Err_NONE) {
+        return error;
+    }
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_ARBITRARY2(
+        "Scene Data",
+        0,
+        0,
+        PF_ParamFlag_NONE,
+        PF_PUI_NO_ECW_UI,
+        default_scene,
+        kDiskSceneData,
+        SceneRefcon());
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_TOPIC("Surfaces", kDiskSurfacesStart);
+
+    AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_CANNOT_TIME_VARY;
+    def.ui_flags = PF_PUI_DISABLED;
+    PF_ADD_SLIDER(
+        "Surface Count",
+        1,
+        static_cast<A_long>(kMaximumSurfaces),
+        1,
+        static_cast<A_long>(kMaximumSurfaces),
+        1,
+        kDiskSurfaceCount);
+
+    AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_CANNOT_TIME_VARY | PF_ParamFlag_SUPERVISE;
+    PF_ADD_POPUP(
+        "Selected Surface",
+        static_cast<A_long>(kMaximumSurfaces),
+        1,
+        "Surface 1|Surface 2|Surface 3|Surface 4|Surface 5|Surface 6|Surface 7|Surface 8",
+        kDiskSurfaceSelect);
+
+    PF_ADD_BUTTON(
+        "Create Surface",
+        "Add...",
+        PF_PUI_NONE,
+        PF_ParamFlag_SUPERVISE,
+        kDiskAddSurface);
+    PF_ADD_BUTTON(
+        "Duplicate Selected",
+        "Duplicate",
+        PF_PUI_NONE,
+        PF_ParamFlag_SUPERVISE,
+        kDiskDuplicateSurface);
+    PF_ADD_BUTTON(
+        "Delete Selected",
+        "Delete",
+        PF_PUI_NONE,
+        PF_ParamFlag_SUPERVISE,
+        kDiskDeleteSurface);
+
+    AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_SUPERVISE;
+    PF_ADD_FLOAT_SLIDERX(
+        "Size X",
+        0.001,
+        30000.0,
+        1.0,
+        10000.0,
+        std::max(1.0, static_cast<double>(in_data->width)),
+        PF_Precision_TENTHS,
+        0,
+        PF_ParamFlag_SUPERVISE,
+        kDiskSurfaceSizeX);
+
+    AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_SUPERVISE;
+    PF_ADD_FLOAT_SLIDERX(
+        "Size Y",
+        0.001,
+        30000.0,
+        1.0,
+        10000.0,
+        std::max(1.0, static_cast<double>(in_data->height)),
+        PF_Precision_TENTHS,
+        0,
+        PF_ParamFlag_SUPERVISE,
+        kDiskSurfaceSizeY);
+
+    AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_SUPERVISE;
+    def.param_type = PF_Param_POINT_3D;
+    PF_STRNNCPY(def.PF_DEF_NAME, "Position", sizeof(def.PF_DEF_NAME));
+    def.u.point3d_d.x_value = def.u.point3d_d.x_dephault = 50.0;
+    def.u.point3d_d.y_value = def.u.point3d_d.y_dephault = 50.0;
+    def.u.point3d_d.z_value = def.u.point3d_d.z_dephault = 0.0;
+    def.uu.id = kDiskSurfacePosition;
+    error = PF_ADD_PARAM(in_data, -1, &def);
+    if (error != PF_Err_NONE) {
+        return error;
+    }
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_TOPIC("Rotation Origin", kDiskSurfaceRotationOriginStart);
+
+    AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_SUPERVISE | PF_ParamFlag_CANNOT_INTERP;
+    PF_ADD_POPUP(
+        "Origin Mode",
+        6,
+        static_cast<A_long>(kRotationOriginCenter),
+        "Center|Left Edge|Right Edge|Top Edge|Bottom Edge|Custom",
+        kDiskSurfaceRotationOriginMode);
+
+    const char* origin_names[2] = {"Custom Origin X", "Custom Origin Y"};
+    const A_long origin_disk_ids[2] = {
+        kDiskSurfaceRotationOriginX,
+        kDiskSurfaceRotationOriginY};
+    for (int index = 0; index < 2; ++index) {
+        AEFX_CLR_STRUCT(def);
+        def.flags = PF_ParamFlag_SUPERVISE;
+        PF_ADD_FLOAT_SLIDERX(
+            origin_names[index],
+            -1000.0,
+            1000.0,
+            -200.0,
+            300.0,
+            50.0,
+            PF_Precision_TENTHS,
+            PF_ValueDisplayFlag_PERCENT,
+            PF_ParamFlag_SUPERVISE,
+            origin_disk_ids[index]);
+    }
+
+    AEFX_CLR_STRUCT(def);
+    PF_END_TOPIC(kDiskSurfaceRotationOriginEnd);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_TOPIC("Scale", kDiskSurfaceScaleStart);
+
+    const char* scale_names[3] = {"Scale X", "Scale Y", "Scale Z"};
+    const A_long scale_disk_ids[3] = {
+        kDiskSurfaceScaleX,
+        kDiskSurfaceScaleY,
+        kDiskSurfaceScaleZ};
+    for (int index = 0; index < 3; ++index) {
+        AEFX_CLR_STRUCT(def);
+        def.flags = PF_ParamFlag_SUPERVISE;
+        PF_ADD_FLOAT_SLIDERX(
+            scale_names[index],
+            -1000.0,
+            1000.0,
+            -400.0,
+            400.0,
+            100.0,
+            PF_Precision_TENTHS,
+            PF_ValueDisplayFlag_PERCENT,
+            PF_ParamFlag_SUPERVISE,
+            scale_disk_ids[index]);
+    }
+
+    AEFX_CLR_STRUCT(def);
+    PF_END_TOPIC(kDiskSurfaceScaleEnd);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_TOPIC("Divisions", kDiskSurfaceDivisionsStart);
+
+    const char* divisions_names[2] = {"Divisions X", "Divisions Y"};
+    const A_long divisions_disk_ids[2] = {
+        kDiskSurfaceDivisionsX,
+        kDiskSurfaceDivisionsY};
+    for (int index = 0; index < 2; ++index) {
+        AEFX_CLR_STRUCT(def);
+        def.flags = PF_ParamFlag_SUPERVISE | PF_ParamFlag_CANNOT_TIME_VARY;
+        PF_ADD_SLIDER(
+            divisions_names[index],
+            static_cast<A_long>(kMinimumDivisions),
+            static_cast<A_long>(kMaximumDivisions),
+            static_cast<A_long>(kMinimumDivisions),
+            static_cast<A_long>(kMaximumDivisions),
+            static_cast<A_long>(kDefaultDivisions),
+            divisions_disk_ids[index]);
+    }
+
+    AEFX_CLR_STRUCT(def);
+    PF_END_TOPIC(kDiskSurfaceDivisionsEnd);
+
+    AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_SUPERVISE;
+    PF_ADD_FLOAT_SLIDERX(
+        "Thickness",
+        0.0,
+        4000.0,
+        0.0,
+        1000.0,
+        0.0,
+        PF_Precision_TENTHS,
+        0,
+        PF_ParamFlag_SUPERVISE,
+        kDiskSurfaceThickness);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_TOPIC("Deform", kDiskSurfaceDeformStart);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_FLOAT_SLIDERX(
+        "Bend X",
+        -720.0,
+        720.0,
+        -360.0,
+        360.0,
+        0.0,
+        PF_Precision_TENTHS,
+        0,
+        PF_ParamFlag_SUPERVISE,
+        kDiskSurfaceBendX);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_FLOAT_SLIDERX(
+        "Bend Y",
+        -720.0,
+        720.0,
+        -360.0,
+        360.0,
+        0.0,
+        PF_Precision_TENTHS,
+        0,
+        PF_ParamFlag_SUPERVISE,
+        kDiskSurfaceBendY);
+
+    AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_SUPERVISE | PF_ParamFlag_CANNOT_INTERP;
+    PF_ADD_POPUP(
+        "Roll Edge",
+        4,
+        static_cast<A_long>(kRollEdgeRight),
+        "Right|Left|Bottom|Top",
+        kDiskSurfaceRollEdge);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_FLOAT_SLIDERX(
+        "Roll Angle",
+        -1080.0,
+        1080.0,
+        -720.0,
+        720.0,
+        0.0,
+        PF_Precision_TENTHS,
+        0,
+        PF_ParamFlag_SUPERVISE,
+        kDiskSurfaceRollAngle);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_FLOAT_SLIDERX(
+        "Roll Length",
+        0.0,
+        100.0,
+        0.0,
+        100.0,
+        25.0,
+        PF_Precision_TENTHS,
+        PF_ValueDisplayFlag_PERCENT,
+        PF_ParamFlag_SUPERVISE,
+        kDiskSurfaceRollLength);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_TOPIC("Corner Curl", kDiskSurfaceCornerCurlStart);
+
+    AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_SUPERVISE | PF_ParamFlag_CANNOT_TIME_VARY;
+    PF_ADD_POPUP(
+        "Corner",
+        4,
+        static_cast<A_long>(kCornerTopLeft),
+        "Top Left|Top Right|Bottom Right|Bottom Left",
+        kDiskSurfaceCornerSelect);
+
+    const A_long corner_amount_disk_ids[4] = {
+        kDiskSurfaceCornerAmount,
+        kDiskSurfaceCorner2Amount,
+        kDiskSurfaceCorner3Amount,
+        kDiskSurfaceCorner4Amount};
+    const A_long corner_radius_disk_ids[4] = {
+        kDiskSurfaceCornerRadius,
+        kDiskSurfaceCorner2Radius,
+        kDiskSurfaceCorner3Radius,
+        kDiskSurfaceCorner4Radius};
+    const A_long corner_direction_disk_ids[4] = {
+        kDiskSurfaceCornerDirection,
+        kDiskSurfaceCorner2Direction,
+        kDiskSurfaceCorner3Direction,
+        kDiskSurfaceCorner4Direction};
+    const A_long corner_length_disk_ids[4] = {
+        kDiskSurfaceCornerLength,
+        kDiskSurfaceCorner2Length,
+        kDiskSurfaceCorner3Length,
+        kDiskSurfaceCorner4Length};
+    const char* corner_names[4] = {"TL", "TR", "BR", "BL"};
+    for (int corner = 0; corner < 4; ++corner) {
+        char amount_name[32];
+        char radius_name[32];
+        char direction_name[32];
+        char length_name[32];
+        std::snprintf(
+            amount_name,
+            sizeof(amount_name),
+            "%s Curl Amount",
+            corner_names[corner]);
+        std::snprintf(
+            radius_name,
+            sizeof(radius_name),
+            "%s Curl Radius",
+            corner_names[corner]);
+        std::snprintf(
+            direction_name,
+            sizeof(direction_name),
+            "%s Curl Direction",
+            corner_names[corner]);
+        std::snprintf(
+            length_name,
+            sizeof(length_name),
+            "%s Curl Length",
+            corner_names[corner]);
+        PF_ADD_FLOAT_SLIDERX(
+            amount_name,
+            -100.0,
+            100.0,
+            -100.0,
+            100.0,
+            0.0,
+            PF_Precision_TENTHS,
+            PF_ValueDisplayFlag_PERCENT,
+            PF_ParamFlag_SUPERVISE,
+            corner_amount_disk_ids[corner]);
+        PF_ADD_FLOAT_SLIDERX(
+            radius_name,
+            0.1,
+            100.0,
+            1.0,
+            50.0,
+            15.0,
+            PF_Precision_TENTHS,
+            PF_ValueDisplayFlag_PERCENT,
+            PF_ParamFlag_SUPERVISE,
+            corner_radius_disk_ids[corner]);
+        PF_ADD_FLOAT_SLIDERX(
+            direction_name,
+            0.0,
+            90.0,
+            0.0,
+            90.0,
+            45.0,
+            PF_Precision_TENTHS,
+            0,
+            PF_ParamFlag_SUPERVISE,
+            corner_direction_disk_ids[corner]);
+        PF_ADD_FLOAT_SLIDERX(
+            length_name,
+            0.0,
+            150.0,
+            0.0,
+            100.0,
+            30.0,
+            PF_Precision_TENTHS,
+            PF_ValueDisplayFlag_PERCENT,
+            PF_ParamFlag_SUPERVISE,
+            corner_length_disk_ids[corner]);
+    }
+
+    AEFX_CLR_STRUCT(def);
+    PF_END_TOPIC(kDiskSurfaceCornerCurlEnd);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_TOPIC("Edge Twist", kDiskSurfaceEdgeTwistStart);
+
+    AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_SUPERVISE | PF_ParamFlag_CANNOT_TIME_VARY;
+    PF_ADD_POPUP(
+        "Twist Edge",
+        4,
+        static_cast<A_long>(kTwistEdgeLeft),
+        "Left|Right|Top|Bottom",
+        kDiskSurfaceTwistEdge);
+
+    const A_long twist_angle_disk_ids[4] = {
+        kDiskSurfaceTwistAngle,
+        kDiskSurfaceTwist2Angle,
+        kDiskSurfaceTwist3Angle,
+        kDiskSurfaceTwist4Angle};
+    const A_long twist_falloff_disk_ids[4] = {
+        kDiskSurfaceTwistFalloff,
+        kDiskSurfaceTwist2Falloff,
+        kDiskSurfaceTwist3Falloff,
+        kDiskSurfaceTwist4Falloff};
+    const char* edge_names[4] = {"Left", "Right", "Top", "Bottom"};
+    for (int edge = 0; edge < 4; ++edge) {
+        char angle_name[32];
+        char falloff_name[32];
+        std::snprintf(
+            angle_name,
+            sizeof(angle_name),
+            "%s Twist Angle",
+            edge_names[edge]);
+        std::snprintf(
+            falloff_name,
+            sizeof(falloff_name),
+            "%s Twist Falloff",
+            edge_names[edge]);
+        PF_ADD_FLOAT_SLIDERX(
+            angle_name,
+            -180.0,
+            180.0,
+            -180.0,
+            180.0,
+            0.0,
+            PF_Precision_TENTHS,
+            0,
+            PF_ParamFlag_SUPERVISE,
+            twist_angle_disk_ids[edge]);
+        PF_ADD_FLOAT_SLIDERX(
+            falloff_name,
+            1.0,
+            100.0,
+            1.0,
+            100.0,
+            100.0,
+            PF_Precision_TENTHS,
+            PF_ValueDisplayFlag_PERCENT,
+            PF_ParamFlag_SUPERVISE,
+            twist_falloff_disk_ids[edge]);
+    }
+
+    AEFX_CLR_STRUCT(def);
+    PF_END_TOPIC(kDiskSurfaceEdgeTwistEnd);
+
+    AEFX_CLR_STRUCT(def);
+    PF_END_TOPIC(kDiskSurfaceDeformEnd);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_TOPIC("Material", kDiskSurfaceMaterialStart);
+
+    AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_SUPERVISE | PF_ParamFlag_CANNOT_TIME_VARY;
+    PF_ADD_POPUP(
+        "Front Source",
+        static_cast<A_long>(kMaximumSurfaces),
+        1,
+        "Slot 1|Slot 2|Slot 3|Slot 4|Slot 5|Slot 6|Slot 7|Slot 8",
+        kDiskSurfaceSourceSlot);
+
+    AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_SUPERVISE | PF_ParamFlag_CANNOT_TIME_VARY;
+    PF_ADD_POPUP(
+        "Back Source",
+        static_cast<A_long>(kMaximumSurfaces + 1),
+        1,
+        "Same as Front|Slot 1|Slot 2|Slot 3|Slot 4|Slot 5|Slot 6|Slot 7|Slot 8",
+        kDiskSurfaceBackSourceSlot);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_TOPIC("Source Layers", kDiskSurfaceSourceLayersStart);
+
+    const A_long source_layer_disk_ids[kMaximumSurfaces] = {
+        kDiskSurfaceSourceLayer1,
+        kDiskSurfaceSourceLayer2,
+        kDiskSurfaceSourceLayer3,
+        kDiskSurfaceSourceLayer4,
+        kDiskSurfaceSourceLayer5,
+        kDiskSurfaceSourceLayer6,
+        kDiskSurfaceSourceLayer7,
+        kDiskSurfaceSourceLayer8};
+    for (std::uint32_t index = 0; index < kMaximumSurfaces; ++index) {
+        char name[32];
+        std::snprintf(name, sizeof(name), "Slot %u Layer", index + 1);
+        AEFX_CLR_STRUCT(def);
+        def.flags = PF_ParamFlag_CANNOT_TIME_VARY;
+        PF_ADD_LAYER(
+            name,
+            PF_LayerDefault_MYSELF,
+            source_layer_disk_ids[index]);
+    }
+
+    AEFX_CLR_STRUCT(def);
+    PF_END_TOPIC(kDiskSurfaceSourceLayersEnd);
+
+    AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_SUPERVISE | PF_ParamFlag_CANNOT_INTERP;
+    PF_ADD_POPUP(
+        "Image Size",
+        3,
+        static_cast<A_long>(kImageSizeStretch),
+        "Stretch|Fill|Fit",
+        kDiskSurfaceImageSize);
+
+    AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_SUPERVISE | PF_ParamFlag_CANNOT_INTERP;
+    PF_ADD_POPUP(
+        "Image Border",
+        4,
+        static_cast<A_long>(kImageBorderClamp),
+        "Clamp|Repeat|Mirror|Transparent",
+        kDiskSurfaceImageBorder);
+
+    AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_SUPERVISE;
+    PF_ADD_FLOAT_SLIDERX(
+        "Opacity",
+        0.0,
+        100.0,
+        0.0,
+        100.0,
+        100.0,
+        PF_Precision_TENTHS,
+        PF_ValueDisplayFlag_PERCENT,
+        PF_ParamFlag_SUPERVISE,
+        kDiskSurfaceOpacity);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_FLOAT_SLIDERX(
+        "Diffuse",
+        0.0,
+        200.0,
+        0.0,
+        200.0,
+        100.0,
+        PF_Precision_TENTHS,
+        PF_ValueDisplayFlag_PERCENT,
+        PF_ParamFlag_SUPERVISE,
+        kDiskSurfaceDiffuse);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_FLOAT_SLIDERX(
+        "Specular",
+        0.0,
+        200.0,
+        0.0,
+        200.0,
+        50.0,
+        PF_Precision_TENTHS,
+        PF_ValueDisplayFlag_PERCENT,
+        PF_ParamFlag_SUPERVISE,
+        kDiskSurfaceSpecular);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_FLOAT_SLIDERX(
+        "Shininess",
+        1.0,
+        256.0,
+        1.0,
+        128.0,
+        32.0,
+        PF_Precision_TENTHS,
+        0,
+        PF_ParamFlag_SUPERVISE,
+        kDiskSurfaceShininess);
+
+    AEFX_CLR_STRUCT(def);
+    PF_END_TOPIC(kDiskSurfaceMaterialEnd);
+
+    for (std::uint32_t bank = 1; bank < kMaximumSurfaces; ++bank) {
+        const PF_Err bank_error = AddSurfaceAnimationBankParams(in_data, bank);
+        if (bank_error != PF_Err_NONE) {
+            return bank_error;
+        }
+    }
+
+    AEFX_CLR_STRUCT(def);
+    PF_END_TOPIC(kDiskSurfacesEnd);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_TOPIC("Camera", kDiskCameraStart);
+
+    const char* camera_offset_names[3] = {
+        "Camera Offset X",
+        "Camera Offset Y",
+        "Camera Offset Z"};
+    const A_long camera_offset_disk_ids[3] = {
+        kDiskCameraOffsetX,
+        kDiskCameraOffsetY,
+        kDiskCameraOffsetZ};
+    for (int index = 0; index < 3; ++index) {
+        AEFX_CLR_STRUCT(def);
+        PF_ADD_FLOAT_SLIDERX(
+            camera_offset_names[index],
+            -10000.0,
+            10000.0,
+            -4000.0,
+            4000.0,
+            0.0,
+            PF_Precision_TENTHS,
+            0,
+            PF_ParamFlag_NONE,
+            camera_offset_disk_ids[index]);
+    }
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_ANGLE("Camera Rotation X", 0.0, kDiskCameraRotationX);
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_ANGLE("Camera Rotation Y", 0.0, kDiskCameraRotationY);
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_ANGLE("Camera Rotation Z", 0.0, kDiskCameraRotationZ);
+
+    AEFX_CLR_STRUCT(def);
+    PF_END_TOPIC(kDiskCameraEnd);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_TOPIC("Lights", kDiskLightsStart);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_CHECKBOX(
+        "Lighting",
+        "Enable directional light",
+        FALSE,
+        0,
+        kDiskLightingEnabled);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_ANGLE("Light Rotation X", -35.0, kDiskLightRotationX);
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_ANGLE("Light Rotation Y", 25.0, kDiskLightRotationY);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_FLOAT_SLIDERX(
+        "Light Intensity",
+        0.0,
+        400.0,
+        0.0,
+        200.0,
+        100.0,
+        PF_Precision_TENTHS,
+        PF_ValueDisplayFlag_PERCENT,
+        PF_ParamFlag_NONE,
+        kDiskLightIntensity);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_FLOAT_SLIDERX(
+        "Ambient Light",
+        0.0,
+        100.0,
+        0.0,
+        100.0,
+        20.0,
+        PF_Precision_TENTHS,
+        PF_ValueDisplayFlag_PERCENT,
+        PF_ParamFlag_NONE,
+        kDiskAmbientLight);
+
+    AEFX_CLR_STRUCT(def);
+    PF_END_TOPIC(kDiskLightsEnd);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_TOPIC("Render Settings", kDiskRenderSettingsStart);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_POPUP(
+        "Texture Filter",
+        2,
+        kTextureFilterBilinear,
+        "Nearest|Bilinear",
+        kDiskTextureFilter);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_CHECKBOX(
+        "Backface Culling",
+        "Hide back-facing polygons",
+        FALSE,
+        0,
+        kDiskBackfaceCulling);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_POPUP(
+        "Output Bounds",
+        3,
+        kOutputBoundsAuto,
+        "Source|Auto|Fixed Padding",
+        kDiskOutputBoundsMode);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_SLIDER(
+        "Padding X",
+        0,
+        14000,
+        0,
+        4000,
+        kDefaultOutputPadding,
+        kDiskOutputPaddingX);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_SLIDER(
+        "Padding Y",
+        0,
+        14000,
+        0,
+        4000,
+        kDefaultOutputPadding,
+        kDiskOutputPaddingY);
+
+    AEFX_CLR_STRUCT(def);
+    PF_END_TOPIC(kDiskRenderSettingsEnd);
+
+    PF_CustomUIInfo custom_ui;
+    AEFX_CLR_STRUCT(custom_ui);
+    custom_ui.events = PF_CustomEFlag_LAYER | PF_CustomEFlag_COMP;
+    custom_ui.comp_ui_width = 0;
+    custom_ui.comp_ui_height = 0;
+    custom_ui.comp_ui_alignment = PF_UIAlignment_NONE;
+    custom_ui.layer_ui_width = 0;
+    custom_ui.layer_ui_height = 0;
+    custom_ui.layer_ui_alignment = PF_UIAlignment_NONE;
+    custom_ui.preview_ui_width = 0;
+    custom_ui.preview_ui_height = 0;
+    custom_ui.preview_ui_alignment = PF_UIAlignment_NONE;
+    const PF_Err custom_ui_error =
+        in_data->inter.register_ui(in_data->effect_ref, &custom_ui);
+    if (custom_ui_error != PF_Err_NONE) {
+        return custom_ui_error;
+    }
+
+    out_data->num_params = kParamCount;
+    return PF_Err_NONE;
+}
+
+PF_Err Render(PF_InData* in_data, PF_ParamDef* params[], PF_LayerDef* output) {
+    if (PF_WORLD_IS_DEEP(output)) {
+        return RenderSurface<PF_Pixel16>(in_data, params, output);
+    }
+    return RenderSurface<PF_Pixel8>(in_data, params, output);
+}
+
+}  // namespace
+
+extern "C" DllExport PF_Err PluginDataEntryFunction2(
+    PF_PluginDataPtr in_ptr,
+    PF_PluginDataCB2 callback,
+    SPBasicSuite*,
+    const char*,
+    const char*) {
+    PF_Err result = PF_Err_INVALID_CALLBACK;
+    PF_REGISTER_EFFECT_EXT2(
+        in_ptr,
+        callback,
+        "SurfaceLab",
+        "XPK SurfaceLab",
+        "SurfaceLab",
+        AE_RESERVED_INFO,
+        "EffectMain",
+        "https://example.com");
+    return result;
+}
+
+PF_Err EffectMain(
+    PF_Cmd cmd,
+    PF_InData* in_data,
+    PF_OutData* out_data,
+    PF_ParamDef* params[],
+    PF_LayerDef* output,
+    void* extra) {
+    try {
+        switch (cmd) {
+            case PF_Cmd_ABOUT:
+                return About(out_data);
+            case PF_Cmd_GLOBAL_SETUP:
+                return GlobalSetup(in_data, out_data);
+            case PF_Cmd_GLOBAL_SETDOWN:
+                return GlobalSetdown(in_data);
+            case PF_Cmd_PARAMS_SETUP:
+                return ParamsSetup(in_data, out_data);
+            case PF_Cmd_FRAME_SETUP:
+                return FrameSetup(in_data, out_data, params);
+            case PF_Cmd_RENDER:
+                return Render(in_data, params, output);
+            case PF_Cmd_USER_CHANGED_PARAM:
+                return UserChangedParamV15(
+                    in_data,
+                    params,
+                    static_cast<const PF_UserChangedParamExtra*>(extra));
+            case PF_Cmd_UPDATE_PARAMS_UI:
+                return UpdateParameterUi(in_data, out_data, params);
+            case PF_Cmd_EVENT:
+                return HandleSurfaceGizmoEvent(
+                    in_data,
+                    out_data,
+                    params,
+                    static_cast<PF_EventExtra*>(extra));
+            case PF_Cmd_ARBITRARY_CALLBACK:
+                return HandleArbitrary(
+                    in_data,
+                    static_cast<PF_ArbParamsExtra*>(extra));
+            default:
+                return PF_Err_NONE;
+        }
+    } catch (PF_Err error) {
+        return error;
+    } catch (...) {
+        return PF_Err_INTERNAL_STRUCT_DAMAGED;
+    }
+}
