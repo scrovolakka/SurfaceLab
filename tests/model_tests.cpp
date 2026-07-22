@@ -101,6 +101,101 @@ void TestMigrateV1PreservesGeometryAndValidates() {
     CHECK(dst.surfaces[0].animation_bank != dst.surfaces[1].animation_bank);
 }
 
+// Fill in the middle of the migration chain so every version has a direct
+// regression test. Each seeds a version-characteristic field and confirms the
+// migration carries it into the current model and yields a valid single-surface
+// scene.
+void TestMigrateV2PreservesScale() {
+    const char* test_name = "MigrateV2";
+    SceneDataV2 src{};
+    SeedSceneHeader(src, 2, 1);
+    SeedSurface(src.surfaces[0], 1);
+    src.surfaces[0].scale_x = 80.0F;
+    SceneData dst{};
+    MigrateSceneV2(src, dst);
+    CHECK(dst.schema_version == kSceneSchemaVersion);
+    CHECK(dst.surfaces[0].scale_x == 80.0F);
+    CHECK(IsValidScene(dst));
+}
+
+void TestMigrateV3PreservesDivisions() {
+    const char* test_name = "MigrateV3";
+    SceneDataV3 src{};
+    SeedSceneHeader(src, 3, 1);
+    SeedSurface(src.surfaces[0], 1);
+    src.surfaces[0].divisions_x = 20;
+    src.surfaces[0].divisions_y = 24;
+    SceneData dst{};
+    MigrateSceneV3(src, dst);
+    CHECK(dst.surfaces[0].divisions_x == 20);
+    CHECK(dst.surfaces[0].divisions_y == 24);
+    CHECK(IsValidScene(dst));
+}
+
+void TestMigrateV4PreservesOpacity() {
+    const char* test_name = "MigrateV4";
+    SceneDataV4 src{};
+    SeedSceneHeader(src, 4, 1);
+    SeedSurface(src.surfaces[0], 1);
+    src.surfaces[0].opacity = 55.0F;
+    src.surfaces[0].source_slot = 2;
+    SceneData dst{};
+    MigrateSceneV4(src, dst);
+    CHECK(dst.surfaces[0].opacity == 55.0F);
+    CHECK(dst.surfaces[0].source_slot == 2);
+    CHECK(IsValidScene(dst));
+}
+
+void TestMigrateV5PreservesThickness() {
+    const char* test_name = "MigrateV5";
+    SceneDataV5 src{};
+    SeedSceneHeader(src, 5, 1);
+    SeedSurface(src.surfaces[0], 1);
+    src.surfaces[0].thickness = 12.0F;
+    SceneData dst{};
+    MigrateSceneV5(src, dst);
+    CHECK(dst.surfaces[0].thickness == 12.0F);
+    CHECK(IsValidScene(dst));
+}
+
+void TestMigrateV6PreservesMaterial() {
+    const char* test_name = "MigrateV6";
+    SceneDataV6 src{};
+    SeedSceneHeader(src, 6, 1);
+    SeedSurface(src.surfaces[0], 1);
+    src.surfaces[0].shininess = 8.0F;
+    SceneData dst{};
+    MigrateSceneV6(src, dst);
+    CHECK(dst.surfaces[0].shininess == 8.0F);
+    CHECK(IsValidScene(dst));
+}
+
+void TestMigrateV7PreservesDeform() {
+    const char* test_name = "MigrateV7";
+    SceneDataV7 src{};
+    SeedSceneHeader(src, 7, 1);
+    SeedSurface(src.surfaces[0], 1);
+    src.surfaces[0].bend_x = 30.0F;
+    src.surfaces[0].roll_angle = 20.0F;
+    SceneData dst{};
+    MigrateSceneV7(src, dst);
+    CHECK(dst.surfaces[0].bend_x == 30.0F);
+    CHECK(dst.surfaces[0].roll_angle == 20.0F);
+    CHECK(IsValidScene(dst));
+}
+
+void TestMigrateV8PreservesCornerCurls() {
+    const char* test_name = "MigrateV8";
+    SceneDataV8 src{};
+    SeedSceneHeader(src, 8, 1);
+    SeedSurface(src.surfaces[0], 1);
+    src.surfaces[0].corner_curls[0].amount = 25.0F;
+    SceneData dst{};
+    MigrateSceneV8(src, dst);
+    CHECK(dst.surfaces[0].corner_curls[0].amount == 25.0F);
+    CHECK(IsValidScene(dst));
+}
+
 void TestMigrateV9PreservesDeformStreams() {
     const char* test_name = "MigrateV9";
     SceneDataV9 src{};
@@ -226,6 +321,13 @@ int main() {
     std::printf("Running SurfaceLab model tests...\n");
     TestInitializeScene();
     TestMigrateV1PreservesGeometryAndValidates();
+    TestMigrateV2PreservesScale();
+    TestMigrateV3PreservesDivisions();
+    TestMigrateV4PreservesOpacity();
+    TestMigrateV5PreservesThickness();
+    TestMigrateV6PreservesMaterial();
+    TestMigrateV7PreservesDeform();
+    TestMigrateV8PreservesCornerCurls();
     TestMigrateV9PreservesDeformStreams();
     TestMigrateV12PreservesBackSlot();
     TestMigrateV10AndV11Layout();
