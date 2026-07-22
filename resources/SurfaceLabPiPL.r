@@ -22,10 +22,10 @@ resource 'PiPL' (16000) {
 #endif
         AE_PiPL_Version { 2, 0 },
         AE_Effect_Spec_Version { PF_PLUG_IN_VERSION, PF_PLUG_IN_SUBVERS },
-        AE_Effect_Version { 524289 }, /* PF_VERSION(0, 16, 0, PF_Stage_DEVELOP, 1) */
+        AE_Effect_Version { 505857 }, /* PF_VERSION(0, 15, 7, PF_Stage_DEVELOP, 1) */
         AE_Effect_Info_Flags { 0 },
         AE_Effect_Global_OutFlags { 0x06008200 },
-        AE_Effect_Global_OutFlags_2 { 0x08000000 },
+        AE_Effect_Global_OutFlags_2 { 0x00000006 },
         AE_Reserved_Info { 0 },
         AE_Effect_Match_Name { "XPK SurfaceLab" },
         AE_Effect_Support_URL { "https://example.com" }

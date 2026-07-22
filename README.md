@@ -2,7 +2,8 @@
 
 Independent After Effects native effect prototype for editable bicubic surfaces.
 
-Version 0.15.0 gives every surface its own After Effects animation bank. Up to
+Version 0.15.7 adds optional After Effects active-camera and composition-light
+linking while preserving the existing internal camera and light controls. Up to
 eight pages can now keep and render independent point, depth, transform,
 deformation, source, image, and material streams. Selecting a surface changes
 which bank is shown without changing the other pages' animation. All four
@@ -30,6 +31,9 @@ The current milestone implements a CPU-rendered 4 x 4 bicubic Bezier surface:
 - per-surface normal-based thickness with textured front, back, and side walls
 - camera XYZ offset and rotation controls
 - directional lighting with ambient, diffuse, specular, and shininess controls
+- switchable Internal or After Effects Active Camera projection
+- switchable Internal or After Effects Comp Lights shading
+- AE ambient, parallel, point, and spot lights with color, intensity, and spot cone
 - nearest and bilinear texture filtering plus optional backface culling
 - whole-surface Bend X/Y and edge-selectable partial Roll deformation
 - simultaneous Top Left, Top Right, Bottom Right, and Bottom Left corner curls
@@ -37,17 +41,30 @@ The current milestone implements a CPU-rendered 4 x 4 bicubic Bezier surface:
 - simultaneous four-edge Twist with per-edge Angle and Falloff controls
 - independent AE animation streams for all four Corner Curl and Edge Twist targets
 - independent AE animation banks for up to eight simultaneously animated surfaces
+- projected 4 x 4 surface cage and outline in the Composition panel
+- direct dragging of all 16 surface control points
+- drag the blue axis endpoint beside any control point to edit its Depth directly
+- Option-drag (Alt-drag) on a control point remains available as a shortcut
+- direct whole-surface dragging from the rendered polygon area
+- direct custom Rotation Origin dragging from an on-surface pivot handle
+- direct local XYZ Scale dragging from red, green, and blue square handles
+- direct XYZ Rotation dragging from the matching outer diamond handles
+- Interaction Mode filtering for All, Surface, Control Points, and Deform
+- Gizmo Tool filtering for All, Position, Rotation, and Scale
+- four pink Curl handle pairs: tip Amount/Radius and fold Length/Direction
+- one yellow Roll handle pair on the selected edge: Angle and Length
+- four purple Twist handle pairs: per-edge Angle and Falloff
+- perspective-, rotation-, and deformation-aware screen-to-parameter dragging
 - Source, Auto, and Fixed Padding output-bounds modes
 - automatic projected-mesh bounds including thickness and a configurable margin
 - project-save, copy/paste, and Undo/Redo-ready arbitrary scene data
 - 8-bpc and 16-bpc rendering
-- Multi-Frame Rendering-safe render state
+- serialized render execution while AE camera/light suites are in use
 - Apple Silicon plug-in bundle
 
-It does not yet implement custom composition UI for depth editing,
-After Effects camera integration,
-layer attachments, Metal, custom gizmos, or
-custom composition-panel gizmos. In this milestone, the selected
+It does not yet implement layer attachments or Metal. The composition-panel
+surface gizmo continues to use SurfaceLab's internal camera in this milestone;
+the After Effects camera source controls the rendered result. The selected
 surface uses the currently visible animation bank; unselected surfaces continue
 to evaluate their own hidden banks. Scene data from the 0.3 through 0.14.1 series
 is migrated automatically. The previously selected surface keeps the original
