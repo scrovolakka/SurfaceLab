@@ -20,6 +20,7 @@ endif()
 add_library(SurfaceLab MODULE
     src/SurfaceLab.cpp
     src/SurfaceLab.h
+    src/SurfaceLabModel.h
     src/SurfaceLabInternal.h
     "${AE_EXAMPLES_ROOT}/Util/AEFX_SuiteHelper.c"
     "${AE_EXAMPLES_ROOT}/Util/AEGP_SuiteHandler.cpp"
