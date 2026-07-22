@@ -27,8 +27,11 @@ endif()
 
 add_library(SurfaceLab MODULE
     src/SurfaceLab.cpp
+    src/SurfaceLabModel.cpp
+    src/SurfaceLabGeometry.cpp
     src/SurfaceLab.h
     src/SurfaceLabModel.h
+    src/SurfaceLabGeometry.h
     src/SurfaceLabInternal.h
     "${AE_EXAMPLES_ROOT}/Util/AEFX_SuiteHelper.c"
     "${AE_EXAMPLES_ROOT}/Util/AEGP_SuiteHandler.cpp"
@@ -98,6 +101,7 @@ if(SURFACELAB_BUILD_TESTS)
     enable_testing()
     add_executable(surfacelab_model_tests
         src/SurfaceLabModel.cpp
+        src/SurfaceLabGeometry.cpp
         tests/model_tests.cpp)
     target_include_directories(surfacelab_model_tests PRIVATE src)
     target_compile_features(surfacelab_model_tests PRIVATE cxx_std_17)

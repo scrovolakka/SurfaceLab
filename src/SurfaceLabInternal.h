@@ -10,6 +10,7 @@
 
 #include "SurfaceLab.h"
 #include "SurfaceLabModel.h"
+#include "SurfaceLabGeometry.h"
 
 #include <algorithm>
 #include <array>

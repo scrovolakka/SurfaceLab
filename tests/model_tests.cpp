@@ -9,7 +9,10 @@
 // AE-observable logic: on-disk migration and scene validation.
 
 #include "SurfaceLabModel.h"
+#include "SurfaceLabGeometry.h"
 
+#include <array>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 
@@ -151,6 +154,62 @@ void TestMigrateV10AndV11Layout() {
     CHECK(IsValidScene(via_v10));
 }
 
+bool AllFinite(const Point3& p) {
+    return std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z);
+}
+
+bool NearlyEqual(double a, double b, double eps = 1e-6) {
+    return std::fabs(a - b) <= eps;
+}
+
+// EvaluatePatch must interpolate the bicubic Bezier cage endpoints exactly:
+// (u,v)=(0,0) -> control point 0, (1,1) -> control point 15.
+void TestEvaluatePatchCorners() {
+    const char* test_name = "EvaluatePatchCorners";
+    std::array<Point3, 16> pts{};
+    for (int i = 0; i < 16; ++i) {
+        pts[i] = Point3{static_cast<double>(i), static_cast<double>(2 * i), 0.0};
+    }
+    const Point3 origin = EvaluatePatch(pts, 0.0, 0.0);
+    const Point3 far = EvaluatePatch(pts, 1.0, 1.0);
+    CHECK(NearlyEqual(origin.x, pts[0].x) && NearlyEqual(origin.y, pts[0].y));
+    CHECK(NearlyEqual(far.x, pts[15].x) && NearlyEqual(far.y, pts[15].y));
+    CHECK(AllFinite(EvaluatePatch(pts, 0.5, 0.5)));
+}
+
+// A default surface carries no deformation (zero bend/roll/curl/twist amounts),
+// so ApplySurfaceDeform must leave the sample point unchanged: the zero-input
+// contract the deformation math should always honor.
+void TestDeformIdentityWhenNoDeform() {
+    const char* test_name = "DeformIdentity";
+    SurfaceData surface{};
+    InitializeFlatSurface(surface, 1, 200.0, 100.0, false);
+    Point3 point{50.0, 25.0, 0.0};
+    const Point3 original = point;
+    ApplySurfaceDeform(point, surface, 0.5, 0.5, 100.0, 50.0, 0.0, 200.0, 100.0);
+    CHECK(NearlyEqual(point.x, original.x));
+    CHECK(NearlyEqual(point.y, original.y));
+    CHECK(NearlyEqual(point.z, original.z));
+}
+
+// Under an extreme bend the result must still be finite (no NaN/Inf leaking into
+// the rasterizer). Guards the near-degenerate-angle behavior of the arc math.
+void TestDeformStaysFiniteUnderExtremeBend() {
+    const char* test_name = "DeformFinite";
+    SurfaceData surface{};
+    InitializeFlatSurface(surface, 1, 200.0, 100.0, false);
+    surface.bend_x = 180.0F;
+    surface.bend_y = -180.0F;
+    surface.roll_angle = 90.0F;
+    for (double u = 0.0; u <= 1.0; u += 0.25) {
+        for (double v = 0.0; v <= 1.0; v += 0.25) {
+            Point3 point{u * 200.0, v * 100.0, 0.0};
+            ApplySurfaceDeform(point, surface, u, v, 100.0, 50.0, 0.0, 200.0, 100.0);
+            CHECK(AllFinite(point));
+        }
+    }
+}
+
 void TestValidatorRejectsDuplicateBanks() {
     const char* test_name = "ValidatorDuplicateBanks";
     SceneData scene{};
@@ -170,6 +229,9 @@ int main() {
     TestMigrateV9PreservesDeformStreams();
     TestMigrateV12PreservesBackSlot();
     TestMigrateV10AndV11Layout();
+    TestEvaluatePatchCorners();
+    TestDeformIdentityWhenNoDeform();
+    TestDeformStaysFiniteUnderExtremeBend();
     TestValidatorRejectsDuplicateBanks();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
