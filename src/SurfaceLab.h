@@ -11,8 +11,8 @@
 #include "Param_Utils.h"
 
 constexpr A_long kMajorVersion = 0;
-constexpr A_long kMinorVersion = 16;
-constexpr A_long kBugVersion = 0;
+constexpr A_long kMinorVersion = 15;
+constexpr A_long kBugVersion = 7;
 constexpr A_long kBuildVersion = 1;
 constexpr PF_ParamIndex kSurfaceAnimationPropertyCount = 84;
 constexpr PF_ParamIndex kSurfaceAnimationBankStride =
@@ -23,6 +23,8 @@ enum ParamIndex {
     kParamInput = 0,
     kParamTessellation,
     kParamWireframe,
+    kParamGizmoInteractionMode,
+    kParamGizmoTool,
     kParamPoint00,
     kParamPoint01,
     kParamPoint02,
@@ -147,6 +149,7 @@ enum ParamIndex {
         kParamSurfaceAnimationBanksStart +
         kAdditionalSurfaceAnimationBanks * kSurfaceAnimationBankStride,
     kParamCameraStart,
+    kParamCameraSource,
     kParamCameraOffsetX,
     kParamCameraOffsetY,
     kParamCameraOffsetZ,
@@ -155,6 +158,7 @@ enum ParamIndex {
     kParamCameraRotationZ,
     kParamCameraEnd,
     kParamLightsStart,
+    kParamLightSource,
     kParamLightingEnabled,
     kParamLightRotationX,
     kParamLightRotationY,
@@ -285,7 +289,11 @@ enum ParamDiskId {
     kDiskSurfaceTwist3Falloff,
     kDiskSurfaceTwist4Angle,
     kDiskSurfaceTwist4Falloff,
-    kDiskSurfaceBackSourceSlot
+    kDiskSurfaceBackSourceSlot,
+    kDiskGizmoInteractionMode,
+    kDiskGizmoTool,
+    kDiskCameraSource,
+    kDiskLightSource
 };
 
 extern "C" {

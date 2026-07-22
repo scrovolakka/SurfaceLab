@@ -71,6 +71,19 @@ constexpr std::uint32_t kRotationOriginRightEdge = 3;
 constexpr std::uint32_t kRotationOriginTopEdge = 4;
 constexpr std::uint32_t kRotationOriginBottomEdge = 5;
 constexpr std::uint32_t kRotationOriginCustom = 6;
+constexpr A_long kGizmoInteractionAll = 1;
+constexpr A_long kGizmoInteractionSurface = 2;
+constexpr A_long kGizmoInteractionControlPoints = 3;
+constexpr A_long kGizmoInteractionDeform = 4;
+constexpr A_long kGizmoToolAll = 1;
+constexpr A_long kGizmoToolPosition = 2;
+constexpr A_long kGizmoToolRotation = 3;
+constexpr A_long kGizmoToolScale = 4;
+constexpr A_long kCameraSourceInternal = 1;
+constexpr A_long kCameraSourceAfterEffects = 2;
+constexpr A_long kLightSourceInternal = 1;
+constexpr A_long kLightSourceAfterEffects = 2;
+constexpr std::size_t kMaximumRenderLights = 8;
 
 constexpr std::array<PF_ParamIndex, 4> kCornerAmountParams = {
     kParamSurfaceCornerAmount,
@@ -795,6 +808,9 @@ struct Vertex {
 
 struct CameraState {
     Point3 position{};
+    Point3 right{1.0, 0.0, 0.0};
+    Point3 down{0.0, 1.0, 0.0};
+    Point3 forward{0.0, 0.0, 1.0};
     double rotation_x{};
     double rotation_y{};
     double rotation_z{};
@@ -804,6 +820,7 @@ struct CameraState {
     double output_offset_x{};
     double output_offset_y{};
     bool perspective{};
+    bool use_basis{};
 };
 
 struct Bounds2D {
@@ -813,11 +830,28 @@ struct Bounds2D {
     double maximum_y{};
 };
 
-struct LightingState {
+enum class RenderLightType {
+    Directional,
+    Point,
+    Spot
+};
+
+struct RenderLight {
+    RenderLightType type{RenderLightType::Directional};
+    Point3 position{};
     Point3 direction{0.0, 0.0, -1.0};
-    Point3 camera_position{};
+    Point3 forward{0.0, 0.0, 1.0};
+    Point3 color{1.0, 1.0, 1.0};
     double intensity{1.0};
-    double ambient{0.2};
+    double cone_angle{90.0};
+    double cone_feather{};
+};
+
+struct LightingState {
+    std::array<RenderLight, kMaximumRenderLights> lights{};
+    std::size_t light_count{};
+    Point3 camera_position{};
+    Point3 ambient{0.2, 0.2, 0.2};
     bool enabled{};
     bool backface_culling{};
     A_long texture_filter{kTextureFilterBilinear};
@@ -2363,11 +2397,19 @@ Vertex ProjectVertex(
         point.x - camera.position.x,
         point.y - camera.position.y,
         point.z - camera.position.z};
-    camera_point = InverseRotateVector(
-        camera_point,
-        camera.rotation_x,
-        camera.rotation_y,
-        camera.rotation_z);
+    if (camera.use_basis) {
+        const Point3 delta = camera_point;
+        camera_point = {
+            Dot(delta, camera.right),
+            Dot(delta, camera.down),
+            Dot(delta, camera.forward)};
+    } else {
+        camera_point = InverseRotateVector(
+            camera_point,
+            camera.rotation_x,
+            camera.rotation_y,
+            camera.rotation_z);
+    }
     const double camera_depth = camera_point.z;
     Vertex vertex;
     vertex.u = u;
@@ -2491,35 +2533,90 @@ Pixel ApplyLighting(
         lighting.camera_position.x - world_position.x,
         lighting.camera_position.y - world_position.y,
         lighting.camera_position.z - world_position.z});
-    const double diffuse_term = std::max(0.0, Dot(normal, lighting.direction));
-    const Point3 half_vector = Normalize({
-        lighting.direction.x + view_direction.x,
-        lighting.direction.y + view_direction.y,
-        lighting.direction.z + view_direction.z});
-    const double specular_term = diffuse_term > 0.0
-                                     ? std::pow(
-                                           std::max(0.0, Dot(normal, half_vector)),
-                                           std::max(1.0, static_cast<double>(surface.shininess)))
-                                     : 0.0;
-    const double diffuse_factor =
-        lighting.ambient +
-        lighting.intensity * diffuse_term *
-            static_cast<double>(surface.diffuse) / 100.0;
-    const double specular_factor =
-        lighting.intensity * specular_term *
+    Point3 diffuse_light = lighting.ambient;
+    Point3 specular_light{};
+    for (std::size_t index = 0; index < lighting.light_count; ++index) {
+        const RenderLight& light = lighting.lights[index];
+        Point3 light_direction = light.direction;
+        double spot_factor = 1.0;
+        if (light.type != RenderLightType::Directional) {
+            light_direction = Normalize({
+                light.position.x - world_position.x,
+                light.position.y - world_position.y,
+                light.position.z - world_position.z});
+            if (light.type == RenderLightType::Spot) {
+                const Point3 from_light{-light_direction.x,
+                                        -light_direction.y,
+                                        -light_direction.z};
+                const double half_angle = std::clamp(
+                    light.cone_angle * 0.5,
+                    0.1,
+                    179.0) * 3.14159265358979323846 / 180.0;
+                const double outer_cosine = std::cos(half_angle);
+                const double feather = std::clamp(
+                    light.cone_feather / 100.0,
+                    0.0,
+                    1.0);
+                const double inner_angle = half_angle * (1.0 - feather);
+                const double inner_cosine = std::cos(inner_angle);
+                const double cone_cosine = Dot(light.forward, from_light);
+                if (cone_cosine <= outer_cosine) {
+                    spot_factor = 0.0;
+                } else if (cone_cosine < inner_cosine) {
+                    const double range = std::max(
+                        1.0e-6,
+                        inner_cosine - outer_cosine);
+                    const double value = std::clamp(
+                        (cone_cosine - outer_cosine) / range,
+                        0.0,
+                        1.0);
+                    spot_factor = value * value * (3.0 - 2.0 * value);
+                }
+            }
+        }
+        const double diffuse_term =
+            std::max(0.0, Dot(normal, light_direction)) * spot_factor;
+        if (diffuse_term <= 0.0) {
+            continue;
+        }
+        const Point3 half_vector = Normalize({
+            light_direction.x + view_direction.x,
+            light_direction.y + view_direction.y,
+            light_direction.z + view_direction.z});
+        const double specular_term =
+            std::pow(
+                std::max(0.0, Dot(normal, half_vector)),
+                std::max(1.0, static_cast<double>(surface.shininess))) *
+            spot_factor;
+        const double diffuse_strength = light.intensity * diffuse_term;
+        const double specular_strength = light.intensity * specular_term;
+        diffuse_light.x += light.color.x * diffuse_strength;
+        diffuse_light.y += light.color.y * diffuse_strength;
+        diffuse_light.z += light.color.z * diffuse_strength;
+        specular_light.x += light.color.x * specular_strength;
+        specular_light.y += light.color.y * specular_strength;
+        specular_light.z += light.color.z * specular_strength;
+    }
+    const double diffuse_coefficient =
+        static_cast<double>(surface.diffuse) / 100.0;
+    const double specular_coefficient =
         static_cast<double>(surface.specular) / 100.0;
     const double alpha = static_cast<double>(pixel.alpha);
-    const auto shade = [&](auto channel) {
-        const double value = static_cast<double>(channel) * diffuse_factor +
-                             alpha * specular_factor;
+    const auto shade = [&](auto channel, double diffuse, double specular) {
+        const double value =
+            static_cast<double>(channel) * diffuse * diffuse_coefficient +
+            alpha * specular * specular_coefficient;
         const double maximum = std::is_same_v<Pixel, PF_Pixel16>
                                    ? static_cast<double>(PF_MAX_CHAN16)
                                    : static_cast<double>(PF_MAX_CHAN8);
         return std::lround(std::clamp(value, 0.0, maximum));
     };
-    pixel.red = static_cast<decltype(pixel.red)>(shade(pixel.red));
-    pixel.green = static_cast<decltype(pixel.green)>(shade(pixel.green));
-    pixel.blue = static_cast<decltype(pixel.blue)>(shade(pixel.blue));
+    pixel.red = static_cast<decltype(pixel.red)>(
+        shade(pixel.red, diffuse_light.x, specular_light.x));
+    pixel.green = static_cast<decltype(pixel.green)>(
+        shade(pixel.green, diffuse_light.y, specular_light.y));
+    pixel.blue = static_cast<decltype(pixel.blue)>(
+        shade(pixel.blue, diffuse_light.z, specular_light.z));
     return pixel;
 }
 
@@ -3227,6 +3324,257 @@ CameraState BuildCameraState(
     return camera;
 }
 
+bool ResolveCompTime(PF_InData* in_data, A_Time& comp_time) {
+    if (!in_data || !in_data->effect_ref || in_data->time_scale == 0) {
+        return false;
+    }
+    AEGP_SuiteHandler suites(in_data->pica_basicP);
+    return suites.PFInterfaceSuite1()->AEGP_ConvertEffectToCompTime(
+               in_data->effect_ref,
+               in_data->current_time,
+               in_data->time_scale,
+               &comp_time) == A_Err_NONE;
+}
+
+Point3 MatrixRow(const A_Matrix4& matrix, int row) {
+    return {
+        matrix.mat[row][0],
+        matrix.mat[row][1],
+        matrix.mat[row][2]};
+}
+
+Point3 ScaledMatrixPosition(
+    const A_Matrix4& matrix,
+    double scale_x,
+    double scale_y,
+    double scale_z) {
+    return {
+        matrix.mat[3][0] * scale_x,
+        matrix.mat[3][1] * scale_y,
+        matrix.mat[3][2] * scale_z};
+}
+
+bool ResolveAfterEffectsCamera(
+    PF_InData* in_data,
+    double center_x,
+    double center_y,
+    double output_offset_x,
+    double output_offset_y,
+    double scale_x,
+    double scale_y,
+    double scale_z,
+    CameraState& camera) {
+    A_Time comp_time{};
+    if (!ResolveCompTime(in_data, comp_time)) {
+        return false;
+    }
+    AEGP_SuiteHandler suites(in_data->pica_basicP);
+    AEGP_LayerH camera_layer = nullptr;
+    if (suites.PFInterfaceSuite1()->AEGP_GetEffectCamera(
+            in_data->effect_ref,
+            &comp_time,
+            &camera_layer) != A_Err_NONE ||
+        !camera_layer) {
+        return false;
+    }
+
+    A_Matrix4 layer_to_world{};
+    if (suites.LayerSuite5()->AEGP_GetLayerToWorldXform(
+            camera_layer,
+            &comp_time,
+            &layer_to_world) != A_Err_NONE) {
+        return false;
+    }
+    AEGP_StreamVal zoom{};
+    if (suites.StreamSuite2()->AEGP_GetLayerStreamValue(
+            camera_layer,
+            AEGP_LayerStream_ZOOM,
+            AEGP_LTimeMode_CompTime,
+            &comp_time,
+            FALSE,
+            &zoom,
+            nullptr) != A_Err_NONE ||
+        !std::isfinite(zoom.one_d) || zoom.one_d <= 0.0) {
+        return false;
+    }
+
+    camera = {};
+    camera.position = ScaledMatrixPosition(
+        layer_to_world, scale_x, scale_y, scale_z);
+    camera.right = Normalize(MatrixRow(layer_to_world, 0));
+    camera.down = Normalize(MatrixRow(layer_to_world, 1));
+    camera.forward = Normalize(MatrixRow(layer_to_world, 2));
+    camera.focal_distance = zoom.one_d * scale_z;
+    camera.center_x = center_x;
+    camera.center_y = center_y;
+    camera.output_offset_x = output_offset_x;
+    camera.output_offset_y = output_offset_y;
+    camera.perspective = true;
+    camera.use_basis = true;
+    return true;
+}
+
+bool ReadLayerStream(
+    AEGP_SuiteHandler& suites,
+    AEGP_LayerH layer,
+    AEGP_LayerStream stream,
+    const A_Time& comp_time,
+    AEGP_StreamVal& value) {
+    value = {};
+    return suites.StreamSuite2()->AEGP_GetLayerStreamValue(
+               layer,
+               stream,
+               AEGP_LTimeMode_CompTime,
+               &comp_time,
+               FALSE,
+               &value,
+               nullptr) == A_Err_NONE;
+}
+
+bool ResolveAfterEffectsLights(
+    PF_InData* in_data,
+    double scale_x,
+    double scale_y,
+    double scale_z,
+    LightingState& lighting) {
+    A_Time comp_time{};
+    if (!ResolveCompTime(in_data, comp_time)) {
+        return false;
+    }
+    AEGP_SuiteHandler suites(in_data->pica_basicP);
+    AEGP_LayerH effect_layer = nullptr;
+    AEGP_CompH comp = nullptr;
+    if (suites.PFInterfaceSuite1()->AEGP_GetEffectLayer(
+            in_data->effect_ref,
+            &effect_layer) != A_Err_NONE ||
+        !effect_layer ||
+        suites.LayerSuite5()->AEGP_GetLayerParentComp(
+            effect_layer,
+            &comp) != A_Err_NONE ||
+        !comp) {
+        return false;
+    }
+
+    A_long layer_count = 0;
+    if (suites.LayerSuite5()->AEGP_GetCompNumLayers(
+            comp,
+            &layer_count) != A_Err_NONE) {
+        return false;
+    }
+
+    lighting.light_count = 0;
+    lighting.ambient = {};
+    bool found_light = false;
+    for (A_long index = 0; index < layer_count; ++index) {
+        AEGP_LayerH layer = nullptr;
+        if (suites.LayerSuite5()->AEGP_GetCompLayerByIndex(
+                comp,
+                index,
+                &layer) != A_Err_NONE ||
+            !layer) {
+            continue;
+        }
+        AEGP_ObjectType object_type = AEGP_ObjectType_NONE;
+        A_Boolean active = FALSE;
+        if (suites.LayerSuite5()->AEGP_GetLayerObjectType(
+                layer,
+                &object_type) != A_Err_NONE ||
+            object_type != AEGP_ObjectType_LIGHT ||
+            suites.LayerSuite5()->AEGP_IsVideoActive(
+                layer,
+                AEGP_LTimeMode_CompTime,
+                &comp_time,
+                &active) != A_Err_NONE ||
+            !active) {
+            continue;
+        }
+
+        AEGP_LightType light_type = AEGP_LightType_NONE;
+        AEGP_StreamVal color_value{};
+        AEGP_StreamVal intensity_value{};
+        if (suites.LightSuite2()->AEGP_GetLightType(
+                layer,
+                &light_type) != A_Err_NONE ||
+            !ReadLayerStream(
+                suites,
+                layer,
+                AEGP_LayerStream_COLOR,
+                comp_time,
+                color_value) ||
+            !ReadLayerStream(
+                suites,
+                layer,
+                AEGP_LayerStream_INTENSITY,
+                comp_time,
+                intensity_value)) {
+            continue;
+        }
+        found_light = true;
+        const Point3 color{
+            std::max(0.0, color_value.color.redF),
+            std::max(0.0, color_value.color.greenF),
+            std::max(0.0, color_value.color.blueF)};
+        const double intensity = std::max(0.0, intensity_value.one_d / 100.0);
+        if (light_type == AEGP_LightType_AMBIENT ||
+            light_type == AEGP_LightType_ENVIRONMENT) {
+            lighting.ambient.x += color.x * intensity;
+            lighting.ambient.y += color.y * intensity;
+            lighting.ambient.z += color.z * intensity;
+            continue;
+        }
+        if (lighting.light_count >= lighting.lights.size()) {
+            continue;
+        }
+
+        A_Matrix4 layer_to_world{};
+        if (suites.LayerSuite5()->AEGP_GetLayerToWorldXform(
+                layer,
+                &comp_time,
+                &layer_to_world) != A_Err_NONE) {
+            continue;
+        }
+        RenderLight& light = lighting.lights[lighting.light_count++];
+        light.position = ScaledMatrixPosition(
+            layer_to_world, scale_x, scale_y, scale_z);
+        light.forward = Normalize(MatrixRow(layer_to_world, 2));
+        light.direction = {
+            -light.forward.x,
+            -light.forward.y,
+            -light.forward.z};
+        light.color = color;
+        light.intensity = intensity;
+        if (light_type == AEGP_LightType_POINT) {
+            light.type = RenderLightType::Point;
+        } else if (light_type == AEGP_LightType_SPOT) {
+            light.type = RenderLightType::Spot;
+            AEGP_StreamVal cone_angle{};
+            AEGP_StreamVal cone_feather{};
+            if (ReadLayerStream(
+                    suites,
+                    layer,
+                    AEGP_LayerStream_CONE_ANGLE,
+                    comp_time,
+                    cone_angle)) {
+                light.cone_angle = cone_angle.one_d;
+            }
+            if (ReadLayerStream(
+                    suites,
+                    layer,
+                    AEGP_LayerStream_CONE_FEATHER,
+                    comp_time,
+                    cone_feather)) {
+                light.cone_feather = cone_feather.one_d;
+            }
+        } else {
+            light.type = RenderLightType::Directional;
+        }
+    }
+    if (!found_light) {
+        lighting.ambient = {1.0, 1.0, 1.0};
+    }
+    return true;
+}
+
 SceneData ResolveSceneForFrame(
     PF_InData* in_data,
     PF_ParamDef* params[],
@@ -3433,6 +3781,19 @@ PF_Err FrameSetup(
             scale_x,
             scale_y,
             scale_z);
+        if (params[kParamCameraSource]->u.pd.value ==
+            kCameraSourceAfterEffects) {
+            ResolveAfterEffectsCamera(
+                in_data,
+                static_cast<double>(input.width) * 0.5,
+                static_cast<double>(input.height) * 0.5,
+                0.0,
+                0.0,
+                scale_x,
+                scale_y,
+                scale_z,
+                camera);
+        }
         Bounds2D bounds{
             0.0,
             0.0,
@@ -3496,6 +3857,19 @@ PF_Err RenderSurface(PF_InData* in_data, PF_ParamDef* params[], PF_LayerDef* out
         scale_x,
         scale_y,
         scale_z);
+    if (params[kParamCameraSource]->u.pd.value ==
+        kCameraSourceAfterEffects) {
+        ResolveAfterEffectsCamera(
+            in_data,
+            static_cast<double>(input.width) * 0.5,
+            static_cast<double>(input.height) * 0.5,
+            static_cast<double>(in_data->output_origin_x),
+            static_cast<double>(in_data->output_origin_y),
+            scale_x,
+            scale_y,
+            scale_z,
+            camera);
+    }
 
     LightingState lighting;
     lighting.enabled = params[kParamLightingEnabled]->u.bd.value != FALSE;
@@ -3505,11 +3879,11 @@ PF_Err RenderSurface(PF_InData* in_data, PF_ParamDef* params[], PF_LayerDef* out
         params[kParamTextureFilter]->u.pd.value,
         kTextureFilterNearest,
         kTextureFilterBilinear);
-    lighting.intensity = std::clamp(
+    const double internal_intensity = std::clamp(
         params[kParamLightIntensity]->u.fs_d.value / 100.0,
         0.0,
         4.0);
-    lighting.ambient = std::clamp(
+    const double internal_ambient = std::clamp(
         params[kParamAmbientLight]->u.fs_d.value / 100.0,
         0.0,
         1.0);
@@ -3517,7 +3891,9 @@ PF_Err RenderSurface(PF_InData* in_data, PF_ParamDef* params[], PF_LayerDef* out
         FIX_2_FLOAT(params[kParamLightRotationX]->u.ad.value) * kDegreesToRadians;
     const double light_rotation_y =
         FIX_2_FLOAT(params[kParamLightRotationY]->u.ad.value) * kDegreesToRadians;
-    lighting.direction = Normalize(RotatePoint(
+    RenderLight& internal_light = lighting.lights[0];
+    internal_light.type = RenderLightType::Directional;
+    internal_light.direction = Normalize(RotatePoint(
         {0.0, 0.0, -1.0},
         0.0,
         0.0,
@@ -3525,6 +3901,22 @@ PF_Err RenderSurface(PF_InData* in_data, PF_ParamDef* params[], PF_LayerDef* out
         light_rotation_x,
         light_rotation_y,
         0.0));
+    internal_light.intensity = internal_intensity;
+    lighting.light_count = 1;
+    lighting.ambient = {
+        internal_ambient,
+        internal_ambient,
+        internal_ambient};
+    if (lighting.enabled &&
+        params[kParamLightSource]->u.pd.value ==
+            kLightSourceAfterEffects) {
+        ResolveAfterEffectsLights(
+            in_data,
+            scale_x,
+            scale_y,
+            scale_z,
+            lighting);
+    }
     lighting.camera_position = camera.position;
     const int legacy_tessellation = std::clamp(
         static_cast<int>(params[kParamTessellation]->u.sd.value), 2, 32);
@@ -4612,13 +5004,72 @@ enum GizmoDragTarget : A_intptr_t {
     kGizmoDragNone = 0,
     kGizmoDragControlPoint = 1,
     kGizmoDragSurface = 2,
-    kGizmoDragRotationOrigin = 3
+    kGizmoDragRotationOrigin = 3,
+    kGizmoDragCurlTip = 4,
+    kGizmoDragCurlExtent = 5,
+    kGizmoDragRollAngle = 6,
+    kGizmoDragRollLength = 7,
+    kGizmoDragTwistAngle = 8,
+    kGizmoDragTwistFalloff = 9,
+    kGizmoDragControlDepth = 10,
+    kGizmoDragSurfaceScale = 11,
+    kGizmoDragSurfaceRotation = 12
 };
 
 constexpr double kGizmoControlHitRadius = 9.0;
 constexpr double kGizmoOriginHitRadius = 11.0;
+constexpr double kGizmoDeformHitRadius = 11.0;
+constexpr double kGizmoCurlTipOffset = 16.0;
+constexpr double kGizmoDepthHandleOffset = 18.0;
+constexpr double kGizmoDepthHitRadius = 7.5;
+constexpr double kGizmoTransformHitRadius = 10.0;
+constexpr double kGizmoScaleAxisLength = 54.0;
+constexpr double kGizmoRotationHandleRadius = 76.0;
 constexpr int kGizmoCurveSamples = 18;
 constexpr int kGizmoHitSubdivisions = 8;
+
+struct GizmoHandleHit {
+    GizmoDragTarget target{kGizmoDragNone};
+    std::uint32_t index{};
+    Point2 point{};
+};
+
+struct GizmoVisibility {
+    bool surface{};
+    bool controls{};
+    bool deform{};
+    bool position{};
+    bool rotation{};
+    bool scale{};
+};
+
+GizmoVisibility ResolveGizmoVisibility(PF_ParamDef* params[]) {
+    const A_long interaction = std::clamp<A_long>(
+        params[kParamGizmoInteractionMode]->u.pd.value,
+        kGizmoInteractionAll,
+        kGizmoInteractionDeform);
+    const A_long tool = std::clamp<A_long>(
+        params[kParamGizmoTool]->u.pd.value,
+        kGizmoToolAll,
+        kGizmoToolScale);
+    const bool all_interactions = interaction == kGizmoInteractionAll;
+    GizmoVisibility visibility;
+    visibility.surface =
+        all_interactions || interaction == kGizmoInteractionSurface;
+    visibility.controls =
+        all_interactions || interaction == kGizmoInteractionControlPoints;
+    visibility.deform =
+        all_interactions || interaction == kGizmoInteractionDeform;
+    visibility.position = visibility.surface &&
+                          (tool == kGizmoToolAll ||
+                           tool == kGizmoToolPosition);
+    visibility.rotation = visibility.surface &&
+                          (tool == kGizmoToolAll ||
+                           tool == kGizmoToolRotation);
+    visibility.scale = visibility.surface &&
+                       (tool == kGizmoToolAll || tool == kGizmoToolScale);
+    return visibility;
+}
 
 bool LayerPointToFrame(
     PF_InData* in_data,
@@ -4707,6 +5158,455 @@ bool ProjectRotationOriginToFrame(
          evaluation.rotation_origin_y,
          evaluation.rotation_origin_z},
         frame_point);
+}
+
+bool ProjectControlDepthHandle(
+    PF_InData* in_data,
+    PF_EventExtra* event_extra,
+    const SurfaceData& surface,
+    const CameraState& camera,
+    std::uint32_t control_index,
+    Point2& frame_point,
+    Point2* anchor = nullptr,
+    Point2* axis = nullptr) {
+    if (control_index >= 16) {
+        return false;
+    }
+    const double u = static_cast<double>(control_index % 4) / 3.0;
+    const double v = static_cast<double>(control_index / 4) / 3.0;
+    Point2 control_point;
+    if (!ProjectSurfacePointToFrame(
+            in_data,
+            event_extra,
+            surface,
+            camera,
+            u,
+            v,
+            control_point)) {
+        return false;
+    }
+    const double reference_extent = std::max({
+        std::abs(static_cast<double>(surface.size_x)),
+        std::abs(static_cast<double>(surface.size_y)),
+        100.0});
+    const double depth_step = std::clamp(reference_extent * 0.08, 8.0, 200.0);
+    SurfaceData depth_surface = surface;
+    depth_surface.control_points[control_index].z +=
+        static_cast<float>(depth_step);
+    UpdateDerivedTransform(depth_surface);
+    Point2 depth_point;
+    double direction_x = 0.0;
+    double direction_y = -1.0;
+    if (ProjectSurfacePointToFrame(
+            in_data,
+            event_extra,
+            depth_surface,
+            camera,
+            u,
+            v,
+            depth_point)) {
+        const double candidate_x = depth_point.x - control_point.x;
+        const double candidate_y = depth_point.y - control_point.y;
+        const double length = std::hypot(candidate_x, candidate_y);
+        if (length > 0.5) {
+            direction_x = candidate_x / length;
+            direction_y = candidate_y / length;
+        }
+    }
+    frame_point = {
+        control_point.x + direction_x * kGizmoDepthHandleOffset,
+        control_point.y + direction_y * kGizmoDepthHandleOffset};
+    if (anchor) {
+        *anchor = control_point;
+    }
+    if (axis) {
+        *axis = {direction_x, direction_y};
+    }
+    return true;
+}
+
+Point3 RotateSurfaceTransformPoint(
+    const SurfaceEvaluationState& evaluation,
+    Point3 point) {
+    return RotatePoint(
+        point,
+        evaluation.rotation_origin_x,
+        evaluation.rotation_origin_y,
+        evaluation.rotation_origin_z,
+        evaluation.rotation_x,
+        evaluation.rotation_y,
+        evaluation.rotation_z);
+}
+
+Point3 TransformAxisVector(std::uint32_t axis, double length) {
+    switch (axis) {
+        case 1:
+            return {0.0, length, 0.0};
+        case 2:
+            return {0.0, 0.0, length};
+        default:
+            return {length, 0.0, 0.0};
+    }
+}
+
+Point2 FallbackTransformDirection(std::uint32_t axis) {
+    switch (axis) {
+        case 1:
+            return {0.0, -1.0};
+        case 2:
+            return {-0.70710678118, -0.70710678118};
+        default:
+            return {1.0, 0.0};
+    }
+}
+
+bool NormalizeScreenDirection(
+    const Point2& anchor,
+    const Point2& endpoint,
+    std::uint32_t axis,
+    Point2& direction) {
+    const double dx = endpoint.x - anchor.x;
+    const double dy = endpoint.y - anchor.y;
+    const double length = std::hypot(dx, dy);
+    if (length > 0.75) {
+        direction = {dx / length, dy / length};
+    } else {
+        direction = FallbackTransformDirection(axis);
+    }
+    return std::isfinite(direction.x) && std::isfinite(direction.y);
+}
+
+bool ProjectScaleHandle(
+    PF_InData* in_data,
+    PF_EventExtra* event_extra,
+    const SurfaceData& surface,
+    const CameraState& camera,
+    std::uint32_t axis,
+    Point2& frame_point,
+    Point2* anchor = nullptr,
+    Point2* direction = nullptr) {
+    if (axis > 2) {
+        return false;
+    }
+    const SurfaceEvaluationState evaluation =
+        BuildSurfaceEvaluationState(surface, camera, 1.0, 1.0, 1.0);
+    const Point3 pivot{
+        evaluation.pivot_x,
+        evaluation.pivot_y,
+        evaluation.pivot_z};
+    const Point3 rotated_pivot =
+        RotateSurfaceTransformPoint(evaluation, pivot);
+    const double world_axis_length = std::max({
+        std::abs(static_cast<double>(surface.size_x)),
+        std::abs(static_cast<double>(surface.size_y)),
+        100.0}) *
+                                     0.25;
+    const Point3 vector = TransformAxisVector(axis, world_axis_length);
+    const Point3 axis_point = RotateSurfaceTransformPoint(
+        evaluation,
+        {pivot.x + vector.x, pivot.y + vector.y, pivot.z + vector.z});
+    Point2 pivot_frame;
+    Point2 axis_frame;
+    if (!ProjectWorldPointToFrame(
+            in_data,
+            event_extra,
+            camera,
+            rotated_pivot,
+            pivot_frame) ||
+        !ProjectWorldPointToFrame(
+            in_data,
+            event_extra,
+            camera,
+            axis_point,
+            axis_frame)) {
+        return false;
+    }
+    Point2 screen_direction;
+    NormalizeScreenDirection(pivot_frame, axis_frame, axis, screen_direction);
+    frame_point = {
+        pivot_frame.x + screen_direction.x * kGizmoScaleAxisLength,
+        pivot_frame.y + screen_direction.y * kGizmoScaleAxisLength};
+    if (anchor) {
+        *anchor = pivot_frame;
+    }
+    if (direction) {
+        *direction = screen_direction;
+    }
+    return true;
+}
+
+Point3 RotationHandleVector(std::uint32_t axis, double radius) {
+    switch (axis) {
+        case 1:
+            return {radius * 0.94, 0.0, radius * 0.34};
+        case 2:
+            return {-radius * 0.70710678118,
+                    radius * 0.70710678118,
+                    0.0};
+        default:
+            return {0.0, -radius * 0.94, radius * 0.34};
+    }
+}
+
+bool ProjectRotationHandle(
+    PF_InData* in_data,
+    PF_EventExtra* event_extra,
+    const SurfaceData& surface,
+    const CameraState& camera,
+    std::uint32_t axis,
+    Point2& frame_point,
+    Point2* anchor = nullptr) {
+    if (axis > 2) {
+        return false;
+    }
+    const SurfaceEvaluationState evaluation =
+        BuildSurfaceEvaluationState(surface, camera, 1.0, 1.0, 1.0);
+    const Point3 origin{
+        evaluation.rotation_origin_x,
+        evaluation.rotation_origin_y,
+        evaluation.rotation_origin_z};
+    const double world_radius = std::max({
+        std::abs(static_cast<double>(surface.size_x)),
+        std::abs(static_cast<double>(surface.size_y)),
+        100.0}) *
+                                0.42;
+    const Point3 vector = RotationHandleVector(axis, world_radius);
+    const Point3 ring_point = RotateSurfaceTransformPoint(
+        evaluation,
+        {origin.x + vector.x, origin.y + vector.y, origin.z + vector.z});
+    Point2 origin_frame;
+    Point2 ring_frame;
+    if (!ProjectWorldPointToFrame(
+            in_data,
+            event_extra,
+            camera,
+            origin,
+            origin_frame) ||
+        !ProjectWorldPointToFrame(
+            in_data,
+            event_extra,
+            camera,
+            ring_point,
+            ring_frame)) {
+        return false;
+    }
+    Point2 screen_direction;
+    NormalizeScreenDirection(origin_frame, ring_frame, axis, screen_direction);
+    frame_point = {
+        origin_frame.x + screen_direction.x * kGizmoRotationHandleRadius,
+        origin_frame.y + screen_direction.y * kGizmoRotationHandleRadius};
+    if (anchor) {
+        *anchor = origin_frame;
+    }
+    return true;
+}
+
+void CornerCoordinates(
+    std::uint32_t corner,
+    double& u,
+    double& v) {
+    u = corner == kCornerTopRight || corner == kCornerBottomRight
+            ? 1.0
+            : 0.0;
+    v = corner == kCornerBottomRight || corner == kCornerBottomLeft
+            ? 1.0
+            : 0.0;
+}
+
+void CurlExtentCoordinates(
+    const SurfaceData& surface,
+    std::uint32_t corner,
+    double& u,
+    double& v) {
+    constexpr double kDegreesToRadians =
+        3.14159265358979323846 / 180.0;
+    const CornerCurlData& curl = surface.corner_curls[corner - 1];
+    const double extent_x = std::max(
+        std::abs(static_cast<double>(surface.size_x)),
+        1.0);
+    const double extent_y = std::max(
+        std::abs(static_cast<double>(surface.size_y)),
+        1.0);
+    const double length = std::min(extent_x, extent_y) *
+                          std::clamp(
+                              static_cast<double>(curl.length) / 100.0,
+                              0.0,
+                              1.5);
+    const double direction = std::clamp(
+                                 static_cast<double>(curl.direction),
+                                 0.0,
+                                 90.0) *
+                             kDegreesToRadians;
+    const double horizontal =
+        std::clamp(length * std::cos(direction) / extent_x, 0.0, 1.0);
+    const double vertical =
+        std::clamp(length * std::sin(direction) / extent_y, 0.0, 1.0);
+    u = corner == kCornerTopRight || corner == kCornerBottomRight
+            ? 1.0 - horizontal
+            : horizontal;
+    v = corner == kCornerBottomRight || corner == kCornerBottomLeft
+            ? 1.0 - vertical
+            : vertical;
+}
+
+void RollHandleCoordinates(
+    const SurfaceData& surface,
+    bool extent_handle,
+    double& u,
+    double& v) {
+    constexpr double along_edge = 0.38;
+    const double inward = extent_handle
+                              ? std::clamp(
+                                    static_cast<double>(surface.roll_length) /
+                                        100.0,
+                                    0.0,
+                                    1.0)
+                              : 0.0;
+    switch (surface.roll_edge) {
+        case kRollEdgeLeft:
+            u = inward;
+            v = along_edge;
+            break;
+        case kRollEdgeBottom:
+            u = along_edge;
+            v = 1.0 - inward;
+            break;
+        case kRollEdgeTop:
+            u = along_edge;
+            v = inward;
+            break;
+        default:
+            u = 1.0 - inward;
+            v = along_edge;
+            break;
+    }
+}
+
+void TwistHandleCoordinates(
+    const SurfaceData& surface,
+    std::uint32_t edge,
+    bool falloff_handle,
+    double& u,
+    double& v) {
+    constexpr double along_edge = 0.62;
+    const double inward = falloff_handle
+                              ? 0.5 * std::clamp(
+                                          static_cast<double>(
+                                              surface.edge_twists[edge - 1]
+                                                  .falloff) /
+                                              100.0,
+                                          0.01,
+                                          1.0)
+                              : 0.0;
+    switch (edge) {
+        case kTwistEdgeRight:
+            u = 1.0 - inward;
+            v = along_edge;
+            break;
+        case kTwistEdgeTop:
+            u = along_edge;
+            v = inward;
+            break;
+        case kTwistEdgeBottom:
+            u = along_edge;
+            v = 1.0 - inward;
+            break;
+        default:
+            u = inward;
+            v = along_edge;
+            break;
+    }
+}
+
+bool ProjectCurlTipHandle(
+    PF_InData* in_data,
+    PF_EventExtra* event_extra,
+    const SurfaceData& surface,
+    const CameraState& camera,
+    std::uint32_t corner,
+    Point2& frame_point,
+    Point2* anchor = nullptr) {
+    double u = 0.0;
+    double v = 0.0;
+    CornerCoordinates(corner, u, v);
+    Point2 corner_point;
+    Point2 center_point;
+    if (!ProjectSurfacePointToFrame(
+            in_data,
+            event_extra,
+            surface,
+            camera,
+            u,
+            v,
+            corner_point) ||
+        !ProjectSurfacePointToFrame(
+            in_data,
+            event_extra,
+            surface,
+            camera,
+            0.5,
+            0.5,
+            center_point)) {
+        return false;
+    }
+    double dx = corner_point.x - center_point.x;
+    double dy = corner_point.y - center_point.y;
+    double length = std::hypot(dx, dy);
+    if (length < 1.0e-5) {
+        dx = u < 0.5 ? -1.0 : 1.0;
+        dy = v < 0.5 ? -1.0 : 1.0;
+        length = std::sqrt(2.0);
+    }
+    frame_point = {
+        corner_point.x + dx * kGizmoCurlTipOffset / length,
+        corner_point.y + dy * kGizmoCurlTipOffset / length};
+    if (anchor) {
+        *anchor = corner_point;
+    }
+    return true;
+}
+
+bool ProjectCurlExtentHandle(
+    PF_InData* in_data,
+    PF_EventExtra* event_extra,
+    const SurfaceData& surface,
+    const CameraState& camera,
+    std::uint32_t corner,
+    Point2& frame_point) {
+    double u = 0.0;
+    double v = 0.0;
+    CurlExtentCoordinates(surface, corner, u, v);
+    return ProjectSurfacePointToFrame(
+        in_data, event_extra, surface, camera, u, v, frame_point);
+}
+
+bool ProjectRollHandle(
+    PF_InData* in_data,
+    PF_EventExtra* event_extra,
+    const SurfaceData& surface,
+    const CameraState& camera,
+    bool extent_handle,
+    Point2& frame_point) {
+    double u = 0.0;
+    double v = 0.0;
+    RollHandleCoordinates(surface, extent_handle, u, v);
+    return ProjectSurfacePointToFrame(
+        in_data, event_extra, surface, camera, u, v, frame_point);
+}
+
+bool ProjectTwistHandle(
+    PF_InData* in_data,
+    PF_EventExtra* event_extra,
+    const SurfaceData& surface,
+    const CameraState& camera,
+    std::uint32_t edge,
+    bool falloff_handle,
+    Point2& frame_point) {
+    double u = 0.0;
+    double v = 0.0;
+    TwistHandleCoordinates(surface, edge, falloff_handle, u, v);
+    return ProjectSurfacePointToFrame(
+        in_data, event_extra, surface, camera, u, v, frame_point);
 }
 
 CameraState BuildGizmoCamera(
@@ -4832,6 +5732,44 @@ bool SolveProjectedDelta(
     return std::isfinite(delta_x) && std::isfinite(delta_y);
 }
 
+bool SolveProjectedScalarDelta(
+    const Point2& base,
+    const Point2& perturbed,
+    const Point2& target,
+    double epsilon,
+    double& delta) {
+    const double derivative_x = (perturbed.x - base.x) / epsilon;
+    const double derivative_y = (perturbed.y - base.y) / epsilon;
+    const double denominator =
+        derivative_x * derivative_x + derivative_y * derivative_y + 1.0e-5;
+    if (denominator <= 1.0e-10) {
+        return false;
+    }
+    delta = (derivative_x * (target.x - base.x) +
+             derivative_y * (target.y - base.y)) /
+            denominator;
+    delta = std::clamp(delta, -2000.0, 2000.0);
+    return std::isfinite(delta);
+}
+
+double ForwardEpsilon(double value, double maximum) {
+    return value >= maximum - 0.5 ? -1.0 : 1.0;
+}
+
+void SetFloatParameter(
+    PF_ParamDef* parameter,
+    double value) {
+    parameter->u.fs_d.value = value;
+    parameter->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+}
+
+void SetPopupParameter(
+    PF_ParamDef* parameter,
+    A_long value) {
+    parameter->u.pd.value = value;
+    parameter->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+}
+
 void MarkSurfaceDerivedGeometryParams(
     PF_ParamDef* surface_params[],
     const SurfaceData& surface) {
@@ -4906,6 +5844,167 @@ bool DragControlPoint(
     point->u.td.y_value = FLOAT2FIX(surface.control_points[control_index].y);
     point->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
     MarkSurfaceDerivedGeometryParams(surface_params, surface);
+    return true;
+}
+
+bool DragControlDepth(
+    PF_InData* in_data,
+    PF_ParamDef* params[],
+    PF_EventExtra* event_extra,
+    const SurfaceData& surface,
+    const CameraState& camera,
+    std::uint32_t control_index,
+    double screen_delta_x,
+    double screen_delta_y) {
+    if (control_index >= 16 || !std::isfinite(screen_delta_x) ||
+        !std::isfinite(screen_delta_y)) {
+        return false;
+    }
+    Point2 handle;
+    Point2 axis;
+    if (!ProjectControlDepthHandle(
+            in_data,
+            event_extra,
+            surface,
+            camera,
+            control_index,
+            handle,
+            nullptr,
+            &axis)) {
+        return false;
+    }
+    const double reference_extent = std::max({
+        std::abs(static_cast<double>(surface.size_x)),
+        std::abs(static_cast<double>(surface.size_y)),
+        100.0});
+    const double depth_per_pixel =
+        std::clamp(reference_extent / 500.0, 0.25, 10.0);
+    const double projected_delta =
+        screen_delta_x * axis.x + screen_delta_y * axis.y;
+    const double next_depth = std::clamp(
+        static_cast<double>(surface.control_points[control_index].z) +
+            projected_delta * depth_per_pixel,
+        -4000.0,
+        4000.0);
+    auto view = BuildAnimationParameterView(params, surface.animation_bank);
+    SetFloatParameter(
+        view[kParamDepth00 + control_index],
+        next_depth);
+    return true;
+}
+
+bool DragSurfaceScale(
+    PF_InData* in_data,
+    PF_ParamDef* params[],
+    PF_EventExtra* event_extra,
+    const SurfaceData& surface,
+    const CameraState& camera,
+    std::uint32_t axis,
+    double screen_delta_x,
+    double screen_delta_y) {
+    if (axis > 2) {
+        return false;
+    }
+    Point2 handle;
+    Point2 direction;
+    if (!ProjectScaleHandle(
+            in_data,
+            event_extra,
+            surface,
+            camera,
+            axis,
+            handle,
+            nullptr,
+            &direction)) {
+        return false;
+    }
+    const double projected_delta =
+        screen_delta_x * direction.x + screen_delta_y * direction.y;
+    const double current_scale[3] = {
+        surface.scale_x,
+        surface.scale_y,
+        surface.scale_z};
+    const double next_scale = std::clamp(
+        current_scale[axis] + projected_delta * 1.5,
+        -1000.0,
+        1000.0);
+    auto view = BuildAnimationParameterView(params, surface.animation_bank);
+    SetFloatParameter(
+        view[kParamSurfaceScaleX + axis],
+        next_scale);
+    return true;
+}
+
+bool DragSurfaceRotation(
+    PF_InData* in_data,
+    PF_ParamDef* params[],
+    PF_EventExtra* event_extra,
+    const SurfaceData& surface,
+    const CameraState& camera,
+    std::uint32_t axis,
+    double screen_delta_x,
+    double screen_delta_y) {
+    if (axis > 2) {
+        return false;
+    }
+    Point2 base;
+    Point2 anchor;
+    if (!ProjectRotationHandle(
+            in_data,
+            event_extra,
+            surface,
+            camera,
+            axis,
+            base,
+            &anchor)) {
+        return false;
+    }
+    SurfaceData perturbed_surface = surface;
+    float* rotations[3] = {
+        &perturbed_surface.rotation_x,
+        &perturbed_surface.rotation_y,
+        &perturbed_surface.rotation_z};
+    *rotations[axis] += 1.0F;
+    Point2 perturbed;
+    if (!ProjectRotationHandle(
+            in_data,
+            event_extra,
+            perturbed_surface,
+            camera,
+            axis,
+            perturbed)) {
+        return false;
+    }
+    double tangent_x = perturbed.x - base.x;
+    double tangent_y = perturbed.y - base.y;
+    double tangent_length = std::hypot(tangent_x, tangent_y);
+    if (tangent_length < 0.05) {
+        const double radial_x = base.x - anchor.x;
+        const double radial_y = base.y - anchor.y;
+        tangent_length = std::hypot(radial_x, radial_y);
+        if (tangent_length < 0.05) {
+            return false;
+        }
+        tangent_x = -radial_y / tangent_length;
+        tangent_y = radial_x / tangent_length;
+    } else {
+        tangent_x /= tangent_length;
+        tangent_y /= tangent_length;
+    }
+    const double angle_delta =
+        (screen_delta_x * tangent_x + screen_delta_y * tangent_y) * 0.85;
+    const double current_rotation[3] = {
+        surface.rotation_x,
+        surface.rotation_y,
+        surface.rotation_z};
+    const double next_rotation = std::clamp(
+        current_rotation[axis] + angle_delta,
+        -3600.0,
+        3600.0);
+    auto view = BuildAnimationParameterView(params, surface.animation_bank);
+    PF_ParamDef* rotation = view[kParamRotationX + axis];
+    rotation->u.ad.value = FLOAT2FIX(next_rotation);
+    rotation->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
     return true;
 }
 
@@ -5045,12 +6144,289 @@ bool DragRotationOrigin(
     return true;
 }
 
+bool DragCurlTip(
+    PF_InData* in_data,
+    PF_ParamDef* params[],
+    PF_EventExtra* event_extra,
+    SurfaceData surface,
+    const CameraState& camera,
+    std::uint32_t corner,
+    const Point2& mouse) {
+    if (corner < kCornerTopLeft || corner > kCornerBottomLeft) {
+        return false;
+    }
+    CornerCurlData& curl = surface.corner_curls[corner - 1];
+    Point2 base;
+    Point2 perturbed_amount;
+    Point2 perturbed_radius;
+    if (!ProjectCurlTipHandle(
+            in_data, event_extra, surface, camera, corner, base)) {
+        return false;
+    }
+    const double amount_epsilon = ForwardEpsilon(curl.amount, 100.0);
+    const double radius_epsilon = ForwardEpsilon(curl.radius, 100.0);
+    SurfaceData amount_surface = surface;
+    amount_surface.corner_curls[corner - 1].amount +=
+        static_cast<float>(amount_epsilon);
+    SurfaceData radius_surface = surface;
+    radius_surface.corner_curls[corner - 1].radius +=
+        static_cast<float>(radius_epsilon);
+    if (!ProjectCurlTipHandle(
+            in_data,
+            event_extra,
+            amount_surface,
+            camera,
+            corner,
+            perturbed_amount) ||
+        !ProjectCurlTipHandle(
+            in_data,
+            event_extra,
+            radius_surface,
+            camera,
+            corner,
+            perturbed_radius)) {
+        return false;
+    }
+    double amount_delta = 0.0;
+    double radius_delta = 0.0;
+    if (!SolveProjectedDelta(
+            base,
+            perturbed_amount,
+            perturbed_radius,
+            mouse,
+            amount_epsilon,
+            radius_epsilon,
+            amount_delta,
+            radius_delta)) {
+        return false;
+    }
+    auto view = BuildAnimationParameterView(params, surface.animation_bank);
+    SetPopupParameter(
+        view[kParamSurfaceCornerSelect],
+        static_cast<A_long>(corner));
+    SetFloatParameter(
+        view[kCornerAmountParams[corner - 1]],
+        std::clamp(
+            static_cast<double>(curl.amount) + amount_delta,
+            -100.0,
+            100.0));
+    SetFloatParameter(
+        view[kCornerRadiusParams[corner - 1]],
+        std::clamp(
+            static_cast<double>(curl.radius) + radius_delta,
+            0.1,
+            100.0));
+    return true;
+}
+
+bool DragCurlExtent(
+    PF_InData* in_data,
+    PF_ParamDef* params[],
+    PF_EventExtra* event_extra,
+    SurfaceData surface,
+    const CameraState& camera,
+    std::uint32_t corner,
+    const Point2& mouse) {
+    if (corner < kCornerTopLeft || corner > kCornerBottomLeft) {
+        return false;
+    }
+    CornerCurlData& curl = surface.corner_curls[corner - 1];
+    Point2 base;
+    Point2 perturbed_length;
+    Point2 perturbed_direction;
+    if (!ProjectCurlExtentHandle(
+            in_data, event_extra, surface, camera, corner, base)) {
+        return false;
+    }
+    const double length_epsilon = ForwardEpsilon(curl.length, 150.0);
+    const double direction_epsilon = ForwardEpsilon(curl.direction, 90.0);
+    SurfaceData length_surface = surface;
+    length_surface.corner_curls[corner - 1].length +=
+        static_cast<float>(length_epsilon);
+    SurfaceData direction_surface = surface;
+    direction_surface.corner_curls[corner - 1].direction +=
+        static_cast<float>(direction_epsilon);
+    if (!ProjectCurlExtentHandle(
+            in_data,
+            event_extra,
+            length_surface,
+            camera,
+            corner,
+            perturbed_length) ||
+        !ProjectCurlExtentHandle(
+            in_data,
+            event_extra,
+            direction_surface,
+            camera,
+            corner,
+            perturbed_direction)) {
+        return false;
+    }
+    double length_delta = 0.0;
+    double direction_delta = 0.0;
+    if (!SolveProjectedDelta(
+            base,
+            perturbed_length,
+            perturbed_direction,
+            mouse,
+            length_epsilon,
+            direction_epsilon,
+            length_delta,
+            direction_delta)) {
+        return false;
+    }
+    auto view = BuildAnimationParameterView(params, surface.animation_bank);
+    SetPopupParameter(
+        view[kParamSurfaceCornerSelect],
+        static_cast<A_long>(corner));
+    SetFloatParameter(
+        view[kCornerLengthParams[corner - 1]],
+        std::clamp(
+            static_cast<double>(curl.length) + length_delta,
+            0.0,
+            150.0));
+    SetFloatParameter(
+        view[kCornerDirectionParams[corner - 1]],
+        std::clamp(
+            static_cast<double>(curl.direction) + direction_delta,
+            0.0,
+            90.0));
+    return true;
+}
+
+bool DragRollHandle(
+    PF_InData* in_data,
+    PF_ParamDef* params[],
+    PF_EventExtra* event_extra,
+    SurfaceData surface,
+    const CameraState& camera,
+    bool length_handle,
+    const Point2& mouse) {
+    Point2 base;
+    Point2 perturbed;
+    if (!ProjectRollHandle(
+            in_data,
+            event_extra,
+            surface,
+            camera,
+            length_handle,
+            base)) {
+        return false;
+    }
+    const double value = length_handle ? surface.roll_length
+                                       : surface.roll_angle;
+    const double maximum = length_handle ? 100.0 : 1080.0;
+    const double epsilon = ForwardEpsilon(value, maximum);
+    SurfaceData changed_surface = surface;
+    if (length_handle) {
+        changed_surface.roll_length += static_cast<float>(epsilon);
+    } else {
+        changed_surface.roll_angle += static_cast<float>(epsilon);
+    }
+    if (!ProjectRollHandle(
+            in_data,
+            event_extra,
+            changed_surface,
+            camera,
+            length_handle,
+            perturbed)) {
+        return false;
+    }
+    double delta = 0.0;
+    if (!SolveProjectedScalarDelta(
+            base, perturbed, mouse, epsilon, delta)) {
+        return false;
+    }
+    auto view = BuildAnimationParameterView(params, surface.animation_bank);
+    SetPopupParameter(
+        view[kParamSurfaceRollEdge],
+        static_cast<A_long>(surface.roll_edge));
+    if (length_handle) {
+        SetFloatParameter(
+            view[kParamSurfaceRollLength],
+            std::clamp(value + delta, 0.0, 100.0));
+    } else {
+        SetFloatParameter(
+            view[kParamSurfaceRollAngle],
+            std::clamp(value + delta, -1080.0, 1080.0));
+    }
+    return true;
+}
+
+bool DragTwistHandle(
+    PF_InData* in_data,
+    PF_ParamDef* params[],
+    PF_EventExtra* event_extra,
+    SurfaceData surface,
+    const CameraState& camera,
+    std::uint32_t edge,
+    bool falloff_handle,
+    const Point2& mouse) {
+    if (edge < kTwistEdgeLeft || edge > kTwistEdgeBottom) {
+        return false;
+    }
+    const EdgeTwistData& twist = surface.edge_twists[edge - 1];
+    Point2 base;
+    Point2 perturbed;
+    if (!ProjectTwistHandle(
+            in_data,
+            event_extra,
+            surface,
+            camera,
+            edge,
+            falloff_handle,
+            base)) {
+        return false;
+    }
+    const double value = falloff_handle ? twist.falloff : twist.angle;
+    const double maximum = falloff_handle ? 100.0 : 180.0;
+    const double epsilon = ForwardEpsilon(value, maximum);
+    SurfaceData changed_surface = surface;
+    if (falloff_handle) {
+        changed_surface.edge_twists[edge - 1].falloff +=
+            static_cast<float>(epsilon);
+    } else {
+        changed_surface.edge_twists[edge - 1].angle +=
+            static_cast<float>(epsilon);
+    }
+    if (!ProjectTwistHandle(
+            in_data,
+            event_extra,
+            changed_surface,
+            camera,
+            edge,
+            falloff_handle,
+            perturbed)) {
+        return false;
+    }
+    double delta = 0.0;
+    if (!SolveProjectedScalarDelta(
+            base, perturbed, mouse, epsilon, delta)) {
+        return false;
+    }
+    auto view = BuildAnimationParameterView(params, surface.animation_bank);
+    SetPopupParameter(
+        view[kParamSurfaceTwistEdge],
+        static_cast<A_long>(edge));
+    if (falloff_handle) {
+        SetFloatParameter(
+            view[kTwistFalloffParams[edge - 1]],
+            std::clamp(value + delta, 1.0, 100.0));
+    } else {
+        SetFloatParameter(
+            view[kTwistAngleParams[edge - 1]],
+            std::clamp(value + delta, -180.0, 180.0));
+    }
+    return true;
+}
+
 PF_Err DrawSurfaceGizmo(
     PF_InData* in_data,
     PF_OutData* out_data,
     PF_EventExtra* event_extra,
     const SurfaceData& surface,
-    const CameraState& camera) {
+    const CameraState& camera,
+    const GizmoVisibility& visibility) {
     PF_Err error = PF_Err_NONE;
     DRAWBOT_Suites drawbot_suites{};
     DRAWBOT_DrawRef drawing_ref = nullptr;
@@ -5082,9 +6458,20 @@ PF_Err DrawSurfaceGizmo(
     const DRAWBOT_ColorRGBA cage_color{0.15F, 0.78F, 1.0F, 0.88F};
     const DRAWBOT_ColorRGBA boundary_color{0.08F, 0.88F, 1.0F, 1.0F};
     const DRAWBOT_ColorRGBA point_color{0.92F, 0.96F, 1.0F, 1.0F};
+    const DRAWBOT_ColorRGBA depth_color{0.05F, 0.48F, 0.72F, 1.0F};
     const DRAWBOT_ColorRGBA origin_color{1.0F, 0.58F, 0.12F, 1.0F};
+    const DRAWBOT_ColorRGBA curl_color{1.0F, 0.30F, 0.58F, 1.0F};
+    const DRAWBOT_ColorRGBA curl_extent_color{1.0F, 0.62F, 0.76F, 1.0F};
+    const DRAWBOT_ColorRGBA roll_color{1.0F, 0.76F, 0.18F, 1.0F};
+    const DRAWBOT_ColorRGBA roll_extent_color{1.0F, 0.90F, 0.48F, 1.0F};
+    const DRAWBOT_ColorRGBA twist_color{0.70F, 0.42F, 1.0F, 1.0F};
+    const DRAWBOT_ColorRGBA twist_extent_color{0.84F, 0.68F, 1.0F, 1.0F};
+    const std::array<DRAWBOT_ColorRGBA, 3> transform_axis_colors{{
+        {1.0F, 0.24F, 0.20F, 1.0F},
+        {0.26F, 0.92F, 0.35F, 1.0F},
+        {0.24F, 0.52F, 1.0F, 1.0F}}};
 
-    {
+    if (visibility.controls || visibility.deform) {
         DRAWBOT_PathP cage_path(drawbot_suites.supplier_suiteP, supplier);
         for (int row = 0; row < 4; ++row) {
             bool started = false;
@@ -5204,8 +6591,60 @@ PF_Err DrawSurfaceGizmo(
             boundary_path);
     }
 
-    for (int row = 0; row < 4; ++row) {
-        for (int column = 0; column < 4; ++column) {
+    if (visibility.controls) {
+        DRAWBOT_PathP depth_axes(drawbot_suites.supplier_suiteP, supplier);
+        std::array<Point2, 16> handles{};
+        std::array<bool, 16> visible{};
+        for (std::uint32_t index = 0; index < 16; ++index) {
+            Point2 anchor;
+            visible[index] = ProjectControlDepthHandle(
+                in_data,
+                event_extra,
+                surface,
+                camera,
+                index,
+                handles[index],
+                &anchor);
+            if (!visible[index]) {
+                continue;
+            }
+            drawbot_suites.path_suiteP->MoveTo(
+                depth_axes,
+                static_cast<float>(anchor.x),
+                static_cast<float>(anchor.y));
+            drawbot_suites.path_suiteP->LineTo(
+                depth_axes,
+                static_cast<float>(handles[index].x),
+                static_cast<float>(handles[index].y));
+        }
+        DRAWBOT_PenP depth_pen(
+            drawbot_suites.supplier_suiteP,
+            supplier,
+            &depth_color,
+            1.0F);
+        drawbot_suites.surface_suiteP->StrokePath(
+            drawing_surface,
+            depth_pen,
+            depth_axes);
+        for (std::size_t index = 0; index < handles.size(); ++index) {
+            if (!visible[index]) {
+                continue;
+            }
+            DRAWBOT_RectF32 rect{
+                static_cast<float>(handles[index].x) - 3.0F,
+                static_cast<float>(handles[index].y) - 3.0F,
+                6.0F,
+                6.0F};
+            suites.SurfaceSuiteCurrent()->PaintRect(
+                drawing_surface,
+                &depth_color,
+                &rect);
+        }
+    }
+
+    if (visibility.controls) {
+        for (int row = 0; row < 4; ++row) {
+            for (int column = 0; column < 4; ++column) {
             Point2 point;
             if (!ProjectSurfacePointToFrame(
                     in_data,
@@ -5229,11 +6668,21 @@ PF_Err DrawSurfaceGizmo(
                 drawing_surface,
                 &point_color,
                 &rect);
+            DRAWBOT_RectF32 depth_rect{
+                static_cast<float>(point.x) - 1.25F,
+                static_cast<float>(point.y) - 1.25F,
+                2.5F,
+                2.5F};
+            suites.SurfaceSuiteCurrent()->PaintRect(
+                drawing_surface,
+                &depth_color,
+                &depth_rect);
+            }
         }
     }
 
     Point2 center;
-    if (ProjectSurfacePointToFrame(
+    if (visibility.position && ProjectSurfacePointToFrame(
             in_data, event_extra, surface, camera, 0.5, 0.5, center)) {
         DRAWBOT_PathP center_path(drawbot_suites.supplier_suiteP, supplier);
         drawbot_suites.path_suiteP->MoveTo(
@@ -5264,7 +6713,7 @@ PF_Err DrawSurfaceGizmo(
     }
 
     Point2 origin;
-    if (ProjectRotationOriginToFrame(
+    if (visibility.rotation && ProjectRotationOriginToFrame(
             in_data, event_extra, surface, camera, origin)) {
         DRAWBOT_PathP origin_path(drawbot_suites.supplier_suiteP, supplier);
         drawbot_suites.path_suiteP->MoveTo(
@@ -5298,6 +6747,298 @@ PF_Err DrawSurfaceGizmo(
             origin_path);
     }
 
+    // Transform gizmo: filled squares scale along local XYZ; outer diamonds
+    // rotate around XYZ at the current Rotation Origin.
+    for (std::uint32_t axis = 0; axis < 3; ++axis) {
+        Point2 scale_handle;
+        Point2 scale_anchor;
+        if (visibility.scale && ProjectScaleHandle(
+                in_data,
+                event_extra,
+                surface,
+                camera,
+                axis,
+                scale_handle,
+                &scale_anchor)) {
+            DRAWBOT_PathP axis_path(drawbot_suites.supplier_suiteP, supplier);
+            drawbot_suites.path_suiteP->MoveTo(
+                axis_path,
+                static_cast<float>(scale_anchor.x),
+                static_cast<float>(scale_anchor.y));
+            drawbot_suites.path_suiteP->LineTo(
+                axis_path,
+                static_cast<float>(scale_handle.x),
+                static_cast<float>(scale_handle.y));
+            DRAWBOT_PenP axis_pen(
+                drawbot_suites.supplier_suiteP,
+                supplier,
+                &transform_axis_colors[axis],
+                2.0F);
+            drawbot_suites.surface_suiteP->StrokePath(
+                drawing_surface,
+                axis_pen,
+                axis_path);
+            DRAWBOT_RectF32 rect{
+                static_cast<float>(scale_handle.x) - 4.0F,
+                static_cast<float>(scale_handle.y) - 4.0F,
+                8.0F,
+                8.0F};
+            suites.SurfaceSuiteCurrent()->PaintRect(
+                drawing_surface,
+                &transform_axis_colors[axis],
+                &rect);
+        }
+
+        Point2 rotation_handle;
+        Point2 rotation_anchor;
+        if (visibility.rotation && ProjectRotationHandle(
+                in_data,
+                event_extra,
+                surface,
+                camera,
+                axis,
+                rotation_handle,
+                &rotation_anchor)) {
+            DRAWBOT_PathP rotation_path(
+                drawbot_suites.supplier_suiteP,
+                supplier);
+            drawbot_suites.path_suiteP->MoveTo(
+                rotation_path,
+                static_cast<float>(rotation_anchor.x),
+                static_cast<float>(rotation_anchor.y));
+            drawbot_suites.path_suiteP->LineTo(
+                rotation_path,
+                static_cast<float>(rotation_handle.x),
+                static_cast<float>(rotation_handle.y));
+            drawbot_suites.path_suiteP->MoveTo(
+                rotation_path,
+                static_cast<float>(rotation_handle.x),
+                static_cast<float>(rotation_handle.y - 5.5));
+            drawbot_suites.path_suiteP->LineTo(
+                rotation_path,
+                static_cast<float>(rotation_handle.x + 5.5),
+                static_cast<float>(rotation_handle.y));
+            drawbot_suites.path_suiteP->LineTo(
+                rotation_path,
+                static_cast<float>(rotation_handle.x),
+                static_cast<float>(rotation_handle.y + 5.5));
+            drawbot_suites.path_suiteP->LineTo(
+                rotation_path,
+                static_cast<float>(rotation_handle.x - 5.5),
+                static_cast<float>(rotation_handle.y));
+            drawbot_suites.path_suiteP->LineTo(
+                rotation_path,
+                static_cast<float>(rotation_handle.x),
+                static_cast<float>(rotation_handle.y - 5.5));
+            DRAWBOT_PenP rotation_pen(
+                drawbot_suites.supplier_suiteP,
+                supplier,
+                &transform_axis_colors[axis],
+                1.5F);
+            drawbot_suites.surface_suiteP->StrokePath(
+                drawing_surface,
+                rotation_pen,
+                rotation_path);
+        }
+    }
+
+    // Curl handles: the larger outer square edits tip height/radius, while the
+    // smaller inner square edits the fold reach/direction.
+    if (visibility.deform) {
+        DRAWBOT_PathP leaders(drawbot_suites.supplier_suiteP, supplier);
+        std::array<Point2, 4> tips{};
+        std::array<Point2, 4> extents{};
+        std::array<bool, 4> tip_visible{};
+        std::array<bool, 4> extent_visible{};
+        for (std::uint32_t corner = kCornerTopLeft;
+             corner <= kCornerBottomLeft;
+             ++corner) {
+            Point2 anchor;
+            tip_visible[corner - 1] = ProjectCurlTipHandle(
+                in_data,
+                event_extra,
+                surface,
+                camera,
+                corner,
+                tips[corner - 1],
+                &anchor);
+            extent_visible[corner - 1] = ProjectCurlExtentHandle(
+                in_data,
+                event_extra,
+                surface,
+                camera,
+                corner,
+                extents[corner - 1]);
+            if (tip_visible[corner - 1]) {
+                drawbot_suites.path_suiteP->MoveTo(
+                    leaders,
+                    static_cast<float>(anchor.x),
+                    static_cast<float>(anchor.y));
+                drawbot_suites.path_suiteP->LineTo(
+                    leaders,
+                    static_cast<float>(tips[corner - 1].x),
+                    static_cast<float>(tips[corner - 1].y));
+            }
+            if (tip_visible[corner - 1] && extent_visible[corner - 1]) {
+                drawbot_suites.path_suiteP->MoveTo(
+                    leaders,
+                    static_cast<float>(tips[corner - 1].x),
+                    static_cast<float>(tips[corner - 1].y));
+                drawbot_suites.path_suiteP->LineTo(
+                    leaders,
+                    static_cast<float>(extents[corner - 1].x),
+                    static_cast<float>(extents[corner - 1].y));
+            }
+        }
+        DRAWBOT_PenP pen(
+            drawbot_suites.supplier_suiteP,
+            supplier,
+            &curl_extent_color,
+            1.25F);
+        drawbot_suites.surface_suiteP->StrokePath(
+            drawing_surface, pen, leaders);
+        for (std::size_t index = 0; index < tips.size(); ++index) {
+            if (tip_visible[index]) {
+                DRAWBOT_RectF32 rect{
+                    static_cast<float>(tips[index].x) - 5.0F,
+                    static_cast<float>(tips[index].y) - 5.0F,
+                    10.0F,
+                    10.0F};
+                suites.SurfaceSuiteCurrent()->PaintRect(
+                    drawing_surface, &curl_color, &rect);
+            }
+            if (extent_visible[index]) {
+                DRAWBOT_RectF32 rect{
+                    static_cast<float>(extents[index].x) - 3.5F,
+                    static_cast<float>(extents[index].y) - 3.5F,
+                    7.0F,
+                    7.0F};
+                suites.SurfaceSuiteCurrent()->PaintRect(
+                    drawing_surface, &curl_extent_color, &rect);
+            }
+        }
+    }
+
+    // Roll handles live on the selected roll edge. The edge square controls
+    // angle and the inner square controls how far the roll reaches.
+    if (visibility.deform) {
+        Point2 angle_handle;
+        Point2 length_handle;
+        const bool angle_visible = ProjectRollHandle(
+            in_data,
+            event_extra,
+            surface,
+            camera,
+            false,
+            angle_handle);
+        const bool length_visible = ProjectRollHandle(
+            in_data,
+            event_extra,
+            surface,
+            camera,
+            true,
+            length_handle);
+        if (angle_visible && length_visible) {
+            DRAWBOT_PathP leader(drawbot_suites.supplier_suiteP, supplier);
+            drawbot_suites.path_suiteP->MoveTo(
+                leader,
+                static_cast<float>(angle_handle.x),
+                static_cast<float>(angle_handle.y));
+            drawbot_suites.path_suiteP->LineTo(
+                leader,
+                static_cast<float>(length_handle.x),
+                static_cast<float>(length_handle.y));
+            DRAWBOT_PenP pen(
+                drawbot_suites.supplier_suiteP,
+                supplier,
+                &roll_extent_color,
+                1.5F);
+            drawbot_suites.surface_suiteP->StrokePath(
+                drawing_surface, pen, leader);
+        }
+        if (angle_visible) {
+            DRAWBOT_RectF32 rect{
+                static_cast<float>(angle_handle.x) - 5.0F,
+                static_cast<float>(angle_handle.y) - 5.0F,
+                10.0F,
+                10.0F};
+            suites.SurfaceSuiteCurrent()->PaintRect(
+                drawing_surface, &roll_color, &rect);
+        }
+        if (length_visible) {
+            DRAWBOT_RectF32 rect{
+                static_cast<float>(length_handle.x) - 3.5F,
+                static_cast<float>(length_handle.y) - 3.5F,
+                7.0F,
+                7.0F};
+            suites.SurfaceSuiteCurrent()->PaintRect(
+                drawing_surface, &roll_extent_color, &rect);
+        }
+    }
+
+    // Every edge has an independent Twist pair: edge square = angle,
+    // inner square = falloff.
+    if (visibility.deform) {
+        for (std::uint32_t edge = kTwistEdgeLeft;
+             edge <= kTwistEdgeBottom;
+             ++edge) {
+        Point2 angle_handle;
+        Point2 falloff_handle;
+        const bool angle_visible = ProjectTwistHandle(
+            in_data,
+            event_extra,
+            surface,
+            camera,
+            edge,
+            false,
+            angle_handle);
+        const bool falloff_visible = ProjectTwistHandle(
+            in_data,
+            event_extra,
+            surface,
+            camera,
+            edge,
+            true,
+            falloff_handle);
+        if (angle_visible && falloff_visible) {
+            DRAWBOT_PathP leader(drawbot_suites.supplier_suiteP, supplier);
+            drawbot_suites.path_suiteP->MoveTo(
+                leader,
+                static_cast<float>(angle_handle.x),
+                static_cast<float>(angle_handle.y));
+            drawbot_suites.path_suiteP->LineTo(
+                leader,
+                static_cast<float>(falloff_handle.x),
+                static_cast<float>(falloff_handle.y));
+            DRAWBOT_PenP pen(
+                drawbot_suites.supplier_suiteP,
+                supplier,
+                &twist_extent_color,
+                1.25F);
+            drawbot_suites.surface_suiteP->StrokePath(
+                drawing_surface, pen, leader);
+        }
+        if (angle_visible) {
+            DRAWBOT_RectF32 rect{
+                static_cast<float>(angle_handle.x) - 4.5F,
+                static_cast<float>(angle_handle.y) - 4.5F,
+                9.0F,
+                9.0F};
+            suites.SurfaceSuiteCurrent()->PaintRect(
+                drawing_surface, &twist_color, &rect);
+        }
+        if (falloff_visible) {
+            DRAWBOT_RectF32 rect{
+                static_cast<float>(falloff_handle.x) - 3.0F,
+                static_cast<float>(falloff_handle.y) - 3.0F,
+                6.0F,
+                6.0F};
+            suites.SurfaceSuiteCurrent()->PaintRect(
+                drawing_surface, &twist_extent_color, &rect);
+        }
+        }
+    }
+
     AEFX_ReleaseDrawbotSuites(in_data, out_data);
     return error;
 }
@@ -5307,8 +7048,15 @@ PF_Err HandleSurfaceGizmoEvent(
     PF_OutData* out_data,
     PF_ParamDef* params[],
     PF_EventExtra* event_extra) {
+    if (!event_extra ||
+        (event_extra->e_type != PF_Event_DRAW &&
+         event_extra->e_type != PF_Event_DO_CLICK &&
+         event_extra->e_type != PF_Event_DRAG)) {
+        return PF_Err_NONE;
+    }
     if (!event_extra || !event_extra->contextH ||
-        (*event_extra->contextH)->w_type != PF_Window_COMP) {
+        (*event_extra->contextH)->w_type != PF_Window_COMP || !params ||
+        !params[kParamInput] || !params[kParamSceneData]) {
         return PF_Err_NONE;
     }
     const A_long input_width =
@@ -5328,6 +7076,7 @@ PF_Err HandleSurfaceGizmoEvent(
     SurfaceData surface = scene.surfaces[scene.selected_surface];
     const CameraState camera =
         BuildGizmoCamera(params, input_width, input_height);
+    const GizmoVisibility visibility = ResolveGizmoVisibility(params);
 
     if (event_extra->e_type == PF_Event_DRAW) {
         const PF_Err error = DrawSurfaceGizmo(
@@ -5335,7 +7084,8 @@ PF_Err HandleSurfaceGizmoEvent(
             out_data,
             event_extra,
             surface,
-            camera);
+            camera,
+            visibility);
         if (error == PF_Err_NONE) {
             event_extra->evt_out_flags = PF_EO_HANDLED_EVENT;
         }
@@ -5346,11 +7096,137 @@ PF_Err HandleSurfaceGizmoEvent(
         static_cast<double>(event_extra->u.do_click.screen_point.h),
         static_cast<double>(event_extra->u.do_click.screen_point.v)};
     if (event_extra->e_type == PF_Event_DO_CLICK) {
+        std::vector<GizmoHandleHit> transform_handles;
+        transform_handles.reserve(6);
+        for (std::uint32_t axis = 0; axis < 3; ++axis) {
+            Point2 transform_point;
+            if (visibility.scale && ProjectScaleHandle(
+                    in_data,
+                    event_extra,
+                    surface,
+                    camera,
+                    axis,
+                    transform_point)) {
+                transform_handles.push_back(
+                    {kGizmoDragSurfaceScale, axis, transform_point});
+            }
+            if (visibility.rotation && ProjectRotationHandle(
+                    in_data,
+                    event_extra,
+                    surface,
+                    camera,
+                    axis,
+                    transform_point)) {
+                transform_handles.push_back(
+                    {kGizmoDragSurfaceRotation, axis, transform_point});
+            }
+        }
+        const GizmoHandleHit* closest_transform = nullptr;
+        double closest_transform_distance =
+            kGizmoTransformHitRadius * kGizmoTransformHitRadius;
+        for (const GizmoHandleHit& handle : transform_handles) {
+            const double distance = SquaredDistance(handle.point, mouse);
+            if (distance <= closest_transform_distance) {
+                closest_transform_distance = distance;
+                closest_transform = &handle;
+            }
+        }
+
+        std::vector<GizmoHandleHit> deform_handles;
+        deform_handles.reserve(18);
+        for (std::uint32_t corner = kCornerTopLeft;
+             corner <= kCornerBottomLeft;
+             ++corner) {
+            Point2 point;
+            if (visibility.deform && ProjectCurlTipHandle(
+                    in_data,
+                    event_extra,
+                    surface,
+                    camera,
+                    corner,
+                    point)) {
+                deform_handles.push_back(
+                    {kGizmoDragCurlTip, corner, point});
+            }
+            if (visibility.deform && ProjectCurlExtentHandle(
+                    in_data,
+                    event_extra,
+                    surface,
+                    camera,
+                    corner,
+                    point)) {
+                deform_handles.push_back(
+                    {kGizmoDragCurlExtent, corner, point});
+            }
+        }
+        Point2 point;
+        if (visibility.deform && ProjectRollHandle(
+                in_data,
+                event_extra,
+                surface,
+                camera,
+                false,
+                point)) {
+            deform_handles.push_back(
+                {kGizmoDragRollAngle, surface.roll_edge, point});
+        }
+        if (visibility.deform && ProjectRollHandle(
+                in_data,
+                event_extra,
+                surface,
+                camera,
+                true,
+                point)) {
+            deform_handles.push_back(
+                {kGizmoDragRollLength, surface.roll_edge, point});
+        }
+        for (std::uint32_t edge = kTwistEdgeLeft;
+             edge <= kTwistEdgeBottom;
+             ++edge) {
+            if (visibility.deform && ProjectTwistHandle(
+                    in_data,
+                    event_extra,
+                    surface,
+                    camera,
+                    edge,
+                    false,
+                    point)) {
+                deform_handles.push_back(
+                    {kGizmoDragTwistAngle, edge, point});
+            }
+            if (visibility.deform && ProjectTwistHandle(
+                    in_data,
+                    event_extra,
+                    surface,
+                    camera,
+                    edge,
+                    true,
+                    point)) {
+                deform_handles.push_back(
+                    {kGizmoDragTwistFalloff, edge, point});
+            }
+        }
+        const GizmoHandleHit* closest_deform = nullptr;
+        double closest_deform_distance =
+            kGizmoDeformHitRadius * kGizmoDeformHitRadius;
+        for (const GizmoHandleHit& handle : deform_handles) {
+            const double distance = SquaredDistance(handle.point, mouse);
+            if (distance <= closest_deform_distance) {
+                closest_deform_distance = distance;
+                closest_deform = &handle;
+            }
+        }
+
         double closest_distance =
             kGizmoControlHitRadius * kGizmoControlHitRadius;
+        double closest_depth_distance =
+            kGizmoDepthHitRadius * kGizmoDepthHitRadius;
         int closest_control = -1;
-        for (int row = 0; row < 4; ++row) {
-            for (int column = 0; column < 4; ++column) {
+        int closest_depth_control = -1;
+        if (visibility.controls) {
+            for (int row = 0; row < 4; ++row) {
+                for (int column = 0; column < 4; ++column) {
+                const int control_index = row * 4 + column;
                 Point2 point;
                 if (!ProjectSurfacePointToFrame(
                         in_data,
@@ -5365,24 +7241,72 @@ PF_Err HandleSurfaceGizmoEvent(
                 const double distance = SquaredDistance(point, mouse);
                 if (distance <= closest_distance) {
                     closest_distance = distance;
-                    closest_control = row * 4 + column;
+                    closest_control = control_index;
+                }
+                Point2 depth_handle;
+                if (ProjectControlDepthHandle(
+                        in_data,
+                        event_extra,
+                        surface,
+                        camera,
+                        static_cast<std::uint32_t>(control_index),
+                        depth_handle)) {
+                    const double depth_distance =
+                        SquaredDistance(depth_handle, mouse);
+                    if (depth_distance <= closest_depth_distance) {
+                        closest_depth_distance = depth_distance;
+                        closest_depth_control = control_index;
+                    }
                 }
             }
         }
+        }
         Point2 origin;
         const bool hit_origin =
-            ProjectRotationOriginToFrame(
+            visibility.rotation && ProjectRotationOriginToFrame(
                 in_data, event_extra, surface, camera, origin) &&
             SquaredDistance(origin, mouse) <=
                 kGizmoOriginHitRadius * kGizmoOriginHitRadius;
-        if (hit_origin) {
+        const bool depth_modifier =
+            (event_extra->u.do_click.modifiers & PF_Mod_OPT_ALT_KEY) != 0;
+        if (depth_modifier && closest_control >= 0) {
+            event_extra->u.do_click.continue_refcon[0] =
+                kGizmoDragControlDepth;
+            event_extra->u.do_click.continue_refcon[1] = closest_control;
+            event_extra->u.do_click.continue_refcon[2] =
+                static_cast<A_intptr_t>(event_extra->u.do_click.screen_point.h);
+            event_extra->u.do_click.continue_refcon[3] =
+                static_cast<A_intptr_t>(event_extra->u.do_click.screen_point.v);
+        } else if (closest_depth_control >= 0) {
+            event_extra->u.do_click.continue_refcon[0] =
+                kGizmoDragControlDepth;
+            event_extra->u.do_click.continue_refcon[1] = closest_depth_control;
+            event_extra->u.do_click.continue_refcon[2] =
+                static_cast<A_intptr_t>(event_extra->u.do_click.screen_point.h);
+            event_extra->u.do_click.continue_refcon[3] =
+                static_cast<A_intptr_t>(event_extra->u.do_click.screen_point.v);
+        } else if (closest_transform) {
+            event_extra->u.do_click.continue_refcon[0] =
+                closest_transform->target;
+            event_extra->u.do_click.continue_refcon[1] =
+                static_cast<A_intptr_t>(closest_transform->index);
+            event_extra->u.do_click.continue_refcon[2] =
+                static_cast<A_intptr_t>(event_extra->u.do_click.screen_point.h);
+            event_extra->u.do_click.continue_refcon[3] =
+                static_cast<A_intptr_t>(event_extra->u.do_click.screen_point.v);
+        } else if (closest_deform) {
+            event_extra->u.do_click.continue_refcon[0] =
+                closest_deform->target;
+            event_extra->u.do_click.continue_refcon[1] =
+                static_cast<A_intptr_t>(closest_deform->index);
+        } else if (hit_origin) {
             event_extra->u.do_click.continue_refcon[0] =
                 kGizmoDragRotationOrigin;
         } else if (closest_control >= 0) {
             event_extra->u.do_click.continue_refcon[0] =
                 kGizmoDragControlPoint;
             event_extra->u.do_click.continue_refcon[1] = closest_control;
-        } else if (HitProjectedSurface(
+        } else if (visibility.position && HitProjectedSurface(
                        in_data,
                        event_extra,
                        surface,
@@ -5400,6 +7324,63 @@ PF_Err HandleSurfaceGizmoEvent(
     if (event_extra->e_type == PF_Event_DRAG) {
         bool changed = false;
         switch (event_extra->u.do_click.continue_refcon[0]) {
+            case kGizmoDragSurfaceScale:
+            case kGizmoDragSurfaceRotation: {
+                const double previous_x = static_cast<double>(
+                    event_extra->u.do_click.continue_refcon[2]);
+                const double previous_y = static_cast<double>(
+                    event_extra->u.do_click.continue_refcon[3]);
+                const std::uint32_t axis = static_cast<std::uint32_t>(
+                    event_extra->u.do_click.continue_refcon[1]);
+                if (event_extra->u.do_click.continue_refcon[0] ==
+                    kGizmoDragSurfaceScale) {
+                    changed = DragSurfaceScale(
+                        in_data,
+                        params,
+                        event_extra,
+                        surface,
+                        camera,
+                        axis,
+                        mouse.x - previous_x,
+                        mouse.y - previous_y);
+                } else {
+                    changed = DragSurfaceRotation(
+                        in_data,
+                        params,
+                        event_extra,
+                        surface,
+                        camera,
+                        axis,
+                        mouse.x - previous_x,
+                        mouse.y - previous_y);
+                }
+                event_extra->u.do_click.continue_refcon[2] =
+                    static_cast<A_intptr_t>(event_extra->u.do_click.screen_point.h);
+                event_extra->u.do_click.continue_refcon[3] =
+                    static_cast<A_intptr_t>(event_extra->u.do_click.screen_point.v);
+                break;
+            }
+            case kGizmoDragControlDepth: {
+                const double previous_x = static_cast<double>(
+                    event_extra->u.do_click.continue_refcon[2]);
+                const double previous_y = static_cast<double>(
+                    event_extra->u.do_click.continue_refcon[3]);
+                changed = DragControlDepth(
+                    in_data,
+                    params,
+                    event_extra,
+                    surface,
+                    camera,
+                    static_cast<std::uint32_t>(
+                        event_extra->u.do_click.continue_refcon[1]),
+                    mouse.x - previous_x,
+                    mouse.y - previous_y);
+                event_extra->u.do_click.continue_refcon[2] =
+                    static_cast<A_intptr_t>(event_extra->u.do_click.screen_point.h);
+                event_extra->u.do_click.continue_refcon[3] =
+                    static_cast<A_intptr_t>(event_extra->u.do_click.screen_point.v);
+                break;
+            }
             case kGizmoDragControlPoint:
                 changed = DragControlPoint(
                     in_data,
@@ -5427,6 +7408,72 @@ PF_Err HandleSurfaceGizmoEvent(
                     event_extra,
                     surface,
                     camera,
+                    mouse);
+                break;
+            case kGizmoDragCurlTip:
+                changed = DragCurlTip(
+                    in_data,
+                    params,
+                    event_extra,
+                    surface,
+                    camera,
+                    static_cast<std::uint32_t>(
+                        event_extra->u.do_click.continue_refcon[1]),
+                    mouse);
+                break;
+            case kGizmoDragCurlExtent:
+                changed = DragCurlExtent(
+                    in_data,
+                    params,
+                    event_extra,
+                    surface,
+                    camera,
+                    static_cast<std::uint32_t>(
+                        event_extra->u.do_click.continue_refcon[1]),
+                    mouse);
+                break;
+            case kGizmoDragRollAngle:
+                changed = DragRollHandle(
+                    in_data,
+                    params,
+                    event_extra,
+                    surface,
+                    camera,
+                    false,
+                    mouse);
+                break;
+            case kGizmoDragRollLength:
+                changed = DragRollHandle(
+                    in_data,
+                    params,
+                    event_extra,
+                    surface,
+                    camera,
+                    true,
+                    mouse);
+                break;
+            case kGizmoDragTwistAngle:
+                changed = DragTwistHandle(
+                    in_data,
+                    params,
+                    event_extra,
+                    surface,
+                    camera,
+                    static_cast<std::uint32_t>(
+                        event_extra->u.do_click.continue_refcon[1]),
+                    false,
+                    mouse);
+                break;
+            case kGizmoDragTwistFalloff:
+                changed = DragTwistHandle(
+                    in_data,
+                    params,
+                    event_extra,
+                    surface,
+                    camera,
+                    static_cast<std::uint32_t>(
+                        event_extra->u.do_click.continue_refcon[1]),
+                    true,
                     mouse);
                 break;
             default:
@@ -5491,7 +7538,8 @@ PF_Err GlobalSetup(PF_InData* in_data, PF_OutData* out_data) {
     out_data->out_flags =
         PF_OutFlag_DEEP_COLOR_AWARE | PF_OutFlag_I_EXPAND_BUFFER |
         PF_OutFlag_SEND_UPDATE_PARAMS_UI | PF_OutFlag_CUSTOM_UI;
-    out_data->out_flags2 = PF_OutFlag2_SUPPORTS_THREADED_RENDERING;
+    out_data->out_flags2 =
+        PF_OutFlag2_I_USE_3D_CAMERA | PF_OutFlag2_I_USE_3D_LIGHTS;
     return PF_Err_NONE;
 }
 
@@ -5879,6 +7927,24 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
 
     AEFX_CLR_STRUCT(def);
     PF_ADD_CHECKBOX("Wireframe", "Show tessellation", FALSE, 0, kDiskWireframe);
+
+    AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_CANNOT_TIME_VARY | PF_ParamFlag_CANNOT_INTERP;
+    PF_ADD_POPUP(
+        "Interaction Mode",
+        4,
+        kGizmoInteractionAll,
+        "All|Surface|Control Points|Deform",
+        kDiskGizmoInteractionMode);
+
+    AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_CANNOT_TIME_VARY | PF_ParamFlag_CANNOT_INTERP;
+    PF_ADD_POPUP(
+        "Gizmo Tool",
+        4,
+        kGizmoToolAll,
+        "All|Position|Rotation|Scale",
+        kDiskGizmoTool);
 
     for (int row = 0; row < 4; ++row) {
         for (int column = 0; column < 4; ++column) {
@@ -6520,6 +8586,15 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
     AEFX_CLR_STRUCT(def);
     PF_ADD_TOPIC("Camera", kDiskCameraStart);
 
+    AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_CANNOT_TIME_VARY;
+    PF_ADD_POPUP(
+        "Camera Source",
+        2,
+        kCameraSourceInternal,
+        "Internal|After Effects Active Camera",
+        kDiskCameraSource);
+
     const char* camera_offset_names[3] = {
         "Camera Offset X",
         "Camera Offset Y",
@@ -6555,6 +8630,15 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
 
     AEFX_CLR_STRUCT(def);
     PF_ADD_TOPIC("Lights", kDiskLightsStart);
+
+    AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_CANNOT_TIME_VARY;
+    PF_ADD_POPUP(
+        "Light Source",
+        2,
+        kLightSourceInternal,
+        "Internal|After Effects Comp Lights",
+        kDiskLightSource);
 
     AEFX_CLR_STRUCT(def);
     PF_ADD_CHECKBOX(
@@ -6663,6 +8747,12 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
     const PF_Err custom_ui_error =
         in_data->inter.register_ui(in_data->effect_ref, &custom_ui);
     if (custom_ui_error != PF_Err_NONE) {
+        std::snprintf(
+            out_data->return_msg,
+            sizeof(out_data->return_msg),
+            "SurfaceLab custom UI registration failed (%d).",
+            static_cast<int>(custom_ui_error));
+        out_data->out_flags |= PF_OutFlag_DISPLAY_ERROR_MESSAGE;
         return custom_ui_error;
     }
 
