@@ -1,0 +1,176 @@
+// Host-independent unit tests for the SurfaceLab scene model and its V1..V13
+// migration chain. These exercise SurfaceLabModel.{h,cpp} with no After Effects
+// SDK present, so they build and run on any platform:
+//
+//   c++ -std=c++17 -I src src/SurfaceLabModel.cpp tests/model_tests.cpp -o model_tests
+//   ./model_tests
+//
+// The goal is a fast regression net around the most bug-prone, least
+// AE-observable logic: on-disk migration and scene validation.
+
+#include "SurfaceLabModel.h"
+
+#include <cstdio>
+#include <cstring>
+
+namespace {
+
+int g_failures = 0;
+int g_checks = 0;
+
+void Check(bool condition, const char* expr, const char* test, int line) {
+    ++g_checks;
+    if (!condition) {
+        ++g_failures;
+        std::printf("  FAIL [%s:%d] %s\n", test, line, expr);
+    }
+}
+
+#define CHECK(cond) Check((cond), #cond, test_name, __LINE__)
+
+// Fill a versioned surface's identity + a recognizable control-point pattern.
+template <typename SurfaceT>
+void SeedSurface(SurfaceT& surface, std::uint32_t id) {
+    surface.id = id;
+    surface.enabled = 1;
+    for (int i = 0; i < 16; ++i) {
+        surface.control_points[i].x = static_cast<float>(id * 100 + i);
+        surface.control_points[i].y = static_cast<float>(id * 200 + i);
+        surface.control_points[i].z = static_cast<float>(i);
+    }
+    surface.rotation_x = 10.0F;
+    surface.rotation_y = 20.0F;
+    surface.rotation_z = 30.0F;
+}
+
+template <typename SceneT>
+void SeedSceneHeader(SceneT& scene, std::uint32_t version, std::uint32_t count) {
+    scene.magic = kSceneMagic;
+    scene.schema_version = version;
+    scene.active = 1;
+    scene.surface_count = count;
+    scene.selected_surface = 0;
+    scene.next_surface_id = count + 1;
+}
+
+// ---- Tests ---------------------------------------------------------------
+
+void TestInitializeScene() {
+    const char* test_name = "InitializeScene";
+    SceneData scene{};
+    InitializeScene(scene, 1920.0, 1080.0);
+    CHECK(scene.magic == kSceneMagic);
+    CHECK(scene.schema_version == kSceneSchemaVersion);
+    CHECK(scene.surface_count == 1);
+    CHECK(scene.surfaces[0].enabled == 1);
+    CHECK(IsValidScene(scene));
+}
+
+void TestMigrateV1PreservesGeometryAndValidates() {
+    const char* test_name = "MigrateV1";
+    SceneDataV1 src{};
+    SeedSceneHeader(src, 1, 2);
+    SeedSurface(src.surfaces[0], 1);
+    SeedSurface(src.surfaces[1], 2);
+
+    SceneData dst{};
+    MigrateSceneV1(src, dst);
+
+    CHECK(dst.magic == kSceneMagic);
+    CHECK(dst.schema_version == kSceneSchemaVersion);
+    CHECK(dst.surface_count == 2);
+    // Geometry preserved verbatim.
+    CHECK(dst.surfaces[0].control_points[5].x == 105.0F);
+    CHECK(dst.surfaces[1].control_points[5].y == 405.0F);
+    CHECK(dst.surfaces[0].rotation_z == 30.0F);
+    // Fields absent in V1 get sane defaults.
+    CHECK(dst.surfaces[0].scale_x == 100.0F);
+    CHECK(dst.surfaces[0].opacity == 100.0F);
+
+    // Two-phase legacy contract: MigrateScene* carries only geometry/material;
+    // animation banks stay 0 until the loader assigns them for pre-v13 scenes.
+    // Before that step a multi-surface scene has duplicate bank 0.
+    CHECK(dst.surfaces[0].animation_bank == dst.surfaces[1].animation_bank);
+    CHECK(!IsValidScene(dst));
+
+    AssignLegacyAnimationBanks(dst);
+    CHECK(IsValidScene(dst));
+    CHECK(dst.surfaces[0].animation_bank != dst.surfaces[1].animation_bank);
+}
+
+void TestMigrateV9PreservesDeformStreams() {
+    const char* test_name = "MigrateV9";
+    SceneDataV9 src{};
+    SeedSceneHeader(src, 9, 1);
+    SeedSurface(src.surfaces[0], 1);
+    src.surfaces[0].corner_curls[2].amount = 42.0F;
+    src.surfaces[0].edge_twists[1].angle = 15.0F;
+
+    SceneData dst{};
+    MigrateSceneV9(src, dst);
+
+    CHECK(dst.schema_version == kSceneSchemaVersion);
+    CHECK(dst.surfaces[0].corner_curls[2].amount == 42.0F);
+    CHECK(dst.surfaces[0].edge_twists[1].angle == 15.0F);
+    CHECK(IsValidScene(dst));
+}
+
+void TestMigrateV12PreservesBackSlot() {
+    const char* test_name = "MigrateV12";
+    SceneDataV12 src{};
+    SeedSceneHeader(src, 12, 1);
+    SeedSurface(src.surfaces[0], 1);
+    src.surfaces[0].back_source_slot = 3;
+
+    SceneData dst{};
+    MigrateSceneV12(src, dst);
+
+    CHECK(dst.schema_version == kSceneSchemaVersion);
+    CHECK(dst.surfaces[0].back_source_slot == 3);
+    CHECK(IsValidScene(dst));
+}
+
+// V10 shares SceneDataV11's binary layout; the two migrations must both accept
+// a V11-shaped source and produce a valid scene (guards the confusing naming).
+void TestMigrateV10AndV11Layout() {
+    const char* test_name = "MigrateV10/V11";
+    SceneDataV11 src{};
+    SeedSceneHeader(src, 11, 1);
+    SeedSurface(src.surfaces[0], 1);
+    src.surfaces[0].rotation_origin_mode = 6;  // custom
+    src.surfaces[0].rotation_origin_x = 25.0F;
+
+    SceneData via_v11{};
+    MigrateSceneV11(src, via_v11);
+    CHECK(via_v11.surfaces[0].rotation_origin_x == 25.0F);
+    CHECK(IsValidScene(via_v11));
+
+    SceneData via_v10{};
+    MigrateSceneV10(src, via_v10);
+    CHECK(via_v10.schema_version == kSceneSchemaVersion);
+    CHECK(IsValidScene(via_v10));
+}
+
+void TestValidatorRejectsDuplicateBanks() {
+    const char* test_name = "ValidatorDuplicateBanks";
+    SceneData scene{};
+    InitializeScene(scene, 100.0, 100.0);
+    scene.surface_count = 2;
+    scene.surfaces[1] = scene.surfaces[0];
+    // Both surfaces now share animation_bank 0 -> must be rejected.
+    CHECK(!IsValidScene(scene));
+}
+
+}  // namespace
+
+int main() {
+    std::printf("Running SurfaceLab model tests...\n");
+    TestInitializeScene();
+    TestMigrateV1PreservesGeometryAndValidates();
+    TestMigrateV9PreservesDeformStreams();
+    TestMigrateV12PreservesBackSlot();
+    TestMigrateV10AndV11Layout();
+    TestValidatorRejectsDuplicateBanks();
+    std::printf("%d checks, %d failures\n", g_checks, g_failures);
+    return g_failures == 0 ? 0 : 1;
+}

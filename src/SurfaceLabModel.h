@@ -595,3 +595,45 @@ static_assert(offsetof(SurfaceData, back_source_slot) == sizeof(SurfaceDataV11))
 static_assert(sizeof(SceneDataV12) == 3488);
 static_assert(offsetof(SurfaceData, animation_bank) == sizeof(SurfaceDataV12));
 static_assert(sizeof(SceneData) == 3520);
+
+// --- Scene model operations (defined in SurfaceLabModel.cpp) --------------
+// Pure, host-independent: initialization, validation, and the V1..V13 on-disk
+// migration chain. No After Effects SDK dependency, so they are unit-tested
+// directly (see tests/model_tests.cpp).
+
+void UpdateDerivedTransform(SurfaceData& surface);
+void InitializeEdgeTwists(SurfaceData& surface);
+void InitializeCornerCurls(SurfaceData& surface);
+void InitializeMaterial(SurfaceData& surface);
+void InitializeFlatSurface(
+    SurfaceData& surface,
+    std::uint32_t id,
+    double width,
+    double height,
+    bool use_local_transform);
+void InitializeScene(SceneData& scene, double width, double height);
+void AssignLegacyAnimationBanks(SceneData& scene);
+
+bool IsValidScene(const SceneData& scene);
+bool IsValidSceneV1(const SceneDataV1& scene);
+bool IsValidSceneV2(const SceneDataV2& scene);
+bool IsValidSceneV3(const SceneDataV3& scene);
+bool IsValidSceneV4(const SceneDataV4& scene);
+bool IsValidSceneV5(const SceneDataV5& scene);
+bool IsValidSceneV6(const SceneDataV6& scene);
+bool IsValidSceneV7(const SceneDataV7& scene);
+bool IsValidSceneV8(const SceneDataV8& scene);
+bool IsValidSceneV9(const SceneDataV9& scene);
+
+void MigrateSceneV1(const SceneDataV1& source, SceneData& destination);
+void MigrateSceneV2(const SceneDataV2& source, SceneData& destination);
+void MigrateSceneV3(const SceneDataV3& source, SceneData& destination);
+void MigrateSceneV4(const SceneDataV4& source, SceneData& destination);
+void MigrateSceneV5(const SceneDataV5& source, SceneData& destination);
+void MigrateSceneV6(const SceneDataV6& source, SceneData& destination);
+void MigrateSceneV7(const SceneDataV7& source, SceneData& destination);
+void MigrateSceneV8(const SceneDataV8& source, SceneData& destination);
+void MigrateSceneV9(const SceneDataV9& source, SceneData& destination);
+void MigrateSceneV10(const SceneDataV11& source, SceneData& destination);
+void MigrateSceneV11(const SceneDataV11& source, SceneData& destination);
+void MigrateSceneV12(const SceneDataV12& source, SceneData& destination);

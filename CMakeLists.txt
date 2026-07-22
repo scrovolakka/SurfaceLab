@@ -4,6 +4,14 @@ set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum supported macOS ver
 
 project(SurfaceLab VERSION 0.15.7 LANGUAGES C CXX)
 
+# The After Effects plug-in is macOS-only and needs the licensed AE SDK. The
+# scene-model unit tests are host-independent and build anywhere, so they are a
+# separate, opt-in target that does not require the SDK.
+option(SURFACELAB_BUILD_PLUGIN "Build the After Effects plug-in (macOS only)" ON)
+option(SURFACELAB_BUILD_TESTS "Build the host-independent model unit tests" OFF)
+
+if(SURFACELAB_BUILD_PLUGIN)
+
 if(NOT APPLE)
     message(FATAL_ERROR "The current prototype build supports macOS only.")
 endif()
@@ -83,3 +91,16 @@ add_custom_command(TARGET SurfaceLab POST_BUILD
     COMMAND /usr/bin/codesign --force --deep --sign -
         "$<TARGET_BUNDLE_DIR:SurfaceLab>"
     VERBATIM)
+
+endif()  # SURFACELAB_BUILD_PLUGIN
+
+if(SURFACELAB_BUILD_TESTS)
+    enable_testing()
+    add_executable(surfacelab_model_tests
+        src/SurfaceLabModel.cpp
+        tests/model_tests.cpp)
+    target_include_directories(surfacelab_model_tests PRIVATE src)
+    target_compile_features(surfacelab_model_tests PRIVATE cxx_std_17)
+    target_compile_options(surfacelab_model_tests PRIVATE -Wall -Wextra)
+    add_test(NAME model_tests COMMAND surfacelab_model_tests)
+endif()
