@@ -100,63 +100,65 @@ inline bool IsEdgeTwistValueParam(PF_ParamIndex index) {
            ContainsParam(index, kTwistFalloffParams);
 }
 
+// Animation property index -> canonical (bank 0) parameter index. The layout
+// is the wire order of SurfaceData's animatable fields; see the boundary
+// static_asserts below when appending properties.
+constexpr std::array<PF_ParamIndex, kSurfaceAnimationPropertyCount>
+    kPrimaryAnimationParams = {
+        // 0-15: control points, row-major 4x4
+        kParamPoint00, kParamPoint01, kParamPoint02, kParamPoint03,
+        kParamPoint10, kParamPoint11, kParamPoint12, kParamPoint13,
+        kParamPoint20, kParamPoint21, kParamPoint22, kParamPoint23,
+        kParamPoint30, kParamPoint31, kParamPoint32, kParamPoint33,
+        // 16-31: control-point depths, row-major 4x4
+        kParamDepth00, kParamDepth01, kParamDepth02, kParamDepth03,
+        kParamDepth10, kParamDepth11, kParamDepth12, kParamDepth13,
+        kParamDepth20, kParamDepth21, kParamDepth22, kParamDepth23,
+        kParamDepth30, kParamDepth31, kParamDepth32, kParamDepth33,
+        // 32-34: rotation
+        kParamRotationX, kParamRotationY, kParamRotationZ,
+        // 35-46: size, position, rotation origin, scale, divisions, thickness
+        kParamSurfaceSizeX, kParamSurfaceSizeY, kParamSurfacePosition,
+        kParamSurfaceRotationOriginMode, kParamSurfaceRotationOriginX,
+        kParamSurfaceRotationOriginY,
+        kParamSurfaceScaleX, kParamSurfaceScaleY, kParamSurfaceScaleZ,
+        kParamSurfaceDivisionsX, kParamSurfaceDivisionsY,
+        kParamSurfaceThickness,
+        // 47-51: bend and roll
+        kParamSurfaceBendX, kParamSurfaceBendY,
+        kParamSurfaceRollEdge, kParamSurfaceRollAngle, kParamSurfaceRollLength,
+        // 52-67: corner curls, four per corner
+        kParamSurfaceCornerAmount, kParamSurfaceCornerRadius,
+        kParamSurfaceCornerDirection, kParamSurfaceCornerLength,
+        kParamSurfaceCorner2Amount, kParamSurfaceCorner2Radius,
+        kParamSurfaceCorner2Direction, kParamSurfaceCorner2Length,
+        kParamSurfaceCorner3Amount, kParamSurfaceCorner3Radius,
+        kParamSurfaceCorner3Direction, kParamSurfaceCorner3Length,
+        kParamSurfaceCorner4Amount, kParamSurfaceCorner4Radius,
+        kParamSurfaceCorner4Direction, kParamSurfaceCorner4Length,
+        // 68-75: edge twists, two per edge
+        kParamSurfaceTwistAngle, kParamSurfaceTwistFalloff,
+        kParamSurfaceTwist2Angle, kParamSurfaceTwist2Falloff,
+        kParamSurfaceTwist3Angle, kParamSurfaceTwist3Falloff,
+        kParamSurfaceTwist4Angle, kParamSurfaceTwist4Falloff,
+        // 76-83: material
+        kParamSurfaceSourceSlot, kParamSurfaceBackSourceSlot,
+        kParamSurfaceImageSize, kParamSurfaceImageBorder,
+        kParamSurfaceOpacity, kParamSurfaceDiffuse,
+        kParamSurfaceSpecular, kParamSurfaceShininess};
+
+static_assert(kPrimaryAnimationParams[15] == kParamPoint33);
+static_assert(kPrimaryAnimationParams[31] == kParamDepth33);
+static_assert(kPrimaryAnimationParams[34] == kParamRotationZ);
+static_assert(kPrimaryAnimationParams[51] == kParamSurfaceRollLength);
+static_assert(kPrimaryAnimationParams[67] == kParamSurfaceCorner4Length);
+static_assert(kPrimaryAnimationParams[75] == kParamSurfaceTwist4Falloff);
+static_assert(kPrimaryAnimationParams[83] == kParamSurfaceShininess);
+
 inline PF_ParamIndex PrimaryAnimationParam(std::size_t property) {
-    if (property < 16) {
-        return kParamPoint00 + static_cast<PF_ParamIndex>(property);
-    }
-    if (property < 32) {
-        return kParamDepth00 + static_cast<PF_ParamIndex>(property - 16);
-    }
-    if (property < 35) {
-        return kParamRotationX + static_cast<PF_ParamIndex>(property - 32);
-    }
-    switch (property) {
-        case 35: return kParamSurfaceSizeX;
-        case 36: return kParamSurfaceSizeY;
-        case 37: return kParamSurfacePosition;
-        case 38: return kParamSurfaceRotationOriginMode;
-        case 39: return kParamSurfaceRotationOriginX;
-        case 40: return kParamSurfaceRotationOriginY;
-        case 41: return kParamSurfaceScaleX;
-        case 42: return kParamSurfaceScaleY;
-        case 43: return kParamSurfaceScaleZ;
-        case 44: return kParamSurfaceDivisionsX;
-        case 45: return kParamSurfaceDivisionsY;
-        case 46: return kParamSurfaceThickness;
-        case 47: return kParamSurfaceBendX;
-        case 48: return kParamSurfaceBendY;
-        case 49: return kParamSurfaceRollEdge;
-        case 50: return kParamSurfaceRollAngle;
-        case 51: return kParamSurfaceRollLength;
-        default: break;
-    }
-    if (property < 68) {
-        const std::size_t offset = property - 52;
-        const std::size_t corner = offset / 4;
-        switch (offset % 4) {
-            case 0: return kCornerAmountParams[corner];
-            case 1: return kCornerRadiusParams[corner];
-            case 2: return kCornerDirectionParams[corner];
-            default: return kCornerLengthParams[corner];
-        }
-    }
-    if (property < 76) {
-        const std::size_t offset = property - 68;
-        const std::size_t edge = offset / 2;
-        return offset % 2 == 0
-                   ? kTwistAngleParams[edge]
-                   : kTwistFalloffParams[edge];
-    }
-    switch (property) {
-        case 76: return kParamSurfaceSourceSlot;
-        case 77: return kParamSurfaceBackSourceSlot;
-        case 78: return kParamSurfaceImageSize;
-        case 79: return kParamSurfaceImageBorder;
-        case 80: return kParamSurfaceOpacity;
-        case 81: return kParamSurfaceDiffuse;
-        case 82: return kParamSurfaceSpecular;
-        default: return kParamSurfaceShininess;
-    }
+    // Out-of-range clamps to the last entry, matching the old switch default.
+    return kPrimaryAnimationParams[
+        std::min(property, kPrimaryAnimationParams.size() - 1)];
 }
 
 inline PF_ParamIndex AnimationBankTopicParam(std::uint32_t bank) {
