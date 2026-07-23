@@ -19,6 +19,19 @@
         lines.push(text);
     }
 
+    // Rig markers store layer.id (stable across reordering); never use
+    // layer.index for lookups -- rig creation inserts layers above the host
+    // and shifts every index.
+    function stableLayerId(layer) {
+        try {
+            if (layer.id !== undefined) {
+                return String(layer.id);
+            }
+        } catch (ignored) {
+        }
+        return "index-" + layer.index;
+    }
+
     function matchNameForDiskId(diskId) {
         var suffix = String(diskId);
         while (suffix.length < 4) {
@@ -212,6 +225,14 @@
     out("Coordinate Space = " +
         (coordinateSpace ? coordinateSpace.value : "?") +
         "  (1=Layer Local, 2=Comp World)");
+    var cameraSource = propertyForDiskId(effect, 407);
+    out("Camera Source = " +
+        (cameraSource ? cameraSource.value : "?") +
+        "  (1=Internal, 2=AE Active Camera)");
+    var lightSource = propertyForDiskId(effect, 408);
+    out("Light Source = " +
+        (lightSource ? lightSource.value : "?") +
+        "  (1=Internal, 2=AE Comp Lights)");
     out("");
 
     out("Scene Transform streams:");
@@ -267,7 +288,7 @@
     out("");
 
     // Rig layers.
-    var sourceLayerId = sourceLayer.index;
+    var sourceLayerId = stableLayerId(sourceLayer);
     var sceneMarker = "SurfaceLab Scene Rig; sourceLayerId=" +
         sourceLayerId + ";";
     var rigMarker = "SurfaceLab Controller Rig; surfaceId=" + surfaceId +
@@ -275,10 +296,25 @@
     var sceneRoot = findRigLayer(comp, sceneMarker, "scene-root");
     var surfaceRoot = findRigLayer(comp, rigMarker, "root");
     var controlCount = countRigLayers(comp, rigMarker, "control");
-    out("Rig layers:");
+    out("Rig layers (host layer id=" + sourceLayerId + "):");
     out("  Scene Root: " + (sceneRoot ? sceneRoot.name : "(none)"));
     out("  Surface Root: " + (surfaceRoot ? surfaceRoot.name : "(none)"));
     out("  Control nulls: " + controlCount + " / " + MAX_CONTROLS);
+    // Any marked layer in the comp, matched or not -- makes stale rigs from
+    // other layers/ids and duplicates visible.
+    out("  All SurfaceLab-marked layers in comp:");
+    var markedCount = 0;
+    for (index = 1; index <= comp.numLayers; index += 1) {
+        var markedLayer = comp.layer(index);
+        if (markedLayer.comment.indexOf("SurfaceLab") === 0) {
+            markedCount += 1;
+            out("    " + markedLayer.name + "  {" +
+                markedLayer.comment + "}");
+        }
+    }
+    if (markedCount === 0) {
+        out("    (none)");
+    }
     out("");
 
     // Consistency checks.

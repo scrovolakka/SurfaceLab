@@ -454,7 +454,11 @@
 
         app.beginUndoGroup("Create SurfaceLab 3D Controllers");
         undoStarted = true;
-        setSetupValue(cameraSourceProperty, 2);
+        // Only hand projection to the AE camera when the comp actually has
+        // one; otherwise keep the internal camera so the render stays visible.
+        if (comp.activeCamera) {
+            setSetupValue(cameraSourceProperty, 2);
+        }
         setSetupValue(coordinateSpaceProperty, 2);
         // The rig owns the hinge from here on: switch to Custom origin and
         // seed the percentages that reproduce the mode the user had chosen,
