@@ -2,7 +2,9 @@
 
 Independent After Effects native effect prototype for editable bicubic surfaces.
 
-Version 0.15.12 unifies the per-surface scale and rotation pivots on the
+Version 0.15.13 applies the Composition World host-transform cancel for every
+camera source (the internal camera included), so a camera-less comp keeps the
+render and the Null rig registered. Version 0.15.12 unified the per-surface scale and rotation pivots on the
 Rotation Origin ("hinge" semantics) and makes the controller rig's surface Root
 null that hinge: the Root is created on the origin and the origin follows the
 Root thereafter, for every origin mode. Version 0.15.11 added a shared Scene

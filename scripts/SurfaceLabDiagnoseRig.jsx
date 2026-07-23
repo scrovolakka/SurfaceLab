@@ -11,7 +11,7 @@
     var SCENE_POSITION = 505;
     var SCENE_ROTATIONS = [506, 507, 508];
     var SCENE_SCALES = [509, 510, 511];
-    var ROTATION_AXIS_SIGNS = [1, -1, 1];
+    var ROTATION_AXIS_SIGNS = [1, 1, 1];
     var MAX_CONTROLS = 16;
     var lines = [];
 
@@ -400,7 +400,10 @@
         out("  (skipped: no surface root or missing streams)");
     }
     if (sceneRoot && scenePositionProperty) {
-        var sceneRootWorld = sceneRoot.toWorld([0, 0, 0]);
+        // toWorld only exists in the expression language, not ExtendScript;
+        // the Scene Root is unparented, so its position IS its world position.
+        var sceneRootWorld = sceneRoot.property("ADBE Transform Group")
+            .property("ADBE Position").value;
         var scenePositionValue = scenePositionProperty.value;
         var sceneDelta = Math.sqrt(
             Math.pow(sceneRootWorld[0] - scenePositionValue[0], 2) +

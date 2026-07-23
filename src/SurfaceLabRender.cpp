@@ -1256,7 +1256,6 @@ bool ResolveAfterEffectsCamera(
     double scale_x,
     double scale_y,
     double scale_z,
-    bool use_comp_world,
     CameraState& camera) {
     A_Time comp_time{};
     if (!ResolveCompTime(in_data, comp_time)) {
@@ -1306,64 +1305,88 @@ bool ResolveAfterEffectsCamera(
     camera.perspective = true;
     camera.use_basis = true;
 
-    // In Composition World mode SurfaceLab points and 3D controller Nulls
-    // share AE comp-world coordinates. The effect output is still a 2D layer,
-    // so cancel that host layer's affine transform before AE composites it.
-    if (use_comp_world) {
-        AEGP_LayerH effect_layer = nullptr;
-        AEGP_LayerFlags layer_flags = AEGP_LayerFlag_NONE;
-        AEGP_CompH comp = nullptr;
-        AEGP_ItemH comp_item = nullptr;
-        A_long comp_width = 0;
-        A_long comp_height = 0;
-        A_Matrix4 effect_to_world{};
-        if (suites.PFInterfaceSuite1()->AEGP_GetEffectLayer(
-                in_data->effect_ref,
-                &effect_layer) == A_Err_NONE &&
-            effect_layer &&
-            suites.LayerSuite5()->AEGP_GetLayerFlags(
-                effect_layer,
-                &layer_flags) == A_Err_NONE &&
-            (layer_flags & AEGP_LayerFlag_LAYER_IS_3D) == 0 &&
-            suites.LayerSuite5()->AEGP_GetLayerParentComp(
-                effect_layer,
-                &comp) == A_Err_NONE &&
-            comp &&
-            suites.CompSuite4()->AEGP_GetItemFromComp(
-                comp,
-                &comp_item) == A_Err_NONE &&
-            comp_item &&
-            suites.ItemSuite6()->AEGP_GetItemDimensions(
-                comp_item,
-                &comp_width,
-                &comp_height) == A_Err_NONE &&
-            comp_width > 0 &&
-            comp_height > 0 &&
-            suites.LayerSuite5()->AEGP_GetLayerToWorldXform(
-                effect_layer,
-                &comp_time,
-                &effect_to_world) == A_Err_NONE) {
-            const double safe_scale_x = std::max(1.0e-12, scale_x);
-            const double safe_scale_y = std::max(1.0e-12, scale_y);
-            const Affine2D output_to_comp{
-                effect_to_world.mat[0][0],
-                effect_to_world.mat[1][0] * safe_scale_x / safe_scale_y,
-                effect_to_world.mat[0][1] * safe_scale_y / safe_scale_x,
-                effect_to_world.mat[1][1],
-                effect_to_world.mat[3][0] * scale_x,
-                effect_to_world.mat[3][1] * scale_y};
-            Affine2D comp_to_output;
-            if (TryInvertAffine2D(output_to_comp, comp_to_output)) {
-                camera.center_x =
-                    static_cast<double>(comp_width) * scale_x * 0.5;
-                camera.center_y =
-                    static_cast<double>(comp_height) * scale_y * 0.5;
-                camera.comp_to_output = comp_to_output;
-                camera.use_comp_to_output = true;
+    return true;
+}
+
+// In Composition World mode SurfaceLab points and 3D controller Nulls share
+// AE comp-world coordinates. The effect output is still a 2D layer, so cancel
+// that host layer's affine transform before AE composites it. This must apply
+// for EVERY camera source: with the internal camera (or no comp camera at
+// all) the coordinates are still comp-world, and skipping the cancel leaves
+// the render offset from the Null rig by the host layer's placement.
+bool ApplyCompWorldOutputTransform(
+    PF_InData* in_data,
+    double scale_x,
+    double scale_y,
+    CameraState& camera) {
+    A_Time comp_time{};
+    if (!ResolveCompTime(in_data, comp_time)) {
+        return false;
+    }
+    AEGP_SuiteHandler suites(in_data->pica_basicP);
+    AEGP_LayerH effect_layer = nullptr;
+    AEGP_LayerFlags layer_flags = AEGP_LayerFlag_NONE;
+    AEGP_CompH comp = nullptr;
+    AEGP_ItemH comp_item = nullptr;
+    A_long comp_width = 0;
+    A_long comp_height = 0;
+    A_Matrix4 effect_to_world{};
+    if (suites.PFInterfaceSuite1()->AEGP_GetEffectLayer(
+            in_data->effect_ref,
+            &effect_layer) == A_Err_NONE &&
+        effect_layer &&
+        suites.LayerSuite5()->AEGP_GetLayerFlags(
+            effect_layer,
+            &layer_flags) == A_Err_NONE &&
+        (layer_flags & AEGP_LayerFlag_LAYER_IS_3D) == 0 &&
+        suites.LayerSuite5()->AEGP_GetLayerParentComp(
+            effect_layer,
+            &comp) == A_Err_NONE &&
+        comp &&
+        suites.CompSuite4()->AEGP_GetItemFromComp(
+            comp,
+            &comp_item) == A_Err_NONE &&
+        comp_item &&
+        suites.ItemSuite6()->AEGP_GetItemDimensions(
+            comp_item,
+            &comp_width,
+            &comp_height) == A_Err_NONE &&
+        comp_width > 0 &&
+        comp_height > 0 &&
+        suites.LayerSuite5()->AEGP_GetLayerToWorldXform(
+            effect_layer,
+            &comp_time,
+            &effect_to_world) == A_Err_NONE) {
+        const double safe_scale_x = std::max(1.0e-12, scale_x);
+        const double safe_scale_y = std::max(1.0e-12, scale_y);
+        const Affine2D output_to_comp{
+            effect_to_world.mat[0][0],
+            effect_to_world.mat[1][0] * safe_scale_x / safe_scale_y,
+            effect_to_world.mat[0][1] * safe_scale_y / safe_scale_x,
+            effect_to_world.mat[1][1],
+            effect_to_world.mat[3][0] * scale_x,
+            effect_to_world.mat[3][1] * scale_y};
+        Affine2D comp_to_output;
+        if (TryInvertAffine2D(output_to_comp, comp_to_output)) {
+            const double previous_center_x = camera.center_x;
+            const double previous_center_y = camera.center_y;
+            camera.center_x =
+                static_cast<double>(comp_width) * scale_x * 0.5;
+            camera.center_y =
+                static_cast<double>(comp_height) * scale_y * 0.5;
+            if (!camera.use_basis) {
+                // The internal camera sits on and looks at the projection
+                // center; carry its position along when that center moves
+                // from the layer to the comp.
+                camera.position.x += camera.center_x - previous_center_x;
+                camera.position.y += camera.center_y - previous_center_y;
             }
+            camera.comp_to_output = comp_to_output;
+            camera.use_comp_to_output = true;
+            return true;
         }
     }
-    return true;
+    return false;
 }
 
 bool ReadLayerStream(
@@ -1736,9 +1759,6 @@ CameraState BuildResolvedCameraState(
         scale_z);
     if (params[kParamCameraSource]->u.pd.value ==
         kCameraSourceAfterEffects) {
-        const bool use_comp_world =
-            params[kParamCoordinateSpace]->u.pd.value ==
-            kCoordinateSpaceCompWorld;
         ResolveAfterEffectsCamera(
             in_data,
             center_x,
@@ -1748,8 +1768,11 @@ CameraState BuildResolvedCameraState(
             scale_x,
             scale_y,
             scale_z,
-            use_comp_world,
             camera);
+    }
+    if (params[kParamCoordinateSpace]->u.pd.value ==
+        kCoordinateSpaceCompWorld) {
+        ApplyCompWorldOutputTransform(in_data, scale_x, scale_y, camera);
     }
     camera.scene_transform = BuildSceneCoordinateTransform(
         params,
