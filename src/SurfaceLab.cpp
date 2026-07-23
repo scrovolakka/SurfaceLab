@@ -511,7 +511,7 @@ extern "C" DllExport PF_Err PluginDataEntryFunction2(
         "SurfaceLab",
         AE_RESERVED_INFO,
         "EffectMain",
-        "https://example.com");
+        "https://github.com/scrovolakka/SurfaceLab");
     return result;
 }
 

@@ -9,6 +9,15 @@
 // Extracted verbatim from SurfaceLab.cpp; no behavioral change. Depends only on
 // SurfaceLabModel.h, so this translation unit compiles and is tested off-host.
 
+namespace {
+
+void ResetScene(SceneData& scene) {
+    static const SceneData kDefaultScene{};
+    std::memcpy(&scene, &kDefaultScene, sizeof(scene));
+}
+
+}  // namespace
+
 void UpdateDerivedTransform(SurfaceData& surface) {
     float minimum_x = surface.control_points[0].x;
     float maximum_x = minimum_x;
@@ -92,7 +101,7 @@ void InitializeFlatSurface(
 }
 
 void InitializeScene(SceneData& scene, double width, double height) {
-    scene = {};
+    ResetScene(scene);
     scene.magic = kSceneMagic;
     scene.schema_version = kSceneSchemaVersion;
     scene.reserved[kAnimationStreamsInitializedIndex] = 1;
@@ -113,6 +122,26 @@ bool IsValidScene(const SceneData& scene) {
     std::array<bool, kMaximumSurfaces> used_animation_banks{};
     for (std::uint32_t index = 0; index < scene.surface_count; ++index) {
         const SurfaceData& surface = scene.surfaces[index];
+        for (const StoredPoint3& point : surface.control_points) {
+            if (!std::isfinite(point.x) ||
+                !std::isfinite(point.y) ||
+                !std::isfinite(point.z)) {
+                return false;
+            }
+        }
+        if (!std::isfinite(surface.rotation_x) ||
+            !std::isfinite(surface.rotation_y) ||
+            !std::isfinite(surface.rotation_z) ||
+            !std::isfinite(surface.size_x) ||
+            !std::isfinite(surface.size_y) ||
+            !std::isfinite(surface.position_x) ||
+            !std::isfinite(surface.position_y) ||
+            !std::isfinite(surface.position_z) ||
+            !std::isfinite(surface.scale_x) ||
+            !std::isfinite(surface.scale_y) ||
+            !std::isfinite(surface.scale_z)) {
+            return false;
+        }
         if (surface.animation_bank >= kMaximumSurfaces ||
             used_animation_banks[surface.animation_bank]) {
             return false;
@@ -296,7 +325,7 @@ namespace {
 
 template <typename SceneV>
 void CopySceneHeader(const SceneV& source, SceneData& destination) {
-    destination = {};
+    ResetScene(destination);
     destination.magic = kSceneMagic;
     destination.schema_version = kSceneSchemaVersion;
     destination.active = source.active;
@@ -526,7 +555,7 @@ void MigrateSceneV9(const SceneDataV9& source, SceneData& destination) {
 }
 
 void MigrateSceneV11(const SceneDataV11& source, SceneData& destination) {
-    destination = {};
+    ResetScene(destination);
     destination.magic = source.magic;
     destination.schema_version = kSceneSchemaVersion;
     destination.active = source.active;
@@ -553,7 +582,7 @@ void MigrateSceneV10(const SceneDataV11& source, SceneData& destination) {
 }
 
 void MigrateSceneV12(const SceneDataV12& source, SceneData& destination) {
-    destination = {};
+    ResetScene(destination);
     destination.magic = source.magic;
     destination.schema_version = kSceneSchemaVersion;
     destination.active = source.active;
