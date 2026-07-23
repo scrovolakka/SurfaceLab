@@ -483,11 +483,16 @@ PF_Err GlobalSetup(PF_InData* in_data, PF_OutData* out_data) {
     out_data->out_flags =
         PF_OutFlag_DEEP_COLOR_AWARE | PF_OutFlag_I_EXPAND_BUFFER |
         PF_OutFlag_SEND_UPDATE_PARAMS_UI | PF_OutFlag_CUSTOM_UI;
+    // I_MIX_GUID_DEPENDENCIES: the comp camera, comp lights, and the host
+    // layer transform are read through AEGP suites, invisible to AE's frame
+    // cache key. SmartPreRender mixes that resolved state into the render
+    // GUID so editing only the camera or a light invalidates cached frames.
     out_data->out_flags2 =
         PF_OutFlag2_I_USE_3D_CAMERA |
         PF_OutFlag2_I_USE_3D_LIGHTS |
         PF_OutFlag2_SUPPORTS_SMART_RENDER |
-        PF_OutFlag2_FLOAT_COLOR_AWARE;
+        PF_OutFlag2_FLOAT_COLOR_AWARE |
+        PF_OutFlag2_I_MIX_GUID_DEPENDENCIES;
     return PF_Err_NONE;
 }
 

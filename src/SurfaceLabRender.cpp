@@ -2393,6 +2393,75 @@ PF_Err RenderSmartFrame(
 
 }  // namespace
 
+namespace {
+
+// AE's frame cache keys on stream parameters and checked-out layer frames.
+// Everything this effect reads through AEGP suites -- the comp camera, the
+// comp lights, and the host layer transform behind the Comp World cancel --
+// is invisible to that key. Without mixing that state into the render GUID,
+// editing only the camera re-serves a stale frame rendered from the old
+// pose while the 3D Nulls track the live view: the render appears to
+// rotate the wrong way around a mirrored hinge, and the mismatch depends
+// on edit order, which is what made it so hard to reproduce consistently.
+// The digest is a flat, padding-free double array so identical state always
+// produces identical bytes (a struct memcpy would mix indeterminate
+// padding and defeat caching entirely).
+void AppendPointDigest(std::vector<double>& digest, const Point3& point) {
+    digest.push_back(point.x);
+    digest.push_back(point.y);
+    digest.push_back(point.z);
+}
+
+std::vector<double> BuildExternalStateDigest(
+    const CameraState& camera,
+    const LightingState& lighting) {
+    std::vector<double> digest;
+    digest.reserve(48 + lighting.light_count * 16);
+    AppendPointDigest(digest, camera.scene_transform.pivot);
+    AppendPointDigest(digest, camera.scene_transform.position);
+    AppendPointDigest(digest, camera.scene_transform.scale);
+    AppendPointDigest(digest, camera.scene_transform.rotation_radians);
+    AppendPointDigest(digest, camera.position);
+    AppendPointDigest(digest, camera.right);
+    AppendPointDigest(digest, camera.down);
+    AppendPointDigest(digest, camera.forward);
+    digest.push_back(camera.rotation_x);
+    digest.push_back(camera.rotation_y);
+    digest.push_back(camera.rotation_z);
+    digest.push_back(camera.focal_distance);
+    digest.push_back(camera.center_x);
+    digest.push_back(camera.center_y);
+    digest.push_back(camera.output_offset_x);
+    digest.push_back(camera.output_offset_y);
+    digest.push_back(camera.comp_to_output.xx);
+    digest.push_back(camera.comp_to_output.xy);
+    digest.push_back(camera.comp_to_output.yx);
+    digest.push_back(camera.comp_to_output.yy);
+    digest.push_back(camera.comp_to_output.tx);
+    digest.push_back(camera.comp_to_output.ty);
+    digest.push_back(camera.perspective ? 1.0 : 0.0);
+    digest.push_back(camera.use_basis ? 1.0 : 0.0);
+    digest.push_back(camera.use_comp_to_output ? 1.0 : 0.0);
+    digest.push_back(lighting.enabled ? 1.0 : 0.0);
+    digest.push_back(static_cast<double>(lighting.light_count));
+    AppendPointDigest(digest, lighting.ambient);
+    for (std::size_t index = 0; index < lighting.light_count; ++index) {
+        const RenderLight& light = lighting.lights[index];
+        digest.push_back(static_cast<double>(
+            static_cast<int>(light.type)));
+        AppendPointDigest(digest, light.position);
+        AppendPointDigest(digest, light.direction);
+        AppendPointDigest(digest, light.forward);
+        AppendPointDigest(digest, light.color);
+        digest.push_back(light.intensity);
+        digest.push_back(light.cone_angle);
+        digest.push_back(light.cone_feather);
+    }
+    return digest;
+}
+
+}  // namespace
+
 PF_Err SmartPreRender(
     PF_InData* in_data,
     PF_OutData*,
@@ -2439,6 +2508,16 @@ PF_Err SmartPreRender(
             input_height,
             0.0,
             0.0));
+    const std::vector<double> external_state = BuildExternalStateDigest(
+        snapshot->camera,
+        snapshot->lighting);
+    error = extra->cb->GuidMixInPtr(
+        in_data->effect_ref,
+        static_cast<A_u_long>(external_state.size() * sizeof(double)),
+        external_state.data());
+    if (error != PF_Err_NONE) {
+        return error;
+    }
     for (std::uint32_t slot = 0;
          slot < static_cast<std::uint32_t>(snapshot->source_slots.size());
          ++slot) {
