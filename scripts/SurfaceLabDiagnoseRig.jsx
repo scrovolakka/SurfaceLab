@@ -11,9 +11,83 @@
     var SCENE_POSITION = 505;
     var SCENE_ROTATIONS = [506, 507, 508];
     var SCENE_SCALES = [509, 510, 511];
-    var ROTATION_AXIS_SIGNS = [1, 1, 1];
     var MAX_CONTROLS = 16;
     var lines = [];
+
+    // Rotation-order bridge shared with the create script: an AE layer
+    // composes its per-axis rotations Z-then-Y-then-X (Orientation multiplies
+    // on afterwards), SurfaceLab's RotatePoint composes X-then-Y-then-Z.
+    // Binding checks therefore compare rotation MATRICES, not raw angles --
+    // different Euler triples can name the same rotation.
+    function rotationMatrixZYX(anglesDegrees) {
+        var d = Math.PI / 180;
+        var cx = Math.cos(anglesDegrees[0] * d);
+        var sx = Math.sin(anglesDegrees[0] * d);
+        var cy = Math.cos(anglesDegrees[1] * d);
+        var sy = Math.sin(anglesDegrees[1] * d);
+        var cz = Math.cos(anglesDegrees[2] * d);
+        var sz = Math.sin(anglesDegrees[2] * d);
+        // AE layer convention: M = Rx * Ry * Rz (Z applied to points first).
+        return [
+            [cy * cz, -cy * sz, sy],
+            [cx * sz + sx * sy * cz, cx * cz - sx * sy * sz, -sx * cy],
+            [sx * sz - cx * sy * cz, sx * cz + cx * sy * sz, cx * cy]
+        ];
+    }
+
+    function rotationMatrixXYZ(anglesDegrees) {
+        var d = Math.PI / 180;
+        var cx = Math.cos(anglesDegrees[0] * d);
+        var sx = Math.sin(anglesDegrees[0] * d);
+        var cy = Math.cos(anglesDegrees[1] * d);
+        var sy = Math.sin(anglesDegrees[1] * d);
+        var cz = Math.cos(anglesDegrees[2] * d);
+        var sz = Math.sin(anglesDegrees[2] * d);
+        // SurfaceLab RotatePoint convention: M = Rz * Ry * Rx.
+        return [
+            [cz * cy, cz * sy * sx - sz * cx, cz * sy * cx + sz * sx],
+            [sz * cy, sz * sy * sx + cz * cx, sz * sy * cx - cz * sx],
+            [-sy, cy * sx, cy * cx]
+        ];
+    }
+
+    function multiplyMatrix(a, b) {
+        var result = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+        for (var row = 0; row < 3; row += 1) {
+            for (var column = 0; column < 3; column += 1) {
+                result[row][column] =
+                    a[row][0] * b[0][column] +
+                    a[row][1] * b[1][column] +
+                    a[row][2] * b[2][column];
+            }
+        }
+        return result;
+    }
+
+    function maxMatrixDelta(a, b) {
+        var delta = 0;
+        for (var row = 0; row < 3; row += 1) {
+            for (var column = 0; column < 3; column += 1) {
+                delta = Math.max(
+                    delta,
+                    Math.abs(a[row][column] - b[row][column]));
+            }
+        }
+        return delta;
+    }
+
+    // AE applies Orientation after the rotation properties.
+    function aeLayerRotationMatrix(transformGroup) {
+        var orientation = transformGroup.property("ADBE Orientation").value;
+        var rotation = [
+            transformGroup.property("ADBE Rotate X").value,
+            transformGroup.property("ADBE Rotate Y").value,
+            transformGroup.property("ADBE Rotate Z").value
+        ];
+        return multiplyMatrix(
+            rotationMatrixZYX(orientation),
+            rotationMatrixZYX(rotation));
+    }
 
     function out(text) {
         lines.push(text);
@@ -317,33 +391,37 @@
     }
     out("");
 
-    // The actually-bound expression sign per rotation axis, read from the
+    // The actually-bound expression style per rotation axis, read from the
     // expression text itself. This cannot be fooled by zero rotations, unlike
     // the value comparison below.
-    function boundSign(property) {
+    function bindingStyle(property) {
         if (!property || !property.expressionEnabled) {
             return "(no expression)";
         }
         var text = String(property.expression);
+        if (text.indexOf("toWorldVec") >= 0) {
+            return "matrix decomposition (order-correct)";
+        }
         if (text.indexOf("(-1)*(") >= 0) {
-            return "-1";
+            return "STALE sign-map rig (-1); re-create the rig";
         }
         if (text.indexOf("(1)*(") >= 0) {
-            return "+1";
+            return "STALE sign-map rig (+1); re-create the rig";
         }
-        return "raw (no sign factor; pre-sign-map rig)";
+        return "STALE raw-angle rig; re-create the rig";
     }
-    out("Bound rotation-expression signs (from expression text):");
+    out("Bound rotation-expression style (from expression text):");
     for (index = 0; index < 3; index += 1) {
         out("  Surface Rotation " + "XYZ".charAt(index) + ": " +
-            boundSign(rotationProperties[index]));
+            bindingStyle(rotationProperties[index]));
     }
     for (index = 0; index < 3; index += 1) {
         out("  Scene Rotation " + "XYZ".charAt(index) + ": " +
-            boundSign(sceneRotationProperties[index]));
+            bindingStyle(sceneRotationProperties[index]));
     }
-    out("  (this script's expected map: [" +
-        ROTATION_AXIS_SIGNS.join(", ") + "])");
+    out("  (expected: matrix decomposition -- AE composes Z-then-Y-then-X, " +
+        "SurfaceLab X-then-Y-then-Z, so raw angle copies only agree on a " +
+        "single axis)");
     // Raw dump removes all ambiguity about what is actually baked into the rig.
     if (rotationProperties[1] && rotationProperties[1].expressionEnabled) {
         out("  Raw Surface Rotation Y expression:");
@@ -438,27 +516,50 @@
                     " root=" + round2(rootScale[index]));
             }
         }
-        var rootRotations = [
-            rootTransform.property("ADBE Rotate X").value +
-                rootTransform.property("ADBE Orientation").value[0],
-            rootTransform.property("ADBE Rotate Y").value +
-                rootTransform.property("ADBE Orientation").value[1],
-            rootTransform.property("ADBE Rotate Z").value +
-                rootTransform.property("ADBE Orientation").value[2]
-        ];
-        for (index = 0; index < 3; index += 1) {
-            if (rotationProperties[index]) {
-                check(
-                    "Rotation " + "XYZ".charAt(index) +
-                    " bound with sign " + ROTATION_AXIS_SIGNS[index],
-                    Math.abs(rotationProperties[index].value -
-                        ROTATION_AXIS_SIGNS[index] * rootRotations[index]) < 0.5,
-                    "param=" + round2(rotationProperties[index].value) +
-                    " root=" + round2(rootRotations[index]));
-            }
+        if (rotationProperties[0] && rotationProperties[1] &&
+                rotationProperties[2]) {
+            // Compare as matrices: the params compose X-then-Y-then-Z inside
+            // SurfaceLab, the Null composes Z-then-Y-then-X, so equal raw
+            // angles are only expected for single-axis rotations. Assumes the
+            // Surface Root is parented directly to the Scene Root (its own
+            // streams are then its scene-relative rotation).
+            var boundMatrix = rotationMatrixXYZ([
+                rotationProperties[0].value,
+                rotationProperties[1].value,
+                rotationProperties[2].value
+            ]);
+            var rootMatrix = aeLayerRotationMatrix(rootTransform);
+            var rotationDelta = maxMatrixDelta(boundMatrix, rootMatrix);
+            check(
+                "Rotation params recompose the Surface Root's rotation",
+                rotationDelta < 0.02,
+                "param=[" + round2(rotationProperties[0].value) + ", " +
+                round2(rotationProperties[1].value) + ", " +
+                round2(rotationProperties[2].value) + "] root ori+rot " +
+                "matrix delta=" + rotationDelta.toFixed(4));
         }
     } else {
         out("  (skipped: no surface root or missing streams)");
+    }
+    if (sceneRoot && sceneRotationProperties[0] &&
+            sceneRotationProperties[1] && sceneRotationProperties[2]) {
+        var sceneBoundMatrix = rotationMatrixXYZ([
+            sceneRotationProperties[0].value,
+            sceneRotationProperties[1].value,
+            sceneRotationProperties[2].value
+        ]);
+        var sceneRootMatrix = aeLayerRotationMatrix(
+            sceneRoot.property("ADBE Transform Group"));
+        var sceneRotationDelta = maxMatrixDelta(
+            sceneBoundMatrix,
+            sceneRootMatrix);
+        check(
+            "Scene rotation params recompose the Scene Root's rotation",
+            sceneRotationDelta < 0.02,
+            "param=[" + round2(sceneRotationProperties[0].value) + ", " +
+            round2(sceneRotationProperties[1].value) + ", " +
+            round2(sceneRotationProperties[2].value) + "] matrix delta=" +
+            sceneRotationDelta.toFixed(4));
     }
     if (sceneRoot && scenePositionProperty) {
         // toWorld only exists in the expression language, not ExtendScript;

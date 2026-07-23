@@ -6,20 +6,18 @@
     var SCENE_POSITION = 505;
     var SCENE_ROTATIONS = [506, 507, 508];
     var SCENE_SCALES = [509, 510, 511];
-    // Per-axis sign relating AE null rotation to SurfaceLab's rotation param.
-    // With the rig fully registered (hinge on the origin, render and Nulls
-    // through the same AE camera) these match directly, so [1, 1, 1] is the
-    // default. The earlier non-unit maps were compensating for registration
-    // bugs (hinge offset, internal-vs-AE camera) that are now fixed, and were
-    // measured while those bugs distorted the result.
-    //
-    // To recalibrate one axis: create the rig, rotate the Surface Root on that
-    // axis by +30, and watch the Comp view (active camera). If the render and
-    // the control-Null cage stay glued, the sign is right; if they peel apart,
-    // negate that axis. X is special: its 2D silhouette is identical for +/-30
-    // (height scales by cos), so judge X only by whether the near/far DEPTH
-    // tilt of the render matches the Nulls, not by the 2D outline.
-    var ROTATION_AXIS_SIGNS = [1, 1, 1];
+    // AE and SurfaceLab agree on every per-axis rotation direction, but they
+    // compose the three axes in OPPOSITE order: AE applies a layer's rotation
+    // Z-then-Y-then-X to points (Orientation multiplies on afterwards, in the
+    // same Z-Y-X order), while SurfaceLab's RotatePoint applies X-then-Y-
+    // then-Z. Copying raw per-axis angles is therefore exact only for
+    // single-axis rotations -- any compound rotation (e.g. from the viewport
+    // rotate gizmo) diverges, which is why sign-map calibration could never
+    // converge. The rotation bindings below instead read the Null's actual
+    // rotation basis with toWorldVec and re-decompose that matrix into the
+    // X-then-Y-then-Z Euler angles SurfaceLab expects; that is exact for
+    // every combination of Rotation and Orientation (verified numerically
+    // against AE 2026, including gimbal poses).
     var MAX_CONTROLS = 16;
     var assignedProperties = [];
     var createdLayers = [];
@@ -288,12 +286,84 @@
             "sp[2]+rp[2]+lp[2];";
     }
 
-    function rotationExpression(rootName, axis) {
-        var rotationNames = ["xRotation", "yRotation", "zRotation"];
-        return "var r=thisComp.layer(" + quoteExpressionString(rootName) + ");\n" +
-            "(" + ROTATION_AXIS_SIGNS[axis] +
-            ")*(r.transform.orientation[" + axis + "]+r.transform." +
-            rotationNames[axis] + ");";
+    // Binds one SurfaceLab rotation stream to the layer's true rotation
+    // matrix. The basis images of the local X/Y/Z axes are read through
+    // toWorldVec (mapped back below the parent stage with fromWorldVec so the
+    // scene and surface stages stay separable), the layer's own signed scale
+    // is divided out, and the matrix is decomposed into the X-then-Y-then-Z
+    // Euler family RotatePoint composes:
+    //   M = Rz*Ry*Rx  =>  ry = asin(-M[2][0]),
+    //   rx = atan2(M[2][1], M[2][2]), rz = atan2(M[1][0], M[0][0]).
+    // Basis columns are renormalised so a uniformly scaled parent cannot skew
+    // the asin/atan2 inputs. At the gimbal poles (|cos ry| ~ 0) rx and rz are
+    // degenerate; the whole yaw goes into rx, which recomposes to the same
+    // matrix.
+    function rotationExpression(layerName, parentName, axis) {
+        var toRelative = parentName === null ?
+            "  var w=r.toWorldVec(v);\n" :
+            "  var w=thisComp.layer(" + quoteExpressionString(parentName) +
+                ").fromWorldVec(r.toWorldVec(v));\n";
+        return "var r=thisComp.layer(" + quoteExpressionString(layerName) + ");\n" +
+            "var sc=r.transform.scale;\n" +
+            "function basis(v,s){\n" +
+            toRelative +
+            "  var n=Math.sqrt(w[0]*w[0]+w[1]*w[1]+w[2]*w[2]);\n" +
+            "  if(n<1e-9)n=1e-9;\n" +
+            "  if(s<0)n=-n;\n" +
+            "  return [w[0]/n,w[1]/n,w[2]/n];\n" +
+            "}\n" +
+            "var ex=basis([1,0,0],sc[0]);\n" +
+            "var ey=basis([0,1,0],sc[1]);\n" +
+            "var ez=basis([0,0,1],sc[2]);\n" +
+            "var sy=Math.max(-1,Math.min(1,-ex[2]));\n" +
+            "var ry=Math.asin(sy),rx,rz;\n" +
+            "if(Math.abs(Math.cos(ry))>1e-6){\n" +
+            "  rx=Math.atan2(ey[2],ez[2]);\n" +
+            "  rz=Math.atan2(ex[1],ex[0]);\n" +
+            "}else{\n" +
+            "  rx=Math.atan2(-ez[1],ey[1]);\n" +
+            "  rz=0;\n" +
+            "}\n" +
+            "radiansToDegrees(" + ["rx", "ry", "rz"][axis] + ");";
+    }
+
+    // Seeds the Null rotation properties from SurfaceLab's stored angles.
+    // The stored triple composes X-then-Y-then-Z (RotatePoint), an AE layer
+    // composes Z-then-Y-then-X, so the matrix is rebuilt in the plug-in's
+    // convention and re-decomposed into AE's; identical for single-axis
+    // values, and keeps a pre-rotated surface exactly in place otherwise.
+    function pluginRotationMatrix(anglesDegrees) {
+        var d = Math.PI / 180;
+        var cx = Math.cos(anglesDegrees[0] * d);
+        var sx = Math.sin(anglesDegrees[0] * d);
+        var cy = Math.cos(anglesDegrees[1] * d);
+        var sy = Math.sin(anglesDegrees[1] * d);
+        var cz = Math.cos(anglesDegrees[2] * d);
+        var sz = Math.sin(anglesDegrees[2] * d);
+        return [
+            [cz * cy, cz * sy * sx - sz * cx, cz * sy * cx + sz * sx],
+            [sz * cy, sz * sy * sx + cz * cx, sz * sy * cx - cz * sx],
+            [-sy, cy * sx, cy * cx]
+        ];
+    }
+
+    function aeAnglesFromMatrix(m) {
+        var b = Math.asin(Math.max(-1, Math.min(1, m[0][2])));
+        var a;
+        var c;
+        if (Math.abs(Math.cos(b)) > 1e-6) {
+            a = Math.atan2(-m[1][2], m[2][2]);
+            c = Math.atan2(-m[0][1], m[0][0]);
+        } else {
+            a = Math.atan2(m[0][2] > 0 ? m[1][0] : -m[1][0], m[1][1]);
+            c = 0;
+        }
+        var r = 180 / Math.PI;
+        return [a * r, b * r, c * r];
+    }
+
+    function aeSeedAngles(pluginAnglesDegrees) {
+        return aeAnglesFromMatrix(pluginRotationMatrix(pluginAnglesDegrees));
     }
 
     function scaleExpression(rootName, axis) {
@@ -494,16 +564,17 @@
             sceneRoot.comment = "SurfaceLab Scene Rig; sourceLayerId=" +
                 sourceLayerId + "; role=scene-root";
             var sceneTransform = sceneRoot.property("ADBE Transform Group");
+            var sceneSeed = aeSeedAngles(initialSceneRotation);
             sceneTransform.property("ADBE Anchor Point")
                 .setValue([0, 0, 0]);
             sceneTransform.property("ADBE Position")
                 .setValue(initialScenePosition);
             sceneTransform.property("ADBE Rotate X")
-                .setValue(initialSceneRotation[0] * ROTATION_AXIS_SIGNS[0]);
+                .setValue(sceneSeed[0]);
             sceneTransform.property("ADBE Rotate Y")
-                .setValue(initialSceneRotation[1] * ROTATION_AXIS_SIGNS[1]);
+                .setValue(sceneSeed[1]);
             sceneTransform.property("ADBE Rotate Z")
-                .setValue(initialSceneRotation[2] * ROTATION_AXIS_SIGNS[2]);
+                .setValue(sceneSeed[2]);
             sceneTransform.property("ADBE Scale")
                 .setValue(initialSceneScale);
             setExpression(
@@ -512,7 +583,7 @@
             for (index = 0; index < 3; index += 1) {
                 setExpression(
                     sceneRotationProperties[index],
-                    rotationExpression(sceneRootName, index));
+                    rotationExpression(sceneRootName, null, index));
                 setExpression(
                     sceneScaleProperties[index],
                     scaleExpression(sceneRootName, index));
@@ -537,12 +608,13 @@
             originPoint[1] - scenePivot[1],
             originPoint[2] - scenePivot[2]
         ]);
+        var rootSeed = aeSeedAngles(initialRotation);
         rootTransform.property("ADBE Rotate X")
-            .setValue(initialRotation[0] * ROTATION_AXIS_SIGNS[0]);
+            .setValue(rootSeed[0]);
         rootTransform.property("ADBE Rotate Y")
-            .setValue(initialRotation[1] * ROTATION_AXIS_SIGNS[1]);
+            .setValue(rootSeed[1]);
         rootTransform.property("ADBE Rotate Z")
-            .setValue(initialRotation[2] * ROTATION_AXIS_SIGNS[2]);
+            .setValue(rootSeed[2]);
         rootTransform.property("ADBE Scale")
             .setValue(initialScale);
 
@@ -595,7 +667,7 @@
         for (index = 0; index < 3; index += 1) {
             setExpression(
                 rotationProperties[index],
-                rotationExpression(rootName, index));
+                rotationExpression(rootName, sceneRoot.name, index));
             setExpression(
                 scaleProperties[index],
                 scaleExpression(rootName, index));

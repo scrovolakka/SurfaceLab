@@ -124,6 +124,13 @@ stores the canonical cage in effect coordinates; the Null children expose local
 offsets from the surface Root. The renderer and controller foundation share the
 same Local/Cage/Scene/World transform contract.
 
+After Effects composes a layer's per-axis rotations Z-then-Y-then-X
+(Orientation multiplies on afterwards) while SurfaceLab's rotation streams
+compose X-then-Y-then-Z, so the rig does not copy raw angles: the rotation
+bindings read the Null's actual rotation basis and re-decompose that matrix
+into SurfaceLab's Euler order. Compound rotations (viewport rotate gizmo,
+multi-axis keyframes) and Orientation all stay registered.
+
 To create a rig:
 
 1. Select the layer containing SurfaceLab and choose the intended surface in
