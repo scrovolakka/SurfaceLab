@@ -2,7 +2,8 @@
 // migration chain. These exercise SurfaceLabModel.{h,cpp} with no After Effects
 // SDK present, so they build and run on any platform:
 //
-//   c++ -std=c++17 -I src src/SurfaceLabModel.cpp tests/model_tests.cpp -o model_tests
+//   c++ -std=c++17 -I src src/SurfaceLabModel.cpp \
+//       src/SurfaceLabGeometry.cpp tests/model_tests.cpp -o model_tests
 //   ./model_tests
 //
 // The goal is a fast regression net around the most bug-prone, least
@@ -15,6 +16,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 
 namespace {
 
@@ -315,6 +317,45 @@ void TestValidatorRejectsDuplicateBanks() {
     CHECK(!IsValidScene(scene));
 }
 
+void TestValidatorRejectsNonFiniteGeometry() {
+    const char* test_name = "ValidatorNonFiniteGeometry";
+    SceneData scene{};
+
+    InitializeScene(scene, 100.0, 100.0);
+    scene.surfaces[0].control_points[3].x =
+        std::numeric_limits<float>::quiet_NaN();
+    CHECK(!IsValidScene(scene));
+
+    InitializeScene(scene, 100.0, 100.0);
+    scene.surfaces[0].rotation_y =
+        std::numeric_limits<float>::infinity();
+    CHECK(!IsValidScene(scene));
+
+    InitializeScene(scene, 100.0, 100.0);
+    scene.surfaces[0].size_x =
+        -std::numeric_limits<float>::infinity();
+    CHECK(!IsValidScene(scene));
+
+    InitializeScene(scene, 100.0, 100.0);
+    scene.surfaces[0].position_z =
+        std::numeric_limits<float>::quiet_NaN();
+    CHECK(!IsValidScene(scene));
+
+    InitializeScene(scene, 100.0, 100.0);
+    scene.surfaces[0].scale_z =
+        std::numeric_limits<float>::infinity();
+    CHECK(!IsValidScene(scene));
+}
+
+void TestResolveDivisionsClampsAtUseSite() {
+    const char* test_name = "ResolveDivisionsClamp";
+    CHECK(ResolveDivisions(0, 1) == kMinimumDivisions);
+    CHECK(ResolveDivisions(0, 99) == kMaximumDivisions);
+    CHECK(ResolveDivisions(1, 12) == kMinimumDivisions);
+    CHECK(ResolveDivisions(99, 12) == kMaximumDivisions);
+    CHECK(ResolveDivisions(24, 12) == 24);
+}
+
 }  // namespace
 
 int main() {
@@ -335,6 +376,8 @@ int main() {
     TestDeformIdentityWhenNoDeform();
     TestDeformStaysFiniteUnderExtremeBend();
     TestValidatorRejectsDuplicateBanks();
+    TestValidatorRejectsNonFiniteGeometry();
+    TestResolveDivisionsClampsAtUseSite();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

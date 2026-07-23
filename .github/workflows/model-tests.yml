@@ -1,0 +1,25 @@
+name: Model tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: >-
+          cmake -S . -B work/build/ci
+          -DSURFACELAB_BUILD_PLUGIN=OFF
+          -DSURFACELAB_BUILD_TESTS=ON
+      - name: Build
+        run: cmake --build work/build/ci --parallel
+      - name: Test
+        run: ctest --test-dir work/build/ci --output-on-failure

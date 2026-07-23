@@ -9,6 +9,7 @@
 // logic be compiled and unit-tested on any platform (see tests/), independent
 // of the licensed macOS-only plug-in build.
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -59,6 +60,18 @@ constexpr std::uint32_t kRotationOriginRightEdge = 3;
 constexpr std::uint32_t kRotationOriginTopEdge = 4;
 constexpr std::uint32_t kRotationOriginBottomEdge = 5;
 constexpr std::uint32_t kRotationOriginCustom = 6;
+
+// A stored division count of 0 follows the legacy tessellation setting. Clamp
+// the resolved value at the point of use as a second line of defense against a
+// corrupt or partially initialized scene reaching a fixed 33 x 33 grid.
+inline std::uint32_t ResolveDivisions(
+    std::uint32_t divisions,
+    std::uint32_t legacy_tessellation) {
+    return std::clamp(
+        divisions == 0 ? legacy_tessellation : divisions,
+        kMinimumDivisions,
+        kMaximumDivisions);
+}
 
 struct StoredPoint3 {
     float x{};

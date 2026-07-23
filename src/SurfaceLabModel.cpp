@@ -113,6 +113,26 @@ bool IsValidScene(const SceneData& scene) {
     std::array<bool, kMaximumSurfaces> used_animation_banks{};
     for (std::uint32_t index = 0; index < scene.surface_count; ++index) {
         const SurfaceData& surface = scene.surfaces[index];
+        for (const StoredPoint3& point : surface.control_points) {
+            if (!std::isfinite(point.x) ||
+                !std::isfinite(point.y) ||
+                !std::isfinite(point.z)) {
+                return false;
+            }
+        }
+        if (!std::isfinite(surface.rotation_x) ||
+            !std::isfinite(surface.rotation_y) ||
+            !std::isfinite(surface.rotation_z) ||
+            !std::isfinite(surface.size_x) ||
+            !std::isfinite(surface.size_y) ||
+            !std::isfinite(surface.position_x) ||
+            !std::isfinite(surface.position_y) ||
+            !std::isfinite(surface.position_z) ||
+            !std::isfinite(surface.scale_x) ||
+            !std::isfinite(surface.scale_y) ||
+            !std::isfinite(surface.scale_z)) {
+            return false;
+        }
         if (surface.animation_bank >= kMaximumSurfaces ||
             used_animation_banks[surface.animation_bank]) {
             return false;

@@ -31,6 +31,12 @@ std::array<Point3, 16> ToControlPoints(
     return result;
 }
 
+bool IsFinitePoint3(const Point3& point) {
+    return std::isfinite(point.x) &&
+           std::isfinite(point.y) &&
+           std::isfinite(point.z);
+}
+
 }  // namespace
 
 Vertex ProjectVertex(
@@ -62,7 +68,7 @@ Vertex ProjectVertex(
     vertex.v = v;
     vertex.world_position = point;
     vertex.normal = Normalize(normal);
-    vertex.visible = camera_depth > 1.0;
+    vertex.visible = IsFinitePoint3(camera_point) && camera_depth > 1.0;
     if (vertex.visible) {
         vertex.inverse_depth = 1.0 / camera_depth;
         if (camera.perspective) {
@@ -75,6 +81,13 @@ Vertex ProjectVertex(
             vertex.x = camera.center_x + camera_point.x + camera.output_offset_x;
             vertex.y = camera.center_y + camera_point.y + camera.output_offset_y;
         }
+        vertex.visible = std::isfinite(vertex.x) &&
+                         std::isfinite(vertex.y) &&
+                         std::isfinite(vertex.inverse_depth) &&
+                         std::isfinite(vertex.u) &&
+                         std::isfinite(vertex.v) &&
+                         IsFinitePoint3(vertex.world_position) &&
+                         IsFinitePoint3(vertex.normal);
     }
     return vertex;
 }
@@ -82,6 +95,16 @@ Vertex ProjectVertex(
 namespace {
 double Edge(const Vertex& a, const Vertex& b, double x, double y) {
     return (x - a.x) * (b.y - a.y) - (y - a.y) * (b.x - a.x);
+}
+
+bool IsFiniteRasterVertex(const Vertex& vertex) {
+    return std::isfinite(vertex.x) &&
+           std::isfinite(vertex.y) &&
+           std::isfinite(vertex.u) &&
+           std::isfinite(vertex.v) &&
+           std::isfinite(vertex.inverse_depth) &&
+           IsFinitePoint3(vertex.world_position) &&
+           IsFinitePoint3(vertex.normal);
 }
 
 Point2 MapImageCoordinates(
@@ -290,7 +313,9 @@ Pixel SampleTexture(
     }
     const auto pixel_at = [&](int x, int y) -> Pixel {
         const auto* row = reinterpret_cast<const Pixel*>(
-            reinterpret_cast<const A_u_char*>(input.data) + y * input.rowbytes);
+            reinterpret_cast<const A_u_char*>(input.data) +
+            static_cast<std::ptrdiff_t>(y) *
+                static_cast<std::ptrdiff_t>(input.rowbytes));
         return row[x];
     };
 
@@ -347,7 +372,9 @@ template <typename Pixel>
 void ClearWorld(PF_LayerDef& output) {
     for (A_long y = 0; y < output.height; ++y) {
         auto* row = reinterpret_cast<Pixel*>(
-            reinterpret_cast<A_u_char*>(output.data) + y * output.rowbytes);
+            reinterpret_cast<A_u_char*>(output.data) +
+            static_cast<std::ptrdiff_t>(y) *
+                static_cast<std::ptrdiff_t>(output.rowbytes));
         std::fill(row, row + output.width, Pixel{});
     }
 }
@@ -365,26 +392,42 @@ void RasterizeTriangle(
     bool perspective,
     const LightingState& lighting,
     TextureFace texture_face) {
-    if (!a.visible || !b.visible || !c.visible) {
+    if (!a.visible || !b.visible || !c.visible ||
+        !IsFiniteRasterVertex(a) ||
+        !IsFiniteRasterVertex(b) ||
+        !IsFiniteRasterVertex(c)) {
         return;
     }
     const double area = Edge(a, b, c.x, c.y);
-    if (std::abs(area) < 1.0e-8) {
+    if (!std::isfinite(area) || std::abs(area) < 1.0e-8) {
         return;
     }
 
-    const int min_x = std::max(0, static_cast<int>(std::floor(std::min({a.x, b.x, c.x}))));
-    const int max_x = std::min(
-        static_cast<int>(output.width - 1),
-        static_cast<int>(std::ceil(std::max({a.x, b.x, c.x}))));
-    const int min_y = std::max(0, static_cast<int>(std::floor(std::min({a.y, b.y, c.y}))));
-    const int max_y = std::min(
-        static_cast<int>(output.height - 1),
-        static_cast<int>(std::ceil(std::max({a.y, b.y, c.y}))));
+    const double min_x_value = std::max(
+        0.0,
+        std::floor(std::min({a.x, b.x, c.x})));
+    const double max_x_value = std::min(
+        static_cast<double>(output.width - 1),
+        std::ceil(std::max({a.x, b.x, c.x})));
+    const double min_y_value = std::max(
+        0.0,
+        std::floor(std::min({a.y, b.y, c.y})));
+    const double max_y_value = std::min(
+        static_cast<double>(output.height - 1),
+        std::ceil(std::max({a.y, b.y, c.y})));
+    if (min_x_value > max_x_value || min_y_value > max_y_value) {
+        return;
+    }
+    const int min_x = static_cast<int>(min_x_value);
+    const int max_x = static_cast<int>(max_x_value);
+    const int min_y = static_cast<int>(min_y_value);
+    const int max_y = static_cast<int>(max_y_value);
 
     for (int y = min_y; y <= max_y; ++y) {
         auto* output_row = reinterpret_cast<Pixel*>(
-            reinterpret_cast<A_u_char*>(output.data) + y * output.rowbytes);
+            reinterpret_cast<A_u_char*>(output.data) +
+            static_cast<std::ptrdiff_t>(y) *
+                static_cast<std::ptrdiff_t>(output.rowbytes));
         for (int x = min_x; x <= max_x; ++x) {
             const double px = static_cast<double>(x) + 0.5;
             const double py = static_cast<double>(y) + 0.5;
@@ -483,8 +526,65 @@ void RasterizeTriangle(
     }
 }
 
+bool ClipLineToWorld(PF_LayerDef& output, Point2& start, Point2& end) {
+    if (output.width <= 0 || output.height <= 0 ||
+        !std::isfinite(start.x) || !std::isfinite(start.y) ||
+        !std::isfinite(end.x) || !std::isfinite(end.y)) {
+        return false;
+    }
+
+    const double delta_x = end.x - start.x;
+    const double delta_y = end.y - start.y;
+    if (!std::isfinite(delta_x) || !std::isfinite(delta_y)) {
+        return false;
+    }
+
+    double minimum_t = 0.0;
+    double maximum_t = 1.0;
+    const auto clip = [&](double p, double q) {
+        if (p == 0.0) {
+            return q >= 0.0;
+        }
+        const double ratio = q / p;
+        if (p < 0.0) {
+            if (ratio > maximum_t) {
+                return false;
+            }
+            minimum_t = std::max(minimum_t, ratio);
+        } else {
+            if (ratio < minimum_t) {
+                return false;
+            }
+            maximum_t = std::min(maximum_t, ratio);
+        }
+        return true;
+    };
+
+    const double maximum_x = static_cast<double>(output.width - 1);
+    const double maximum_y = static_cast<double>(output.height - 1);
+    if (!clip(-delta_x, start.x) ||
+        !clip(delta_x, maximum_x - start.x) ||
+        !clip(-delta_y, start.y) ||
+        !clip(delta_y, maximum_y - start.y)) {
+        return false;
+    }
+
+    const Point2 original_start = start;
+    start = {
+        original_start.x + minimum_t * delta_x,
+        original_start.y + minimum_t * delta_y};
+    end = {
+        original_start.x + maximum_t * delta_x,
+        original_start.y + maximum_t * delta_y};
+    return std::isfinite(start.x) && std::isfinite(start.y) &&
+           std::isfinite(end.x) && std::isfinite(end.y);
+}
+
 template <typename Pixel>
 void DrawLine(PF_LayerDef& output, Point2 start, Point2 end) {
+    if (!ClipLineToWorld(output, start, end)) {
+        return;
+    }
     int x0 = static_cast<int>(std::lround(start.x));
     int y0 = static_cast<int>(std::lround(start.y));
     const int x1 = static_cast<int>(std::lround(end.x));
@@ -511,7 +611,9 @@ void DrawLine(PF_LayerDef& output, Point2 start, Point2 end) {
     while (true) {
         if (x0 >= 0 && x0 < output.width && y0 >= 0 && y0 < output.height) {
             auto* row = reinterpret_cast<Pixel*>(
-                reinterpret_cast<A_u_char*>(output.data) + y0 * output.rowbytes);
+                reinterpret_cast<A_u_char*>(output.data) +
+                static_cast<std::ptrdiff_t>(y0) *
+                    static_cast<std::ptrdiff_t>(output.rowbytes));
             row[x0] = line_pixel;
         }
         if (x0 == x1 && y0 == y1) {
@@ -1433,10 +1535,68 @@ PF_Err FrameSetup(
 }
 
 namespace {
+
+class CheckedOutLayerParam {
+  public:
+    explicit CheckedOutLayerParam(PF_InData* in_data) : in_data_(in_data) {}
+
+    CheckedOutLayerParam(const CheckedOutLayerParam&) = delete;
+    CheckedOutLayerParam& operator=(const CheckedOutLayerParam&) = delete;
+
+    ~CheckedOutLayerParam() noexcept {
+        if (active_) {
+            PF_CHECKIN_PARAM(in_data_, &param_);
+        }
+    }
+
+    PF_Err Checkout(PF_ParamIndex parameter) {
+        if (active_) {
+            return PF_Err_BAD_CALLBACK_PARAM;
+        }
+        const PF_Err error = PF_CHECKOUT_PARAM(
+            in_data_,
+            parameter,
+            in_data_->current_time,
+            in_data_->time_step,
+            in_data_->time_scale,
+            &param_);
+        active_ = error == PF_Err_NONE;
+        return error;
+    }
+
+    PF_Err Checkin() noexcept {
+        if (!active_) {
+            return PF_Err_NONE;
+        }
+        active_ = false;
+        return PF_CHECKIN_PARAM(in_data_, &param_);
+    }
+
+    const PF_LayerDef& Layer() const {
+        return param_.u.ld;
+    }
+
+  private:
+    PF_InData* in_data_{};
+    PF_ParamDef param_{};
+    bool active_{};
+};
+
+bool IsUsableTextureWorld(const PF_LayerDef& world) {
+    return world.data &&
+           world.width > 0 &&
+           world.height > 0 &&
+           world.rowbytes != 0;
+}
+
 template <typename Pixel>
 PF_Err RenderSurface(PF_InData* in_data, PF_ParamDef* params[], PF_LayerDef* output) {
     const PF_LayerDef& input = params[kParamInput]->u.ld;
-    if (!input.data || !output->data || input.width <= 0 || input.height <= 0) {
+    if (!IsUsableTextureWorld(input) ||
+        !output->data ||
+        output->width <= 0 ||
+        output->height <= 0 ||
+        output->rowbytes == 0) {
         return PF_Err_BAD_CALLBACK_PARAM;
     }
 
@@ -1534,14 +1694,10 @@ PF_Err RenderSurface(PF_InData* in_data, PF_ParamDef* params[], PF_LayerDef* out
             continue;
         }
 
-        PF_ParamDef front_checkout{};
-        const PF_Err front_checkout_error = PF_CHECKOUT_PARAM(
-            in_data,
-            kParamSurfaceSourceLayer1 + static_cast<PF_ParamIndex>(surface.source_slot),
-            in_data->current_time,
-            in_data->time_step,
-            in_data->time_scale,
-            &front_checkout);
+        CheckedOutLayerParam front_checkout(in_data);
+        const PF_Err front_checkout_error = front_checkout.Checkout(
+            kParamSurfaceSourceLayer1 +
+            static_cast<PF_ParamIndex>(surface.source_slot));
         if (front_checkout_error != PF_Err_NONE) {
             return front_checkout_error;
         }
@@ -1550,27 +1706,24 @@ PF_Err RenderSurface(PF_InData* in_data, PF_ParamDef* params[], PF_LayerDef* out
                                             ? surface.source_slot
                                             : surface.back_source_slot - 1;
         const bool separate_back_checkout = back_slot != surface.source_slot;
-        PF_ParamDef back_checkout{};
+        CheckedOutLayerParam back_checkout(in_data);
         if (separate_back_checkout) {
-            const PF_Err back_checkout_error = PF_CHECKOUT_PARAM(
-                in_data,
-                kParamSurfaceSourceLayer1 + static_cast<PF_ParamIndex>(back_slot),
-                in_data->current_time,
-                in_data->time_step,
-                in_data->time_scale,
-                &back_checkout);
+            const PF_Err back_checkout_error = back_checkout.Checkout(
+                kParamSurfaceSourceLayer1 +
+                static_cast<PF_ParamIndex>(back_slot));
             if (back_checkout_error != PF_Err_NONE) {
-                PF_CHECKIN_PARAM(in_data, &front_checkout);
                 return back_checkout_error;
             }
         }
 
-        const PF_LayerDef& front_texture = front_checkout.u.ld.data
-                                               ? front_checkout.u.ld
-                                               : input;
+        const PF_LayerDef& front_texture =
+            IsUsableTextureWorld(front_checkout.Layer())
+                ? front_checkout.Layer()
+                : input;
         const PF_LayerDef& back_texture = separate_back_checkout
-                                              ? (back_checkout.u.ld.data
-                                                     ? back_checkout.u.ld
+                                              ? (IsUsableTextureWorld(
+                                                     back_checkout.Layer())
+                                                     ? back_checkout.Layer()
                                                      : input)
                                               : front_texture;
         RasterizeSurface<Pixel>(
@@ -1588,15 +1741,12 @@ PF_Err RenderSurface(PF_InData* in_data, PF_ParamDef* params[], PF_LayerDef* out
             wireframe);
 
         if (separate_back_checkout) {
-            const PF_Err back_checkin_error =
-                PF_CHECKIN_PARAM(in_data, &back_checkout);
+            const PF_Err back_checkin_error = back_checkout.Checkin();
             if (back_checkin_error != PF_Err_NONE) {
-                PF_CHECKIN_PARAM(in_data, &front_checkout);
                 return back_checkin_error;
             }
         }
-        const PF_Err front_checkin_error =
-            PF_CHECKIN_PARAM(in_data, &front_checkout);
+        const PF_Err front_checkin_error = front_checkout.Checkin();
         if (front_checkin_error != PF_Err_NONE) {
             return front_checkin_error;
         }
