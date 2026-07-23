@@ -6,12 +6,15 @@
     var SCENE_POSITION = 505;
     var SCENE_ROTATIONS = [506, 507, 508];
     var SCENE_SCALES = [509, 510, 511];
-    // Per-axis sign map between AE null rotations and SurfaceLab's rotation
-    // params, calibrated on a fully registered rig rendered through the same
-    // AE active camera as the Nulls: X matches, Y and Z run opposite (the
-    // {X same, Y flipped, Z flipped} pattern of an axis-convention mirror).
-    // Earlier calibrations taken under broken registration were unreliable.
-    var ROTATION_AXIS_SIGNS = [1, -1, -1];
+    // SurfaceLab's rotation math is opposite-handed to AE's layer rotations, so
+    // ALL THREE axes negate. Y and Z show this directly in the 2D silhouette
+    // (in-plane), which is why they read as "reversed" until flipped. X hides
+    // it: an X rotation squishes height by cos(theta) (even in theta, so the 2D
+    // shape is identical for +/-theta) while the near/far tilt follows
+    // sin(theta) (odd). So a missing X flip is invisible in 2D and shows up
+    // only as a depth mismatch under X rotation -- the "X synced but depth
+    // off" symptom. Negating X fixes the depth and leaves the 2D unchanged.
+    var ROTATION_AXIS_SIGNS = [-1, -1, -1];
     var MAX_CONTROLS = 16;
     var assignedProperties = [];
     var createdLayers = [];
