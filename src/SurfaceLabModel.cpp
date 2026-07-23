@@ -9,6 +9,15 @@
 // Extracted verbatim from SurfaceLab.cpp; no behavioral change. Depends only on
 // SurfaceLabModel.h, so this translation unit compiles and is tested off-host.
 
+namespace {
+
+void ResetScene(SceneData& scene) {
+    static const SceneData kDefaultScene{};
+    std::memcpy(&scene, &kDefaultScene, sizeof(scene));
+}
+
+}  // namespace
+
 void UpdateDerivedTransform(SurfaceData& surface) {
     float minimum_x = surface.control_points[0].x;
     float maximum_x = minimum_x;
@@ -92,7 +101,7 @@ void InitializeFlatSurface(
 }
 
 void InitializeScene(SceneData& scene, double width, double height) {
-    scene = SceneData{};
+    ResetScene(scene);
     scene.magic = kSceneMagic;
     scene.schema_version = kSceneSchemaVersion;
     scene.reserved[kAnimationStreamsInitializedIndex] = 1;
@@ -316,7 +325,7 @@ namespace {
 
 template <typename SceneV>
 void CopySceneHeader(const SceneV& source, SceneData& destination) {
-    destination = SceneData{};
+    ResetScene(destination);
     destination.magic = kSceneMagic;
     destination.schema_version = kSceneSchemaVersion;
     destination.active = source.active;
@@ -546,7 +555,7 @@ void MigrateSceneV9(const SceneDataV9& source, SceneData& destination) {
 }
 
 void MigrateSceneV11(const SceneDataV11& source, SceneData& destination) {
-    destination = SceneData{};
+    ResetScene(destination);
     destination.magic = source.magic;
     destination.schema_version = kSceneSchemaVersion;
     destination.active = source.active;
@@ -573,7 +582,7 @@ void MigrateSceneV10(const SceneDataV11& source, SceneData& destination) {
 }
 
 void MigrateSceneV12(const SceneDataV12& source, SceneData& destination) {
-    destination = SceneData{};
+    ResetScene(destination);
     destination.magic = source.magic;
     destination.schema_version = kSceneSchemaVersion;
     destination.active = source.active;
