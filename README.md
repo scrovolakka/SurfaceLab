@@ -110,13 +110,14 @@ render are projected differently and cannot line up exactly.
 
 The Scene Root drives the top-level Scene Transform streams. Each surface Root
 drives only its persistent surface animation bank, so the shared parent does not
-rewrite individual control cages. The surface Root null IS the surface's
-transform hinge: rig creation seats the Root on the current Rotation Origin
-(Center, an edge, or Custom), switches the origin to Custom, and binds the
-origin percentages to follow the Root. Rotation and Scale both pivot on that
-point, in the renderer and in the Null hierarchy alike. To move the hinge
-relative to the surface, move the point Nulls (the cage) rather than the Root;
-moving the Root carries surface and hinge together. The binding uses the surface's persistent ID
+rewrite individual control cages. Rig creation places the surface Root null on
+the origin implied by the surface's current Rotation Origin mode (Center, an
+edge, or Custom) and leaves that mode unchanged. Because the point Nulls are
+laid out relative to that origin, the plug-in's origin stays on the Root through
+rotation and scale automatically, so Rotation and Scale pivot on the Root in the
+renderer and the Null hierarchy alike. Changing the Rotation Origin mode moves
+the origin; re-run the create script afterward to reseat the Root on the new
+origin. The binding uses the surface's persistent ID
 and animation bank rather than its visible page number, so adding, deleting, or
 reordering other surfaces does not retarget an existing rig. SurfaceLab still
 stores the canonical cage in effect coordinates; the Null children expose local

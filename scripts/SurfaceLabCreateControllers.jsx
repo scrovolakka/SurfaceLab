@@ -246,20 +246,6 @@
             "Math.max(0.001,hi-lo);";
     }
 
-    // The surface Root null IS the transform hinge: the plug-in scales and
-    // rotates the cage around the rotation origin, and this expression keeps
-    // that origin glued to the Root. Derivation: origin == root implies
-    // percent = 50 - 100 * (child bounds center) / (child bounds extent),
-    // which reads only the point Nulls' LOCAL positions - no reference to the
-    // effect's own streams, so there is no expression cycle.
-    function originPercentExpression(childNames, axis) {
-        return "var ps=" + childPositionsArray(childNames) + ";\n" +
-            "var lo=ps[0][" + axis + "],hi=lo;\n" +
-            "for(var i=1;i<ps.length;i++){var v=ps[i][" + axis + "];" +
-            "if(v<lo)lo=v;if(v>hi)hi=v;}\n" +
-            "50-100*((lo+hi)/2)/Math.max(0.001,hi-lo);";
-    }
-
     function positionExpression(rootName, childNames, scenePivot) {
         return rootPositionSetup(rootName, scenePivot) +
             "var ps=" + childPositionsArray(childNames) + ";\n" +
@@ -400,8 +386,6 @@
         controlledProperties.push(sizeXProperty);
         controlledProperties.push(sizeYProperty);
         controlledProperties.push(positionProperty);
-        controlledProperties.push(originXProperty);
-        controlledProperties.push(originYProperty);
         ensureNoExistingAutomation(controlledProperties);
         if (!sceneRoot) {
             ensureNoExistingAutomation(
@@ -470,12 +454,13 @@
         // registration keep a camera layer in the comp.
         setSetupValue(cameraSourceProperty, 2);
         setSetupValue(coordinateSpaceProperty, 2);
-        // The rig owns the hinge from here on: switch to Custom origin and
-        // seed the percentages that reproduce the mode the user had chosen,
-        // then let the expressions below keep them glued to the Root null.
-        setSetupValue(originModeProperty, 6);
-        setSetupValue(originXProperty, originPercentX);
-        setSetupValue(originYProperty, originPercentY);
+        // Origin Mode is left exactly as the user set it. The Root null is
+        // placed on the origin that mode implies (originPoint below), and
+        // because the point Nulls are laid out relative to that origin, the
+        // plug-in's origin (Position +/- Size/2 for an edge mode) stays on the
+        // Root through rotation and scale -- no need to force Custom or drive
+        // the origin percentages. Changing Origin Mode moves the origin, so
+        // re-run this script after a mode change to reseat the rig.
 
         if (!sceneRoot) {
             var sceneRootName = uniqueLayerName(
@@ -578,12 +563,6 @@
         }
         setExpression(sizeXProperty, boundsExpression(childNames, 0));
         setExpression(sizeYProperty, boundsExpression(childNames, 1));
-        setExpression(
-            originXProperty,
-            originPercentExpression(childNames, 0));
-        setExpression(
-            originYProperty,
-            originPercentExpression(childNames, 1));
         setExpression(
             positionProperty,
             positionExpression(rootName, childNames, scenePivot));
