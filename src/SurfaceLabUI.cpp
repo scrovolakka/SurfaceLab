@@ -742,6 +742,18 @@ PF_Err UserChangedParamV15(
                 CaptureMaterial(surface_params, surface);
             }
 
+            // Any edit can be the one that first ACTIVATES the arbitrary
+            // scene, after which ResolveSceneForFrame starts treating the
+            // Size/Position streams as per-frame edit requests
+            // (ApplySizeAndPositionUi). Those params can still hold stale
+            // defaults -- ParamsSetup may run with zero input dimensions,
+            // leaving Size at 1.0 -- and until now only point/depth/rotation
+            // edits resynced them: the first other edit (e.g. switching the
+            // Rotation Origin mode) collapsed the cage to a pixel and the
+            // surface vanished until a rotation nudge restored it. Keep the
+            // derived views in lockstep after every capture instead.
+            LoadSizeAndPositionParams(surface_params, surface);
+
             if (changed_index == kParamSurfaceSizeX ||
                 changed_index == kParamSurfaceSizeY ||
                 changed_index == kParamSurfacePosition ||

@@ -10,10 +10,14 @@
 #include "AE_Macros.h"
 #include "Param_Utils.h"
 
+// PF_VERSION packs subvers and bugvers into 4-bit fields (max 15), so the
+// AE-facing version saturates at 0.15.15; releases past that bump the 9-bit
+// build field instead. The bundle (Info.plist/CMake) version keeps counting
+// normally: bundle 0.15.16 == AE 0.15.15 build 2.
 constexpr A_long kMajorVersion = 0;
 constexpr A_long kMinorVersion = 15;
 constexpr A_long kBugVersion = 15;
-constexpr A_long kBuildVersion = 1;
+constexpr A_long kBuildVersion = 2;
 constexpr PF_ParamIndex kSurfaceAnimationPropertyCount = 84;
 constexpr PF_ParamIndex kSurfaceAnimationBankStride =
     kSurfaceAnimationPropertyCount + 2;
