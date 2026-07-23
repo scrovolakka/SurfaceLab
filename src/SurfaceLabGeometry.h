@@ -32,6 +32,24 @@ inline double Dot(Point3 a, Point3 b) {
     return a.x * b.x + a.y * b.y + a.z * b.z;
 }
 
+// Row-major 2D affine mapping:
+//   x' = xx * x + xy * y + tx
+//   y' = yx * x + yy * y + ty
+struct Affine2D {
+    double xx{1.0};
+    double xy{};
+    double yx{};
+    double yy{1.0};
+    double tx{};
+    double ty{};
+};
+
+Point2 ApplyAffine2D(const Affine2D& transform, Point2 point);
+
+bool TryInvertAffine2D(
+    const Affine2D& transform,
+    Affine2D& inverse);
+
 inline Point3 RotatePoint(
     Point3 point,
     double center_x,
@@ -95,6 +113,50 @@ inline Point3 InverseRotateVector(
     vector.z = z_x;
     return vector;
 }
+
+// Canonical coordinate contract for controller rigs and rendering.
+//
+// SurfaceData persists its cage points in absolute effect coordinates. Local
+// coordinates are offsets from pivot. "World" here means SurfaceLab's
+// evaluated, pre-camera coordinate space (before the host layer transform).
+// Deformation is intentionally not part of this transform: the renderer
+// applies it between scale and rotation.
+struct SurfaceCoordinateTransform {
+    Point3 pivot{};
+    Point3 rotation_origin{};
+    Point3 scale{1.0, 1.0, 1.0};
+    Point3 rotation_radians{};
+};
+
+SurfaceCoordinateTransform BuildSurfaceCoordinateTransform(
+    const SurfaceData& surface,
+    Point3 legacy_pivot,
+    Point3 render_scale = {1.0, 1.0, 1.0});
+
+Point3 SurfaceCageToLocal(
+    Point3 cage_point,
+    const SurfaceCoordinateTransform& transform);
+
+Point3 SurfaceLocalToCage(
+    Point3 local_point,
+    const SurfaceCoordinateTransform& transform);
+
+Point3 ScaleSurfaceCagePoint(
+    Point3 cage_point,
+    const SurfaceCoordinateTransform& transform);
+
+Point3 RotateSurfaceWorldPoint(
+    Point3 scaled_point,
+    const SurfaceCoordinateTransform& transform);
+
+Point3 SurfaceCageToWorld(
+    Point3 cage_point,
+    const SurfaceCoordinateTransform& transform);
+
+bool TrySurfaceWorldToCage(
+    Point3 world_point,
+    const SurfaceCoordinateTransform& transform,
+    Point3& cage_point);
 
 Point3 EvaluatePatch(
     const std::array<Point3, 16>& points,

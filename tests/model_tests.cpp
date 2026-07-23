@@ -306,6 +306,87 @@ void TestDeformStaysFiniteUnderExtremeBend() {
     }
 }
 
+void TestSurfaceCoordinateLocalRoundTrip() {
+    const char* test_name = "SurfaceCoordinateLocalRoundTrip";
+    SurfaceData surface{};
+    InitializeFlatSurface(surface, 1, 200.0, 100.0, true);
+    surface.position_x = 120.0F;
+    surface.position_y = 80.0F;
+    surface.position_z = 30.0F;
+    const SurfaceCoordinateTransform transform =
+        BuildSurfaceCoordinateTransform(surface, {});
+    const Point3 cage{218.0, 63.0, 300.0};
+    const Point3 local = SurfaceCageToLocal(cage, transform);
+    CHECK(NearlyEqual(local.x, 98.0));
+    CHECK(NearlyEqual(local.y, -17.0));
+    CHECK(NearlyEqual(local.z, 270.0));
+    const Point3 restored = SurfaceLocalToCage(local, transform);
+    CHECK(NearlyEqual(restored.x, cage.x));
+    CHECK(NearlyEqual(restored.y, cage.y));
+    CHECK(NearlyEqual(restored.z, cage.z));
+}
+
+void TestSurfaceCoordinateWorldRoundTrip() {
+    const char* test_name = "SurfaceCoordinateWorldRoundTrip";
+    SurfaceData surface{};
+    InitializeFlatSurface(surface, 1, 200.0, 100.0, true);
+    surface.position_x = 100.0F;
+    surface.position_y = 50.0F;
+    surface.position_z = 20.0F;
+    surface.scale_x = 125.0F;
+    surface.scale_y = -80.0F;
+    surface.scale_z = 150.0F;
+    surface.rotation_x = 17.0F;
+    surface.rotation_y = -31.0F;
+    surface.rotation_z = 48.0F;
+    surface.rotation_origin_mode = kRotationOriginCustom;
+    surface.rotation_origin_x = 25.0F;
+    surface.rotation_origin_y = 75.0F;
+    const SurfaceCoordinateTransform transform =
+        BuildSurfaceCoordinateTransform(surface, {});
+    const Point3 cage{218.0, 63.0, 300.0};
+    const Point3 world = SurfaceCageToWorld(cage, transform);
+    Point3 restored{};
+    CHECK(TrySurfaceWorldToCage(world, transform, restored));
+    CHECK(NearlyEqual(restored.x, cage.x));
+    CHECK(NearlyEqual(restored.y, cage.y));
+    CHECK(NearlyEqual(restored.z, cage.z));
+}
+
+void TestSurfaceCoordinateRejectsSingularInverse() {
+    const char* test_name = "SurfaceCoordinateSingularInverse";
+    SurfaceData surface{};
+    InitializeFlatSurface(surface, 1, 200.0, 100.0, true);
+    surface.scale_z = 0.0F;
+    const SurfaceCoordinateTransform transform =
+        BuildSurfaceCoordinateTransform(surface, {});
+    Point3 cage{};
+    CHECK(!TrySurfaceWorldToCage({1.0, 2.0, 3.0}, transform, cage));
+}
+
+void TestAffineRoundTrip() {
+    const char* test_name = "AffineRoundTrip";
+    const Affine2D transform{
+        1.2,
+        -0.35,
+        0.45,
+        0.8,
+        240.0,
+        -90.0};
+    Affine2D inverse;
+    CHECK(TryInvertAffine2D(transform, inverse));
+    const Point2 source{218.0, 63.0};
+    const Point2 mapped = ApplyAffine2D(transform, source);
+    const Point2 restored = ApplyAffine2D(inverse, mapped);
+    CHECK(NearlyEqual(restored.x, source.x));
+    CHECK(NearlyEqual(restored.y, source.y));
+
+    Affine2D ignored;
+    CHECK(!TryInvertAffine2D(
+        {1.0, 2.0, 2.0, 4.0, 0.0, 0.0},
+        ignored));
+}
+
 void TestValidatorRejectsDuplicateBanks() {
     const char* test_name = "ValidatorDuplicateBanks";
     SceneData scene{};
@@ -374,6 +455,10 @@ int main() {
     TestEvaluatePatchCorners();
     TestDeformIdentityWhenNoDeform();
     TestDeformStaysFiniteUnderExtremeBend();
+    TestSurfaceCoordinateLocalRoundTrip();
+    TestSurfaceCoordinateWorldRoundTrip();
+    TestSurfaceCoordinateRejectsSingularInverse();
+    TestAffineRoundTrip();
     TestValidatorRejectsDuplicateBanks();
     TestValidatorRejectsNonFiniteGeometry();
     TestResolveDivisionsClampsAtUseSite();

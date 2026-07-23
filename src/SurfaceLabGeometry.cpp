@@ -8,6 +8,181 @@
 // ApplySurfaceDeform are exported (declared in the header); the remaining
 // helpers are used only here.
 
+Point2 ApplyAffine2D(const Affine2D& transform, Point2 point) {
+    return {
+        transform.xx * point.x + transform.xy * point.y + transform.tx,
+        transform.yx * point.x + transform.yy * point.y + transform.ty};
+}
+
+bool TryInvertAffine2D(
+    const Affine2D& transform,
+    Affine2D& inverse) {
+    constexpr double kMinimumDeterminant = 1.0e-12;
+    const double determinant =
+        transform.xx * transform.yy - transform.xy * transform.yx;
+    if (!std::isfinite(determinant) ||
+        std::abs(determinant) <= kMinimumDeterminant) {
+        return false;
+    }
+    const double inverse_determinant = 1.0 / determinant;
+    inverse.xx = transform.yy * inverse_determinant;
+    inverse.xy = -transform.xy * inverse_determinant;
+    inverse.yx = -transform.yx * inverse_determinant;
+    inverse.yy = transform.xx * inverse_determinant;
+    inverse.tx =
+        -(inverse.xx * transform.tx + inverse.xy * transform.ty);
+    inverse.ty =
+        -(inverse.yx * transform.tx + inverse.yy * transform.ty);
+    return std::isfinite(inverse.xx) &&
+           std::isfinite(inverse.xy) &&
+           std::isfinite(inverse.yx) &&
+           std::isfinite(inverse.yy) &&
+           std::isfinite(inverse.tx) &&
+           std::isfinite(inverse.ty);
+}
+
+SurfaceCoordinateTransform BuildSurfaceCoordinateTransform(
+    const SurfaceData& surface,
+    Point3 legacy_pivot,
+    Point3 render_scale) {
+    constexpr double kDegreesToRadians = 3.14159265358979323846 / 180.0;
+    SurfaceCoordinateTransform transform;
+    if (surface.transform_mode != 0) {
+        transform.pivot = {
+            static_cast<double>(surface.position_x) * render_scale.x,
+            static_cast<double>(surface.position_y) * render_scale.y,
+            static_cast<double>(surface.position_z) * render_scale.z};
+        transform.scale = {
+            static_cast<double>(surface.scale_x) / 100.0,
+            static_cast<double>(surface.scale_y) / 100.0,
+            static_cast<double>(surface.scale_z) / 100.0};
+    } else {
+        transform.pivot = legacy_pivot;
+    }
+    transform.rotation_radians = {
+        static_cast<double>(surface.rotation_x) * kDegreesToRadians,
+        static_cast<double>(surface.rotation_y) * kDegreesToRadians,
+        static_cast<double>(surface.rotation_z) * kDegreesToRadians};
+
+    double origin_x_percent = 50.0;
+    double origin_y_percent = 50.0;
+    switch (surface.rotation_origin_mode) {
+        case kRotationOriginLeftEdge:
+            origin_x_percent = 0.0;
+            break;
+        case kRotationOriginRightEdge:
+            origin_x_percent = 100.0;
+            break;
+        case kRotationOriginTopEdge:
+            origin_y_percent = 0.0;
+            break;
+        case kRotationOriginBottomEdge:
+            origin_y_percent = 100.0;
+            break;
+        case kRotationOriginCustom:
+            origin_x_percent = static_cast<double>(surface.rotation_origin_x);
+            origin_y_percent = static_cast<double>(surface.rotation_origin_y);
+            break;
+        default:
+            break;
+    }
+    transform.rotation_origin = {
+        transform.pivot.x +
+            (origin_x_percent / 100.0 - 0.5) *
+                static_cast<double>(surface.size_x) * render_scale.x *
+                transform.scale.x,
+        transform.pivot.y +
+            (origin_y_percent / 100.0 - 0.5) *
+                static_cast<double>(surface.size_y) * render_scale.y *
+                transform.scale.y,
+        transform.pivot.z};
+    return transform;
+}
+
+Point3 SurfaceCageToLocal(
+    Point3 cage_point,
+    const SurfaceCoordinateTransform& transform) {
+    return {
+        cage_point.x - transform.pivot.x,
+        cage_point.y - transform.pivot.y,
+        cage_point.z - transform.pivot.z};
+}
+
+Point3 SurfaceLocalToCage(
+    Point3 local_point,
+    const SurfaceCoordinateTransform& transform) {
+    return {
+        local_point.x + transform.pivot.x,
+        local_point.y + transform.pivot.y,
+        local_point.z + transform.pivot.z};
+}
+
+Point3 ScaleSurfaceCagePoint(
+    Point3 cage_point,
+    const SurfaceCoordinateTransform& transform) {
+    return {
+        transform.pivot.x +
+            (cage_point.x - transform.pivot.x) * transform.scale.x,
+        transform.pivot.y +
+            (cage_point.y - transform.pivot.y) * transform.scale.y,
+        transform.pivot.z +
+            (cage_point.z - transform.pivot.z) * transform.scale.z};
+}
+
+Point3 RotateSurfaceWorldPoint(
+    Point3 scaled_point,
+    const SurfaceCoordinateTransform& transform) {
+    return RotatePoint(
+        scaled_point,
+        transform.rotation_origin.x,
+        transform.rotation_origin.y,
+        transform.rotation_origin.z,
+        transform.rotation_radians.x,
+        transform.rotation_radians.y,
+        transform.rotation_radians.z);
+}
+
+Point3 SurfaceCageToWorld(
+    Point3 cage_point,
+    const SurfaceCoordinateTransform& transform) {
+    return RotateSurfaceWorldPoint(
+        ScaleSurfaceCagePoint(cage_point, transform),
+        transform);
+}
+
+bool TrySurfaceWorldToCage(
+    Point3 world_point,
+    const SurfaceCoordinateTransform& transform,
+    Point3& cage_point) {
+    constexpr double kMinimumScale = 1.0e-10;
+    if (std::abs(transform.scale.x) <= kMinimumScale ||
+        std::abs(transform.scale.y) <= kMinimumScale ||
+        std::abs(transform.scale.z) <= kMinimumScale) {
+        return false;
+    }
+    Point3 relative{
+        world_point.x - transform.rotation_origin.x,
+        world_point.y - transform.rotation_origin.y,
+        world_point.z - transform.rotation_origin.z};
+    relative = InverseRotateVector(
+        relative,
+        transform.rotation_radians.x,
+        transform.rotation_radians.y,
+        transform.rotation_radians.z);
+    const Point3 scaled_point{
+        relative.x + transform.rotation_origin.x,
+        relative.y + transform.rotation_origin.y,
+        relative.z + transform.rotation_origin.z};
+    cage_point = {
+        transform.pivot.x +
+            (scaled_point.x - transform.pivot.x) / transform.scale.x,
+        transform.pivot.y +
+            (scaled_point.y - transform.pivot.y) / transform.scale.y,
+        transform.pivot.z +
+            (scaled_point.z - transform.pivot.z) / transform.scale.z};
+    return true;
+}
+
 double Bernstein(int index, double t) {
     const double s = 1.0 - t;
     switch (index) {

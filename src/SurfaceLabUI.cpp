@@ -424,6 +424,17 @@ void UpdateSurfaceUiParams(PF_ParamDef* params[], const SceneData& scene) {
     PF_ParamDef* select_param = params[kParamSurfaceSelect];
     select_param->u.pd.value = static_cast<A_long>(scene.selected_surface + 1);
     select_param->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+
+    const SurfaceData& selected = scene.surfaces[scene.selected_surface];
+    PF_ParamDef* id_param = params[kParamControllerSurfaceId];
+    id_param->u.sd.value = static_cast<A_long>(std::min<std::uint32_t>(
+        selected.id,
+        static_cast<std::uint32_t>(std::numeric_limits<A_long>::max())));
+    id_param->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+
+    PF_ParamDef* bank_param = params[kParamControllerAnimationBank];
+    bank_param->u.sd.value = static_cast<A_long>(selected.animation_bank);
+    bank_param->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
 }
 
 std::uint32_t FindSurfaceForAnimationBank(
@@ -1401,10 +1412,12 @@ bool ProjectTwistHandle(
 }
 
 CameraState BuildGizmoCamera(
+    PF_InData* in_data,
     PF_ParamDef* params[],
     A_long input_width,
     A_long input_height) {
-    return BuildCameraState(
+    return BuildResolvedCameraState(
+        in_data,
         params,
         static_cast<double>(input_width) * 0.5,
         static_cast<double>(input_height) * 0.5,
@@ -2869,7 +2882,7 @@ PF_Err HandleSurfaceGizmoEvent(
     }
     SurfaceData surface = scene.surfaces[scene.selected_surface];
     const CameraState camera =
-        BuildGizmoCamera(params, input_width, input_height);
+        BuildGizmoCamera(in_data, params, input_width, input_height);
     const GizmoVisibility visibility = ResolveGizmoVisibility(params);
 
     if (event_extra->e_type == PF_Event_DRAW) {
@@ -3339,19 +3352,45 @@ PF_Err UpdateParameterUi(
     };
 
     std::uint32_t selected_bank = 0;
+    std::uint32_t selected_surface_id = 1;
     PF_Handle scene_handle = params[kParamSceneData]->u.arb_d.value;
     if (scene_handle) {
         const auto* scene = static_cast<const SceneData*>(
             PF_LOCK_HANDLE(scene_handle));
         if (scene && IsValidScene(*scene)) {
-            selected_bank = scene->surfaces[scene->selected_surface].animation_bank;
+            const SurfaceData& selected = scene->surfaces[scene->selected_surface];
+            selected_bank = selected.animation_bank;
+            selected_surface_id = selected.id;
         }
         if (scene) {
             PF_UNLOCK_HANDLE(scene_handle);
         }
     }
 
-    error = set_hidden(kParamSurfaceCornerSelect, true);
+    if (error == A_Err_NONE) {
+        PF_ParamDef* id_param = params[kParamControllerSurfaceId];
+        id_param->u.sd.value = static_cast<A_long>(std::min<std::uint32_t>(
+            selected_surface_id,
+            static_cast<std::uint32_t>(std::numeric_limits<A_long>::max())));
+        id_param->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+        error = suites.ParamUtilsSuite3()->PF_UpdateParamUI(
+            in_data->effect_ref,
+            kParamControllerSurfaceId,
+            id_param);
+    }
+    if (error == A_Err_NONE) {
+        PF_ParamDef* bank_param = params[kParamControllerAnimationBank];
+        bank_param->u.sd.value = static_cast<A_long>(selected_bank);
+        bank_param->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+        error = suites.ParamUtilsSuite3()->PF_UpdateParamUI(
+            in_data->effect_ref,
+            kParamControllerAnimationBank,
+            bank_param);
+    }
+
+    if (error == A_Err_NONE) {
+        error = set_hidden(kParamSurfaceCornerSelect, true);
+    }
     if (error == A_Err_NONE) {
         error = set_hidden(kParamSurfaceTwistEdge, true);
     }
@@ -3813,6 +3852,32 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
         PF_PUI_NONE,
         PF_ParamFlag_SUPERVISE,
         kDiskDeleteSurface);
+
+    // Script-facing stable binding metadata. It remains a normal effect
+    // stream for expressions/JSX, but does not add controls to the ECW.
+    AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_CANNOT_TIME_VARY;
+    def.ui_flags = PF_PUI_NO_ECW_UI | PF_PUI_DISABLED;
+    PF_ADD_SLIDER(
+        "Controller Surface ID",
+        1,
+        std::numeric_limits<A_long>::max(),
+        1,
+        std::numeric_limits<A_long>::max(),
+        1,
+        kDiskControllerSurfaceId);
+
+    AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_CANNOT_TIME_VARY;
+    def.ui_flags = PF_PUI_NO_ECW_UI | PF_PUI_DISABLED;
+    PF_ADD_SLIDER(
+        "Controller Animation Bank",
+        0,
+        static_cast<A_long>(kMaximumSurfaces - 1),
+        0,
+        static_cast<A_long>(kMaximumSurfaces - 1),
+        0,
+        kDiskControllerAnimationBank);
 
     AEFX_CLR_STRUCT(def);
     def.flags = PF_ParamFlag_SUPERVISE;
@@ -4333,6 +4398,15 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
         kCameraSourceInternal,
         "Internal|After Effects Active Camera",
         kDiskCameraSource);
+
+    AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_CANNOT_TIME_VARY;
+    PF_ADD_POPUP(
+        "Coordinate Space",
+        2,
+        kCoordinateSpaceLayerLocal,
+        "Layer Local (Legacy)|Composition World",
+        kDiskCoordinateSpace);
 
     const char* camera_offset_names[3] = {
         "Camera Offset X",

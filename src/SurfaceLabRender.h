@@ -16,6 +16,7 @@
 // points, pivot, rotation origin, and deformation extents.
 struct SurfaceEvaluationState {
     std::array<Point3, 16> control_points{};
+    SurfaceCoordinateTransform coordinate_transform{};
     double pivot_x{};
     double pivot_y{};
     double pivot_z{};
@@ -54,6 +55,20 @@ Vertex ProjectVertex(
     const CameraState& camera);
 
 CameraState BuildCameraState(
+    PF_ParamDef* params[],
+    double center_x,
+    double center_y,
+    double output_offset_x,
+    double output_offset_y,
+    double scale_x,
+    double scale_y,
+    double scale_z);
+
+// Builds the same camera snapshot for rendering and custom UI. When the
+// selected source is the active After Effects camera, this resolves its
+// current transform and zoom; otherwise it returns the internal camera.
+CameraState BuildResolvedCameraState(
+    PF_InData* in_data,
     PF_ParamDef* params[],
     double center_x,
     double center_y,
