@@ -287,7 +287,15 @@ void InitializeMaterial(SurfaceData& surface) {
     surface.shininess = 32.0F;
 }
 
-void MigrateSceneV1(const SceneDataV1& source, SceneData& destination) {
+namespace {
+
+// Each schema version appended fields to the previous surface layout, so
+// MigrateSceneVN copies every group its version already had and defaults the
+// rest. The helpers below name those cumulative groups; they are templated
+// because each version has its own struct type with identically named fields.
+
+template <typename SceneV>
+void CopySceneHeader(const SceneV& source, SceneData& destination) {
     destination = {};
     destination.magic = kSceneMagic;
     destination.schema_version = kSceneSchemaVersion;
@@ -295,18 +303,92 @@ void MigrateSceneV1(const SceneDataV1& source, SceneData& destination) {
     destination.surface_count = source.surface_count;
     destination.selected_surface = source.selected_surface;
     destination.next_surface_id = source.next_surface_id;
+}
+
+// V1+: identity, control points, rotation.
+template <typename SurfaceV>
+void CopySurfaceIdentity(const SurfaceV& old_surface, SurfaceData& new_surface) {
+    new_surface.id = old_surface.id;
+    new_surface.enabled = old_surface.enabled;
+    std::copy(
+        std::begin(old_surface.control_points),
+        std::end(old_surface.control_points),
+        std::begin(new_surface.control_points));
+    new_surface.rotation_x = old_surface.rotation_x;
+    new_surface.rotation_y = old_surface.rotation_y;
+    new_surface.rotation_z = old_surface.rotation_z;
+}
+
+// V2+: stored size/position and local transform.
+template <typename SurfaceV>
+void CopySurfaceTransform(const SurfaceV& old_surface, SurfaceData& new_surface) {
+    new_surface.size_x = old_surface.size_x;
+    new_surface.size_y = old_surface.size_y;
+    new_surface.position_x = old_surface.position_x;
+    new_surface.position_y = old_surface.position_y;
+    new_surface.position_z = old_surface.position_z;
+    new_surface.scale_x = old_surface.scale_x;
+    new_surface.scale_y = old_surface.scale_y;
+    new_surface.scale_z = old_surface.scale_z;
+    new_surface.transform_mode = old_surface.transform_mode;
+}
+
+// V3+: per-surface tessellation.
+template <typename SurfaceV>
+void CopySurfaceDivisions(const SurfaceV& old_surface, SurfaceData& new_surface) {
+    new_surface.divisions_x = old_surface.divisions_x;
+    new_surface.divisions_y = old_surface.divisions_y;
+}
+
+// V4+: texture source and opacity.
+template <typename SurfaceV>
+void CopySurfaceImage(const SurfaceV& old_surface, SurfaceData& new_surface) {
+    new_surface.source_slot = old_surface.source_slot;
+    new_surface.image_size_mode = old_surface.image_size_mode;
+    new_surface.image_border_mode = old_surface.image_border_mode;
+    new_surface.opacity = old_surface.opacity;
+}
+
+// V6+: lighting material.
+template <typename SurfaceV>
+void CopySurfaceLighting(const SurfaceV& old_surface, SurfaceData& new_surface) {
+    new_surface.diffuse = old_surface.diffuse;
+    new_surface.specular = old_surface.specular;
+    new_surface.shininess = old_surface.shininess;
+}
+
+// V7+: bend and roll deformation.
+template <typename SurfaceV>
+void CopySurfaceDeform(const SurfaceV& old_surface, SurfaceData& new_surface) {
+    new_surface.bend_x = old_surface.bend_x;
+    new_surface.bend_y = old_surface.bend_y;
+    new_surface.roll_angle = old_surface.roll_angle;
+    new_surface.roll_length = old_surface.roll_length;
+    new_surface.roll_edge = old_surface.roll_edge;
+}
+
+void InitializeLightingDefaults(SurfaceData& surface) {
+    surface.diffuse = 100.0F;
+    surface.specular = 50.0F;
+    surface.shininess = 32.0F;
+}
+
+void InitializeDeformDefaults(SurfaceData& surface) {
+    surface.bend_x = 0.0F;
+    surface.bend_y = 0.0F;
+    surface.roll_angle = 0.0F;
+    surface.roll_length = 25.0F;
+    surface.roll_edge = kRollEdgeRight;
+}
+
+}  // namespace
+
+void MigrateSceneV1(const SceneDataV1& source, SceneData& destination) {
+    CopySceneHeader(source, destination);
     for (std::uint32_t index = 0; index < source.surface_count; ++index) {
         const SurfaceDataV1& old_surface = source.surfaces[index];
         SurfaceData& new_surface = destination.surfaces[index];
-        new_surface.id = old_surface.id;
-        new_surface.enabled = old_surface.enabled;
-        std::copy(
-            std::begin(old_surface.control_points),
-            std::end(old_surface.control_points),
-            std::begin(new_surface.control_points));
-        new_surface.rotation_x = old_surface.rotation_x;
-        new_surface.rotation_y = old_surface.rotation_y;
-        new_surface.rotation_z = old_surface.rotation_z;
+        CopySurfaceIdentity(old_surface, new_surface);
         new_surface.scale_x = 100.0F;
         new_surface.scale_y = 100.0F;
         new_surface.scale_z = 100.0F;
@@ -320,303 +402,106 @@ void MigrateSceneV1(const SceneDataV1& source, SceneData& destination) {
 }
 
 void MigrateSceneV2(const SceneDataV2& source, SceneData& destination) {
-    destination = {};
-    destination.magic = kSceneMagic;
-    destination.schema_version = kSceneSchemaVersion;
-    destination.active = source.active;
-    destination.surface_count = source.surface_count;
-    destination.selected_surface = source.selected_surface;
-    destination.next_surface_id = source.next_surface_id;
+    CopySceneHeader(source, destination);
     for (std::uint32_t index = 0; index < source.surface_count; ++index) {
         const SurfaceDataV2& old_surface = source.surfaces[index];
         SurfaceData& new_surface = destination.surfaces[index];
-        new_surface.id = old_surface.id;
-        new_surface.enabled = old_surface.enabled;
-        std::copy(
-            std::begin(old_surface.control_points),
-            std::end(old_surface.control_points),
-            std::begin(new_surface.control_points));
-        new_surface.rotation_x = old_surface.rotation_x;
-        new_surface.rotation_y = old_surface.rotation_y;
-        new_surface.rotation_z = old_surface.rotation_z;
-        new_surface.size_x = old_surface.size_x;
-        new_surface.size_y = old_surface.size_y;
-        new_surface.position_x = old_surface.position_x;
-        new_surface.position_y = old_surface.position_y;
-        new_surface.position_z = old_surface.position_z;
-        new_surface.scale_x = old_surface.scale_x;
-        new_surface.scale_y = old_surface.scale_y;
-        new_surface.scale_z = old_surface.scale_z;
+        CopySurfaceIdentity(old_surface, new_surface);
+        CopySurfaceTransform(old_surface, new_surface);
         new_surface.divisions_x = 0;
         new_surface.divisions_y = 0;
-        new_surface.transform_mode = old_surface.transform_mode;
         InitializeMaterial(new_surface);
         InitializeCornerCurls(new_surface);
     }
 }
 
 void MigrateSceneV3(const SceneDataV3& source, SceneData& destination) {
-    destination = {};
-    destination.magic = kSceneMagic;
-    destination.schema_version = kSceneSchemaVersion;
-    destination.active = source.active;
-    destination.surface_count = source.surface_count;
-    destination.selected_surface = source.selected_surface;
-    destination.next_surface_id = source.next_surface_id;
+    CopySceneHeader(source, destination);
     for (std::uint32_t index = 0; index < source.surface_count; ++index) {
         const SurfaceDataV3& old_surface = source.surfaces[index];
         SurfaceData& new_surface = destination.surfaces[index];
-        new_surface.id = old_surface.id;
-        new_surface.enabled = old_surface.enabled;
-        std::copy(
-            std::begin(old_surface.control_points),
-            std::end(old_surface.control_points),
-            std::begin(new_surface.control_points));
-        new_surface.rotation_x = old_surface.rotation_x;
-        new_surface.rotation_y = old_surface.rotation_y;
-        new_surface.rotation_z = old_surface.rotation_z;
-        new_surface.size_x = old_surface.size_x;
-        new_surface.size_y = old_surface.size_y;
-        new_surface.position_x = old_surface.position_x;
-        new_surface.position_y = old_surface.position_y;
-        new_surface.position_z = old_surface.position_z;
-        new_surface.scale_x = old_surface.scale_x;
-        new_surface.scale_y = old_surface.scale_y;
-        new_surface.scale_z = old_surface.scale_z;
-        new_surface.divisions_x = old_surface.divisions_x;
-        new_surface.divisions_y = old_surface.divisions_y;
-        new_surface.transform_mode = old_surface.transform_mode;
+        CopySurfaceIdentity(old_surface, new_surface);
+        CopySurfaceTransform(old_surface, new_surface);
+        CopySurfaceDivisions(old_surface, new_surface);
         InitializeMaterial(new_surface);
         InitializeCornerCurls(new_surface);
     }
 }
 
 void MigrateSceneV4(const SceneDataV4& source, SceneData& destination) {
-    destination = {};
-    destination.magic = kSceneMagic;
-    destination.schema_version = kSceneSchemaVersion;
-    destination.active = source.active;
-    destination.surface_count = source.surface_count;
-    destination.selected_surface = source.selected_surface;
-    destination.next_surface_id = source.next_surface_id;
+    CopySceneHeader(source, destination);
     for (std::uint32_t index = 0; index < source.surface_count; ++index) {
         const SurfaceDataV4& old_surface = source.surfaces[index];
         SurfaceData& new_surface = destination.surfaces[index];
-        new_surface.id = old_surface.id;
-        new_surface.enabled = old_surface.enabled;
-        std::copy(
-            std::begin(old_surface.control_points),
-            std::end(old_surface.control_points),
-            std::begin(new_surface.control_points));
-        new_surface.rotation_x = old_surface.rotation_x;
-        new_surface.rotation_y = old_surface.rotation_y;
-        new_surface.rotation_z = old_surface.rotation_z;
-        new_surface.size_x = old_surface.size_x;
-        new_surface.size_y = old_surface.size_y;
-        new_surface.position_x = old_surface.position_x;
-        new_surface.position_y = old_surface.position_y;
-        new_surface.position_z = old_surface.position_z;
-        new_surface.scale_x = old_surface.scale_x;
-        new_surface.scale_y = old_surface.scale_y;
-        new_surface.scale_z = old_surface.scale_z;
-        new_surface.divisions_x = old_surface.divisions_x;
-        new_surface.divisions_y = old_surface.divisions_y;
-        new_surface.transform_mode = old_surface.transform_mode;
-        new_surface.source_slot = old_surface.source_slot;
-        new_surface.image_size_mode = old_surface.image_size_mode;
-        new_surface.image_border_mode = old_surface.image_border_mode;
-        new_surface.opacity = old_surface.opacity;
+        CopySurfaceIdentity(old_surface, new_surface);
+        CopySurfaceTransform(old_surface, new_surface);
+        CopySurfaceDivisions(old_surface, new_surface);
+        CopySurfaceImage(old_surface, new_surface);
         new_surface.thickness = 0.0F;
-        new_surface.diffuse = 100.0F;
-        new_surface.specular = 50.0F;
-        new_surface.shininess = 32.0F;
+        InitializeLightingDefaults(new_surface);
         InitializeCornerCurls(new_surface);
     }
 }
 
 void MigrateSceneV5(const SceneDataV5& source, SceneData& destination) {
-    destination = {};
-    destination.magic = kSceneMagic;
-    destination.schema_version = kSceneSchemaVersion;
-    destination.active = source.active;
-    destination.surface_count = source.surface_count;
-    destination.selected_surface = source.selected_surface;
-    destination.next_surface_id = source.next_surface_id;
+    CopySceneHeader(source, destination);
     for (std::uint32_t index = 0; index < source.surface_count; ++index) {
         const SurfaceDataV5& old_surface = source.surfaces[index];
         SurfaceData& new_surface = destination.surfaces[index];
-        new_surface.id = old_surface.id;
-        new_surface.enabled = old_surface.enabled;
-        std::copy(
-            std::begin(old_surface.control_points),
-            std::end(old_surface.control_points),
-            std::begin(new_surface.control_points));
-        new_surface.rotation_x = old_surface.rotation_x;
-        new_surface.rotation_y = old_surface.rotation_y;
-        new_surface.rotation_z = old_surface.rotation_z;
-        new_surface.size_x = old_surface.size_x;
-        new_surface.size_y = old_surface.size_y;
-        new_surface.position_x = old_surface.position_x;
-        new_surface.position_y = old_surface.position_y;
-        new_surface.position_z = old_surface.position_z;
-        new_surface.scale_x = old_surface.scale_x;
-        new_surface.scale_y = old_surface.scale_y;
-        new_surface.scale_z = old_surface.scale_z;
-        new_surface.divisions_x = old_surface.divisions_x;
-        new_surface.divisions_y = old_surface.divisions_y;
-        new_surface.transform_mode = old_surface.transform_mode;
-        new_surface.source_slot = old_surface.source_slot;
-        new_surface.image_size_mode = old_surface.image_size_mode;
-        new_surface.image_border_mode = old_surface.image_border_mode;
-        new_surface.opacity = old_surface.opacity;
+        CopySurfaceIdentity(old_surface, new_surface);
+        CopySurfaceTransform(old_surface, new_surface);
+        CopySurfaceDivisions(old_surface, new_surface);
+        CopySurfaceImage(old_surface, new_surface);
         new_surface.thickness = old_surface.thickness;
-        new_surface.diffuse = 100.0F;
-        new_surface.specular = 50.0F;
-        new_surface.shininess = 32.0F;
+        InitializeLightingDefaults(new_surface);
         InitializeCornerCurls(new_surface);
     }
 }
 
 void MigrateSceneV6(const SceneDataV6& source, SceneData& destination) {
-    destination = {};
-    destination.magic = kSceneMagic;
-    destination.schema_version = kSceneSchemaVersion;
-    destination.active = source.active;
-    destination.surface_count = source.surface_count;
-    destination.selected_surface = source.selected_surface;
-    destination.next_surface_id = source.next_surface_id;
+    CopySceneHeader(source, destination);
     for (std::uint32_t index = 0; index < source.surface_count; ++index) {
         const SurfaceDataV6& old_surface = source.surfaces[index];
         SurfaceData& new_surface = destination.surfaces[index];
-        new_surface.id = old_surface.id;
-        new_surface.enabled = old_surface.enabled;
-        std::copy(
-            std::begin(old_surface.control_points),
-            std::end(old_surface.control_points),
-            std::begin(new_surface.control_points));
-        new_surface.rotation_x = old_surface.rotation_x;
-        new_surface.rotation_y = old_surface.rotation_y;
-        new_surface.rotation_z = old_surface.rotation_z;
-        new_surface.size_x = old_surface.size_x;
-        new_surface.size_y = old_surface.size_y;
-        new_surface.position_x = old_surface.position_x;
-        new_surface.position_y = old_surface.position_y;
-        new_surface.position_z = old_surface.position_z;
-        new_surface.scale_x = old_surface.scale_x;
-        new_surface.scale_y = old_surface.scale_y;
-        new_surface.scale_z = old_surface.scale_z;
-        new_surface.divisions_x = old_surface.divisions_x;
-        new_surface.divisions_y = old_surface.divisions_y;
-        new_surface.transform_mode = old_surface.transform_mode;
-        new_surface.source_slot = old_surface.source_slot;
-        new_surface.image_size_mode = old_surface.image_size_mode;
-        new_surface.image_border_mode = old_surface.image_border_mode;
-        new_surface.opacity = old_surface.opacity;
+        CopySurfaceIdentity(old_surface, new_surface);
+        CopySurfaceTransform(old_surface, new_surface);
+        CopySurfaceDivisions(old_surface, new_surface);
+        CopySurfaceImage(old_surface, new_surface);
         new_surface.thickness = old_surface.thickness;
-        new_surface.diffuse = old_surface.diffuse;
-        new_surface.specular = old_surface.specular;
-        new_surface.shininess = old_surface.shininess;
-        new_surface.bend_x = 0.0F;
-        new_surface.bend_y = 0.0F;
-        new_surface.roll_angle = 0.0F;
-        new_surface.roll_length = 25.0F;
-        new_surface.roll_edge = kRollEdgeRight;
+        CopySurfaceLighting(old_surface, new_surface);
+        InitializeDeformDefaults(new_surface);
         InitializeCornerCurls(new_surface);
     }
 }
 
 void MigrateSceneV7(const SceneDataV7& source, SceneData& destination) {
-    destination = {};
-    destination.magic = kSceneMagic;
-    destination.schema_version = kSceneSchemaVersion;
-    destination.active = source.active;
-    destination.surface_count = source.surface_count;
-    destination.selected_surface = source.selected_surface;
-    destination.next_surface_id = source.next_surface_id;
+    CopySceneHeader(source, destination);
     for (std::uint32_t index = 0; index < source.surface_count; ++index) {
         const SurfaceDataV7& old_surface = source.surfaces[index];
         SurfaceData& new_surface = destination.surfaces[index];
-        new_surface.id = old_surface.id;
-        new_surface.enabled = old_surface.enabled;
-        std::copy(
-            std::begin(old_surface.control_points),
-            std::end(old_surface.control_points),
-            std::begin(new_surface.control_points));
-        new_surface.rotation_x = old_surface.rotation_x;
-        new_surface.rotation_y = old_surface.rotation_y;
-        new_surface.rotation_z = old_surface.rotation_z;
-        new_surface.size_x = old_surface.size_x;
-        new_surface.size_y = old_surface.size_y;
-        new_surface.position_x = old_surface.position_x;
-        new_surface.position_y = old_surface.position_y;
-        new_surface.position_z = old_surface.position_z;
-        new_surface.scale_x = old_surface.scale_x;
-        new_surface.scale_y = old_surface.scale_y;
-        new_surface.scale_z = old_surface.scale_z;
-        new_surface.divisions_x = old_surface.divisions_x;
-        new_surface.divisions_y = old_surface.divisions_y;
-        new_surface.transform_mode = old_surface.transform_mode;
-        new_surface.source_slot = old_surface.source_slot;
-        new_surface.image_size_mode = old_surface.image_size_mode;
-        new_surface.image_border_mode = old_surface.image_border_mode;
-        new_surface.opacity = old_surface.opacity;
+        CopySurfaceIdentity(old_surface, new_surface);
+        CopySurfaceTransform(old_surface, new_surface);
+        CopySurfaceDivisions(old_surface, new_surface);
+        CopySurfaceImage(old_surface, new_surface);
         new_surface.thickness = old_surface.thickness;
-        new_surface.diffuse = old_surface.diffuse;
-        new_surface.specular = old_surface.specular;
-        new_surface.shininess = old_surface.shininess;
-        new_surface.bend_x = old_surface.bend_x;
-        new_surface.bend_y = old_surface.bend_y;
-        new_surface.roll_angle = old_surface.roll_angle;
-        new_surface.roll_length = old_surface.roll_length;
-        new_surface.roll_edge = old_surface.roll_edge;
+        CopySurfaceLighting(old_surface, new_surface);
+        CopySurfaceDeform(old_surface, new_surface);
         InitializeCornerCurls(new_surface);
     }
 }
 
 void MigrateSceneV8(const SceneDataV8& source, SceneData& destination) {
-    destination = {};
-    destination.magic = kSceneMagic;
-    destination.schema_version = kSceneSchemaVersion;
-    destination.active = source.active;
-    destination.surface_count = source.surface_count;
-    destination.selected_surface = source.selected_surface;
-    destination.next_surface_id = source.next_surface_id;
+    CopySceneHeader(source, destination);
     for (std::uint32_t index = 0; index < source.surface_count; ++index) {
         const SurfaceDataV8& old_surface = source.surfaces[index];
         SurfaceData& new_surface = destination.surfaces[index];
-        new_surface.id = old_surface.id;
-        new_surface.enabled = old_surface.enabled;
-        std::copy(
-            std::begin(old_surface.control_points),
-            std::end(old_surface.control_points),
-            std::begin(new_surface.control_points));
-        new_surface.rotation_x = old_surface.rotation_x;
-        new_surface.rotation_y = old_surface.rotation_y;
-        new_surface.rotation_z = old_surface.rotation_z;
-        new_surface.size_x = old_surface.size_x;
-        new_surface.size_y = old_surface.size_y;
-        new_surface.position_x = old_surface.position_x;
-        new_surface.position_y = old_surface.position_y;
-        new_surface.position_z = old_surface.position_z;
-        new_surface.scale_x = old_surface.scale_x;
-        new_surface.scale_y = old_surface.scale_y;
-        new_surface.scale_z = old_surface.scale_z;
-        new_surface.divisions_x = old_surface.divisions_x;
-        new_surface.divisions_y = old_surface.divisions_y;
-        new_surface.transform_mode = old_surface.transform_mode;
-        new_surface.source_slot = old_surface.source_slot;
-        new_surface.image_size_mode = old_surface.image_size_mode;
-        new_surface.image_border_mode = old_surface.image_border_mode;
-        new_surface.opacity = old_surface.opacity;
+        CopySurfaceIdentity(old_surface, new_surface);
+        CopySurfaceTransform(old_surface, new_surface);
+        CopySurfaceDivisions(old_surface, new_surface);
+        CopySurfaceImage(old_surface, new_surface);
         new_surface.thickness = old_surface.thickness;
-        new_surface.diffuse = old_surface.diffuse;
-        new_surface.specular = old_surface.specular;
-        new_surface.shininess = old_surface.shininess;
-        new_surface.bend_x = old_surface.bend_x;
-        new_surface.bend_y = old_surface.bend_y;
-        new_surface.roll_angle = old_surface.roll_angle;
-        new_surface.roll_length = old_surface.roll_length;
-        new_surface.roll_edge = old_surface.roll_edge;
+        CopySurfaceLighting(old_surface, new_surface);
+        CopySurfaceDeform(old_surface, new_surface);
         std::copy(
             std::begin(old_surface.corner_curls),
             std::end(old_surface.corner_curls),
@@ -627,13 +512,7 @@ void MigrateSceneV8(const SceneDataV8& source, SceneData& destination) {
 }
 
 void MigrateSceneV9(const SceneDataV9& source, SceneData& destination) {
-    destination = {};
-    destination.magic = kSceneMagic;
-    destination.schema_version = kSceneSchemaVersion;
-    destination.active = source.active;
-    destination.surface_count = source.surface_count;
-    destination.selected_surface = source.selected_surface;
-    destination.next_surface_id = source.next_surface_id;
+    CopySceneHeader(source, destination);
     for (std::uint32_t index = 0; index < source.surface_count; ++index) {
         SurfaceData& new_surface = destination.surfaces[index];
         std::memcpy(
