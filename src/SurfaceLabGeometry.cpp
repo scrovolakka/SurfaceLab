@@ -165,15 +165,19 @@ SurfaceCoordinateTransform BuildSurfaceCoordinateTransform(
         default:
             break;
     }
+    // The origin is defined on the UNSCALED cage: it is the shared fixed point
+    // ("hinge") of both scale and rotation, so it must not move when the scale
+    // changes. Center mode (50/50) keeps origin == pivot, which preserves the
+    // historical behavior; with scale at 100% the old and new definitions
+    // coincide for every mode. The controller rig places the surface Root null
+    // on this point.
     transform.rotation_origin = {
         transform.pivot.x +
             (origin_x_percent / 100.0 - 0.5) *
-                static_cast<double>(surface.size_x) * render_scale.x *
-                transform.scale.x,
+                static_cast<double>(surface.size_x) * render_scale.x,
         transform.pivot.y +
             (origin_y_percent / 100.0 - 0.5) *
-                static_cast<double>(surface.size_y) * render_scale.y *
-                transform.scale.y,
+                static_cast<double>(surface.size_y) * render_scale.y,
         transform.pivot.z};
     return transform;
 }
@@ -199,13 +203,16 @@ Point3 SurfaceLocalToCage(
 Point3 ScaleSurfaceCagePoint(
     Point3 cage_point,
     const SurfaceCoordinateTransform& transform) {
+    // Scale and rotation share the rotation origin as their fixed point, so a
+    // Left Edge (or custom) origin behaves as a true hinge: it stays put under
+    // both operations, and a controller null placed there matches the render.
     return {
-        transform.pivot.x +
-            (cage_point.x - transform.pivot.x) * transform.scale.x,
-        transform.pivot.y +
-            (cage_point.y - transform.pivot.y) * transform.scale.y,
-        transform.pivot.z +
-            (cage_point.z - transform.pivot.z) * transform.scale.z};
+        transform.rotation_origin.x +
+            (cage_point.x - transform.rotation_origin.x) * transform.scale.x,
+        transform.rotation_origin.y +
+            (cage_point.y - transform.rotation_origin.y) * transform.scale.y,
+        transform.rotation_origin.z +
+            (cage_point.z - transform.rotation_origin.z) * transform.scale.z};
 }
 
 Point3 RotateSurfaceWorldPoint(
@@ -253,12 +260,12 @@ bool TrySurfaceWorldToCage(
         relative.y + transform.rotation_origin.y,
         relative.z + transform.rotation_origin.z};
     cage_point = {
-        transform.pivot.x +
-            (scaled_point.x - transform.pivot.x) / transform.scale.x,
-        transform.pivot.y +
-            (scaled_point.y - transform.pivot.y) / transform.scale.y,
-        transform.pivot.z +
-            (scaled_point.z - transform.pivot.z) / transform.scale.z};
+        transform.rotation_origin.x +
+            (scaled_point.x - transform.rotation_origin.x) / transform.scale.x,
+        transform.rotation_origin.y +
+            (scaled_point.y - transform.rotation_origin.y) / transform.scale.y,
+        transform.rotation_origin.z +
+            (scaled_point.z - transform.rotation_origin.z) / transform.scale.z};
     return true;
 }
 

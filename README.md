@@ -2,7 +2,11 @@
 
 Independent After Effects native effect prototype for editable bicubic surfaces.
 
-Version 0.15.11 adds a shared Scene Transform and reorganizes the effect UI into
+Version 0.15.12 unifies the per-surface scale and rotation pivots on the
+Rotation Origin ("hinge" semantics) and makes the controller rig's surface Root
+null that hinge: the Root is created on the origin and the origin follows the
+Root thereafter, for every origin mode. Version 0.15.11 added a shared Scene
+Transform and reorganized the effect UI into
 five collapsed top-level groups. `Finish`, `Depth`, `UV`, and view-space
 `Normals` render views, a fixed Surface List, and a hierarchical 3D Null
 controller rig build on the SmartFX, After Effects active-camera, and
@@ -101,7 +105,13 @@ camera or host layer moves.
 
 The Scene Root drives the top-level Scene Transform streams. Each surface Root
 drives only its persistent surface animation bank, so the shared parent does not
-rewrite individual control cages. The binding uses the surface's persistent ID
+rewrite individual control cages. The surface Root null IS the surface's
+transform hinge: rig creation seats the Root on the current Rotation Origin
+(Center, an edge, or Custom), switches the origin to Custom, and binds the
+origin percentages to follow the Root. Rotation and Scale both pivot on that
+point, in the renderer and in the Null hierarchy alike. To move the hinge
+relative to the surface, move the point Nulls (the cage) rather than the Root;
+moving the Root carries surface and hinge together. The binding uses the surface's persistent ID
 and animation bank rather than its visible page number, so adding, deleting, or
 reordering other surfaces does not retarget an existing rig. SurfaceLab still
 stores the canonical cage in effect coordinates; the Null children expose local
@@ -120,15 +130,14 @@ To create a rig:
 To return one surface to its flat control cage, select either its SurfaceLab
 source layer or any generated controller Null, then run
 `scripts/SurfaceLabResetSelectedSurface.jsx`. The reset clears point, depth,
-position, rotation, and scale animation for that surface and removes only the
-controller Nulls carrying the matching SurfaceLab surface/layer marker. Source
+position, rotation, rotation-origin, and scale animation for that surface,
+restores the Center origin, and removes only the controller Nulls carrying the
+matching SurfaceLab surface/layer marker. Source
 assignment, material, deformation, camera, and lighting settings are preserved.
 The complete operation is one After Effects undo step.
 
 This first prototype intentionally refuses to overwrite existing expressions or
-keyframes on the bound SurfaceLab streams. It also assumes Center Rotation Origin
-for exact Root/renderer visual agreement; custom or edge origins continue to
-render correctly but the Null hierarchy's displayed pivot will differ. Renaming
+keyframes on the bound SurfaceLab streams. Renaming
 or deleting generated layers breaks their expressions. Composition World rigs
 require SurfaceLab to remain on an unparented 2D host layer; a 3D or parented host
 would add another camera projection that cannot represent the deformed mesh.

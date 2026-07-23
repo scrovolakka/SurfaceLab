@@ -100,6 +100,9 @@
             ids.sizeX = 308;
             ids.sizeY = 309;
             ids.position = 310;
+            ids.originMode = 382;
+            ids.originX = 383;
+            ids.originY = 384;
             ids.scales = [312, 313, 314];
         } else {
             var base = 10000 + bank * 100;
@@ -111,6 +114,9 @@
             ids.sizeX = base + 36;
             ids.sizeY = base + 37;
             ids.position = base + 38;
+            ids.originMode = base + 39;
+            ids.originX = base + 40;
+            ids.originY = base + 41;
             ids.scales = [base + 42, base + 43, base + 44];
         }
         return ids;
@@ -266,6 +272,9 @@
         var sizeXProperty = propertyForDiskId(target.effect, ids.sizeX);
         var sizeYProperty = propertyForDiskId(target.effect, ids.sizeY);
         var positionProperty = propertyForDiskId(target.effect, ids.position);
+        var originModeProperty = propertyForDiskId(target.effect, ids.originMode);
+        var originXProperty = propertyForDiskId(target.effect, ids.originX);
+        var originYProperty = propertyForDiskId(target.effect, ids.originY);
 
         app.beginUndoGroup("Reset SurfaceLab Selected Surface");
         undoStarted = true;
@@ -281,6 +290,8 @@
         clearAutomation(sizeXProperty);
         clearAutomation(sizeYProperty);
         clearAutomation(positionProperty);
+        clearAutomation(originXProperty);
+        clearAutomation(originYProperty);
 
         var width = target.sourceLayer.width;
         var height = target.sourceLayer.height;
@@ -300,6 +311,9 @@
         sizeXProperty.setValue(width);
         sizeYProperty.setValue(height);
         positionProperty.setValue([width / 2, height / 2, 0]);
+        originModeProperty.setValue(1);
+        originXProperty.setValue(50);
+        originYProperty.setValue(50);
 
         removeRigLayers(rigLayers);
         target.sourceLayer.selected = true;

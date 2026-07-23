@@ -364,6 +364,81 @@ void TestSurfaceCoordinateRejectsSingularInverse() {
     CHECK(!TrySurfaceWorldToCage({1.0, 2.0, 3.0}, transform, cage));
 }
 
+// The rotation origin is the shared fixed point ("hinge") of scale AND
+// rotation: it is defined on the unscaled cage and must map onto itself under
+// the full cage->world transform whatever the scale and rotation are. This is
+// the contract that lets the controller rig place the surface Root null on the
+// origin and stay registered with the render.
+void TestSurfaceOriginIsScaleAndRotationFixedPoint() {
+    const char* test_name = "SurfaceOriginFixedPoint";
+    SurfaceData surface{};
+    InitializeFlatSurface(surface, 1, 200.0, 100.0, true);
+    surface.position_x = 120.0F;
+    surface.position_y = 80.0F;
+    surface.rotation_origin_mode = kRotationOriginLeftEdge;
+    surface.scale_x = 250.0F;
+    surface.scale_y = 40.0F;
+    surface.rotation_x = 33.0F;
+    surface.rotation_y = -71.0F;
+    surface.rotation_z = 128.0F;
+    const SurfaceCoordinateTransform transform =
+        BuildSurfaceCoordinateTransform(surface, {});
+    // Left edge of the unscaled cage: pivot.x - size_x/2, independent of scale.
+    CHECK(NearlyEqual(transform.rotation_origin.x, 120.0 - 100.0));
+    CHECK(NearlyEqual(transform.rotation_origin.y, 80.0));
+    const Point3 mapped =
+        SurfaceCageToWorld(transform.rotation_origin, transform);
+    CHECK(NearlyEqual(mapped.x, transform.rotation_origin.x));
+    CHECK(NearlyEqual(mapped.y, transform.rotation_origin.y));
+    CHECK(NearlyEqual(mapped.z, transform.rotation_origin.z));
+}
+
+// With scale at 100% the origin re-definition is inert: every mode maps points
+// exactly as before the hinge unification (rotation about the same origin).
+void TestSurfaceHingeChangeInertAtFullScale() {
+    const char* test_name = "SurfaceHingeInertAtFullScale";
+    SurfaceData surface{};
+    InitializeFlatSurface(surface, 1, 200.0, 100.0, true);
+    surface.position_x = 120.0F;
+    surface.position_y = 80.0F;
+    surface.rotation_origin_mode = kRotationOriginLeftEdge;
+    surface.rotation_z = 90.0F;
+    const SurfaceCoordinateTransform transform =
+        BuildSurfaceCoordinateTransform(surface, {});
+    // Rotating the cage center (120,80) by +90deg about the left edge (20,80)
+    // sends it to (20, 180): x' = ox - (y-oy), y' = oy + (x-ox).
+    const Point3 mapped = SurfaceCageToWorld({120.0, 80.0, 0.0}, transform);
+    CHECK(NearlyEqual(mapped.x, 20.0));
+    CHECK(NearlyEqual(mapped.y, 180.0));
+}
+
+void TestSurfaceWorldRoundTripWithHingeScale() {
+    const char* test_name = "SurfaceWorldRoundTripHinge";
+    SurfaceData surface{};
+    InitializeFlatSurface(surface, 1, 200.0, 100.0, true);
+    surface.position_x = 120.0F;
+    surface.position_y = 80.0F;
+    surface.position_z = 25.0F;
+    surface.rotation_origin_mode = kRotationOriginCustom;
+    surface.rotation_origin_x = 25.0F;
+    surface.rotation_origin_y = 80.0F;
+    surface.scale_x = 180.0F;
+    surface.scale_y = -60.0F;
+    surface.scale_z = 140.0F;
+    surface.rotation_x = 21.0F;
+    surface.rotation_y = 47.0F;
+    surface.rotation_z = -63.0F;
+    const SurfaceCoordinateTransform transform =
+        BuildSurfaceCoordinateTransform(surface, {});
+    const Point3 cage{218.0, 63.0, 300.0};
+    const Point3 world = SurfaceCageToWorld(cage, transform);
+    Point3 restored{};
+    CHECK(TrySurfaceWorldToCage(world, transform, restored));
+    CHECK(NearlyEqual(restored.x, cage.x));
+    CHECK(NearlyEqual(restored.y, cage.y));
+    CHECK(NearlyEqual(restored.z, cage.z));
+}
+
 void TestSceneCoordinateRoundTrip() {
     const char* test_name = "SceneCoordinateRoundTrip";
     SceneCoordinateTransform transform;
@@ -491,6 +566,9 @@ int main() {
     TestSurfaceCoordinateLocalRoundTrip();
     TestSurfaceCoordinateWorldRoundTrip();
     TestSurfaceCoordinateRejectsSingularInverse();
+    TestSurfaceOriginIsScaleAndRotationFixedPoint();
+    TestSurfaceHingeChangeInertAtFullScale();
+    TestSurfaceWorldRoundTripWithHingeScale();
     TestSceneCoordinateRoundTrip();
     TestSceneCoordinateIdentityAtPivot();
     TestAffineRoundTrip();

@@ -794,9 +794,15 @@ SurfaceEvaluationState BuildSurfaceEvaluationState(
     state.rotation_x = transform.rotation_radians.x;
     state.rotation_y = transform.rotation_radians.y;
     state.rotation_z = transform.rotation_radians.z;
-    state.pivot_x = transform.pivot.x;
-    state.pivot_y = transform.pivot.y;
-    state.pivot_z = transform.pivot.z;
+    // The deform center, side-wall outward test, and scale-handle anchor all
+    // want the center of the SCALED cage. Scaling pivots at the rotation
+    // origin, so the cage center moves when origin != center; map it through
+    // the same scaling. Equals transform.pivot for center origin or 100% scale.
+    const Point3 scaled_pivot =
+        ScaleSurfaceCagePoint(transform.pivot, transform);
+    state.pivot_x = scaled_pivot.x;
+    state.pivot_y = scaled_pivot.y;
+    state.pivot_z = scaled_pivot.z;
     state.scale_x = transform.scale.x;
     state.scale_y = transform.scale.y;
     state.scale_z = transform.scale.z;

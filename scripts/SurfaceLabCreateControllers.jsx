@@ -65,6 +65,9 @@
             sizeX: 0,
             sizeY: 0,
             position: 0,
+            originMode: 0,
+            originX: 0,
+            originY: 0,
             scales: []
         };
         var index;
@@ -77,6 +80,9 @@
             ids.sizeX = 308;
             ids.sizeY = 309;
             ids.position = 310;
+            ids.originMode = 382;
+            ids.originX = 383;
+            ids.originY = 384;
             ids.scales = [312, 313, 314];
         } else {
             var base = 10000 + bank * 100;
@@ -88,6 +94,9 @@
             ids.sizeX = base + 36;
             ids.sizeY = base + 37;
             ids.position = base + 38;
+            ids.originMode = base + 39;
+            ids.originX = base + 40;
+            ids.originY = base + 41;
             ids.scales = [base + 42, base + 43, base + 44];
         }
         return ids;
@@ -223,6 +232,20 @@
             "Math.max(0.001,hi-lo);";
     }
 
+    // The surface Root null IS the transform hinge: the plug-in scales and
+    // rotates the cage around the rotation origin, and this expression keeps
+    // that origin glued to the Root. Derivation: origin == root implies
+    // percent = 50 - 100 * (child bounds center) / (child bounds extent),
+    // which reads only the point Nulls' LOCAL positions - no reference to the
+    // effect's own streams, so there is no expression cycle.
+    function originPercentExpression(childNames, axis) {
+        return "var ps=" + childPositionsArray(childNames) + ";\n" +
+            "var lo=ps[0][" + axis + "],hi=lo;\n" +
+            "for(var i=1;i<ps.length;i++){var v=ps[i][" + axis + "];" +
+            "if(v<lo)lo=v;if(v>hi)hi=v;}\n" +
+            "50-100*((lo+hi)/2)/Math.max(0.001,hi-lo);";
+    }
+
     function positionExpression(rootName, childNames, scenePivot) {
         return rootPositionSetup(rootName, scenePivot) +
             "var ps=" + childPositionsArray(childNames) + ";\n" +
@@ -356,9 +379,14 @@
         var sizeXProperty = propertyForDiskId(effect, ids.sizeX);
         var sizeYProperty = propertyForDiskId(effect, ids.sizeY);
         var positionProperty = propertyForDiskId(effect, ids.position);
+        var originModeProperty = propertyForDiskId(effect, ids.originMode);
+        var originXProperty = propertyForDiskId(effect, ids.originX);
+        var originYProperty = propertyForDiskId(effect, ids.originY);
         controlledProperties.push(sizeXProperty);
         controlledProperties.push(sizeYProperty);
         controlledProperties.push(positionProperty);
+        controlledProperties.push(originXProperty);
+        controlledProperties.push(originYProperty);
         ensureNoExistingAutomation(controlledProperties);
         if (!sceneRoot) {
             ensureNoExistingAutomation(
@@ -374,6 +402,32 @@
             initialRotation.push(valueAtCurrentTime(rotationProperties[index], comp));
             initialScale.push(valueAtCurrentTime(scaleProperties[index], comp));
         }
+
+        // Seat the Root on the current rotation origin (the scale/rotation
+        // hinge). Mirrors BuildSurfaceCoordinateTransform: the origin lives on
+        // the UNSCALED cage at position + (percent - 50%) * size.
+        var initialOriginMode = valueAtCurrentTime(originModeProperty, comp);
+        var initialSizeX = valueAtCurrentTime(sizeXProperty, comp);
+        var initialSizeY = valueAtCurrentTime(sizeYProperty, comp);
+        var originPercentX = 50;
+        var originPercentY = 50;
+        if (initialOriginMode === 2) {
+            originPercentX = 0;
+        } else if (initialOriginMode === 3) {
+            originPercentX = 100;
+        } else if (initialOriginMode === 4) {
+            originPercentY = 0;
+        } else if (initialOriginMode === 5) {
+            originPercentY = 100;
+        } else if (initialOriginMode === 6) {
+            originPercentX = valueAtCurrentTime(originXProperty, comp);
+            originPercentY = valueAtCurrentTime(originYProperty, comp);
+        }
+        var originPoint = [
+            initialPosition[0] + (originPercentX / 100 - 0.5) * initialSizeX,
+            initialPosition[1] + (originPercentY / 100 - 0.5) * initialSizeY,
+            initialPosition[2]
+        ];
         var initialScenePosition =
             valueAtCurrentTime(scenePositionProperty, comp);
         var initialSceneRotation = [];
@@ -396,6 +450,12 @@
         undoStarted = true;
         setSetupValue(cameraSourceProperty, 2);
         setSetupValue(coordinateSpaceProperty, 2);
+        // The rig owns the hinge from here on: switch to Custom origin and
+        // seed the percentages that reproduce the mode the user had chosen,
+        // then let the expressions below keep them glued to the Root null.
+        setSetupValue(originModeProperty, 6);
+        setSetupValue(originXProperty, originPercentX);
+        setSetupValue(originYProperty, originPercentY);
 
         if (!sceneRoot) {
             var sceneRootName = uniqueLayerName(
@@ -448,9 +508,9 @@
         var rootTransform = root.property("ADBE Transform Group");
         rootTransform.property("ADBE Anchor Point").setValue([0, 0, 0]);
         rootTransform.property("ADBE Position").setValue([
-            initialPosition[0] - scenePivot[0],
-            initialPosition[1] - scenePivot[1],
-            initialPosition[2] - scenePivot[2]
+            originPoint[0] - scenePivot[0],
+            originPoint[1] - scenePivot[1],
+            originPoint[2] - scenePivot[2]
         ]);
         rootTransform.property("ADBE Rotate X")
             .setValue(initialRotation[0]);
@@ -481,9 +541,9 @@
             var depthValue = valueAtCurrentTime(depthProperties[index], comp);
             child.property("ADBE Transform Group").property("ADBE Position")
                 .setValue([
-                    pointValue[0] - initialPosition[0],
-                    pointValue[1] - initialPosition[1],
-                    depthValue - initialPosition[2]
+                    pointValue[0] - originPoint[0],
+                    pointValue[1] - originPoint[1],
+                    depthValue - originPoint[2]
                 ]);
             childNames.push(childName);
         }
@@ -498,6 +558,12 @@
         }
         setExpression(sizeXProperty, boundsExpression(childNames, 0));
         setExpression(sizeYProperty, boundsExpression(childNames, 1));
+        setExpression(
+            originXProperty,
+            originPercentExpression(childNames, 0));
+        setExpression(
+            originYProperty,
+            originPercentExpression(childNames, 1));
         setExpression(
             positionProperty,
             positionExpression(rootName, childNames, scenePivot));
