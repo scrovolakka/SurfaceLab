@@ -6,6 +6,11 @@
     var SCENE_POSITION = 505;
     var SCENE_ROTATIONS = [506, 507, 508];
     var SCENE_SCALES = [509, 510, 511];
+    // SurfaceLab's Y rotation uses the textbook-math sign family, which in
+    // After Effects' Y-down comp coordinates turns the opposite way from an
+    // AE layer's Y rotation; X and Z agree. The rig is the only place raw AE
+    // angles meet SurfaceLab angles, so the mapping is reconciled here.
+    var ROTATION_AXIS_SIGNS = [1, -1, 1];
     var MAX_CONTROLS = 16;
     var assignedProperties = [];
     var createdLayers = [];
@@ -275,8 +280,9 @@
     function rotationExpression(rootName, axis) {
         var rotationNames = ["xRotation", "yRotation", "zRotation"];
         return "var r=thisComp.layer(" + quoteExpressionString(rootName) + ");\n" +
-            "r.transform.orientation[" + axis + "]+r.transform." +
-            rotationNames[axis] + ";";
+            "(" + ROTATION_AXIS_SIGNS[axis] +
+            ")*(r.transform.orientation[" + axis + "]+r.transform." +
+            rotationNames[axis] + ");";
     }
 
     function scaleExpression(rootName, axis) {
@@ -474,11 +480,11 @@
             sceneTransform.property("ADBE Position")
                 .setValue(initialScenePosition);
             sceneTransform.property("ADBE Rotate X")
-                .setValue(initialSceneRotation[0]);
+                .setValue(initialSceneRotation[0] * ROTATION_AXIS_SIGNS[0]);
             sceneTransform.property("ADBE Rotate Y")
-                .setValue(initialSceneRotation[1]);
+                .setValue(initialSceneRotation[1] * ROTATION_AXIS_SIGNS[1]);
             sceneTransform.property("ADBE Rotate Z")
-                .setValue(initialSceneRotation[2]);
+                .setValue(initialSceneRotation[2] * ROTATION_AXIS_SIGNS[2]);
             sceneTransform.property("ADBE Scale")
                 .setValue(initialSceneScale);
             setExpression(
@@ -513,11 +519,11 @@
             originPoint[2] - scenePivot[2]
         ]);
         rootTransform.property("ADBE Rotate X")
-            .setValue(initialRotation[0]);
+            .setValue(initialRotation[0] * ROTATION_AXIS_SIGNS[0]);
         rootTransform.property("ADBE Rotate Y")
-            .setValue(initialRotation[1]);
+            .setValue(initialRotation[1] * ROTATION_AXIS_SIGNS[1]);
         rootTransform.property("ADBE Rotate Z")
-            .setValue(initialRotation[2]);
+            .setValue(initialRotation[2] * ROTATION_AXIS_SIGNS[2]);
         rootTransform.property("ADBE Scale")
             .setValue(initialScale);
 
