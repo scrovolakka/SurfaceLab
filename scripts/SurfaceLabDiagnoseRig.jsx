@@ -317,8 +317,55 @@
     }
     out("");
 
+    // The actually-bound expression sign per rotation axis, read from the
+    // expression text itself. This cannot be fooled by zero rotations, unlike
+    // the value comparison below.
+    function boundSign(property) {
+        if (!property || !property.expressionEnabled) {
+            return "(no expression)";
+        }
+        var text = String(property.expression);
+        if (text.indexOf("(-1)*(") >= 0) {
+            return "-1";
+        }
+        if (text.indexOf("(1)*(") >= 0) {
+            return "+1";
+        }
+        return "raw (no sign factor; pre-sign-map rig)";
+    }
+    out("Bound rotation-expression signs (from expression text):");
+    for (index = 0; index < 3; index += 1) {
+        out("  Surface Rotation " + "XYZ".charAt(index) + ": " +
+            boundSign(rotationProperties[index]));
+    }
+    for (index = 0; index < 3; index += 1) {
+        out("  Scene Rotation " + "XYZ".charAt(index) + ": " +
+            boundSign(sceneRotationProperties[index]));
+    }
+    out("  (this script's expected map: [" +
+        ROTATION_AXIS_SIGNS.join(", ") + "])");
+    // Raw dump removes all ambiguity about what is actually baked into the rig.
+    if (rotationProperties[1] && rotationProperties[1].expressionEnabled) {
+        out("  Raw Surface Rotation Y expression:");
+        out("    " + String(rotationProperties[1].expression)
+            .replace(/\n/g, " \\n "));
+    }
+    out("");
+
     // Consistency checks.
     out("Consistency checks:");
+    var allRotationsZero = true;
+    for (index = 0; index < 3; index += 1) {
+        if (rotationProperties[index] &&
+                Math.abs(rotationProperties[index].value) > 0.01) {
+            allRotationsZero = false;
+        }
+    }
+    if (allRotationsZero) {
+        out("  [NOTE] All surface rotations are 0, so the rotation-binding " +
+            "value checks below are vacuous. Set the Surface Root's " +
+            "Y Rotation to +30 and re-run for a live check.");
+    }
     if (coordinateSpace && cameraSource) {
         check(
             "Comp World renders through the AE camera",
