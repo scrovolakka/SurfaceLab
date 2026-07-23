@@ -2850,6 +2850,428 @@ PF_Err DrawSurfaceGizmo(
 
 }  // namespace
 
+namespace {
+
+constexpr A_short kSurfaceListUiWidth = 280;
+constexpr A_short kSurfaceListRowHeight = 22;
+constexpr A_short kSurfaceListUiHeight =
+    static_cast<A_short>(kMaximumSurfaces * kSurfaceListRowHeight);
+constexpr float kSurfaceListVisibilityWidth = 28.0F;
+
+DRAWBOT_ColorRGBA AppUiColor(
+    AEGP_SuiteHandler& suites,
+    PF_App_ColorType type,
+    DRAWBOT_ColorRGBA fallback) {
+    PF_App_Color color{};
+    if (suites.AppSuite6()->PF_AppGetColor(type, &color) == PF_Err_NONE) {
+        constexpr float kChannelScale = 1.0F / 65535.0F;
+        return {
+            static_cast<float>(color.red) * kChannelScale,
+            static_cast<float>(color.green) * kChannelScale,
+            static_cast<float>(color.blue) * kChannelScale,
+            1.0F};
+    }
+    return fallback;
+}
+
+std::array<DRAWBOT_UTF16Char, 64> SurfaceListText(
+    std::uint32_t row,
+    std::uint32_t surface_id) {
+    char ascii[64];
+    std::snprintf(
+        ascii,
+        sizeof(ascii),
+        "%u   Surface %u",
+        row + 1,
+        surface_id);
+    std::array<DRAWBOT_UTF16Char, 64> text{};
+    for (std::size_t index = 0;
+         index + 1 < text.size() && ascii[index] != '\0';
+         ++index) {
+        text[index] = static_cast<DRAWBOT_UTF16Char>(
+            static_cast<unsigned char>(ascii[index]));
+    }
+    return text;
+}
+
+void DrawSurfaceVisibilityIcon(
+    const DRAWBOT_Suites& drawbot_suites,
+    DRAWBOT_SurfaceRef surface,
+    DRAWBOT_SupplierRef supplier,
+    float center_x,
+    float center_y,
+    bool visible,
+    const DRAWBOT_ColorRGBA& color) {
+    DRAWBOT_PathP outline(drawbot_suites.supplier_suiteP, supplier);
+    drawbot_suites.path_suiteP->MoveTo(
+        outline,
+        center_x - 7.0F,
+        center_y);
+    const DRAWBOT_PointF32 top_control_1{
+        center_x - 3.5F,
+        center_y - 5.0F};
+    const DRAWBOT_PointF32 top_control_2{
+        center_x + 3.5F,
+        center_y - 5.0F};
+    const DRAWBOT_PointF32 right{center_x + 7.0F, center_y};
+    drawbot_suites.path_suiteP->BezierTo(
+        outline,
+        &top_control_1,
+        &top_control_2,
+        &right);
+    const DRAWBOT_PointF32 bottom_control_1{
+        center_x + 3.5F,
+        center_y + 5.0F};
+    const DRAWBOT_PointF32 bottom_control_2{
+        center_x - 3.5F,
+        center_y + 5.0F};
+    const DRAWBOT_PointF32 left{center_x - 7.0F, center_y};
+    drawbot_suites.path_suiteP->BezierTo(
+        outline,
+        &bottom_control_1,
+        &bottom_control_2,
+        &left);
+    DRAWBOT_PenP pen(
+        drawbot_suites.supplier_suiteP,
+        supplier,
+        &color,
+        1.25F);
+    drawbot_suites.surface_suiteP->StrokePath(surface, pen, outline);
+
+    DRAWBOT_PathP pupil(drawbot_suites.supplier_suiteP, supplier);
+    const DRAWBOT_PointF32 center{center_x, center_y};
+    drawbot_suites.path_suiteP->AddArc(
+        pupil,
+        &center,
+        visible ? 2.25F : 1.5F,
+        0.0F,
+        360.0F);
+    DRAWBOT_BrushP brush(
+        drawbot_suites.supplier_suiteP,
+        supplier,
+        &color);
+    drawbot_suites.surface_suiteP->FillPath(
+        surface,
+        brush,
+        pupil,
+        kDRAWBOT_FillType_Default);
+
+    if (!visible) {
+        DRAWBOT_PathP slash(drawbot_suites.supplier_suiteP, supplier);
+        drawbot_suites.path_suiteP->MoveTo(
+            slash,
+            center_x - 6.0F,
+            center_y + 5.0F);
+        drawbot_suites.path_suiteP->LineTo(
+            slash,
+            center_x + 6.0F,
+            center_y - 5.0F);
+        drawbot_suites.surface_suiteP->StrokePath(surface, pen, slash);
+    }
+}
+
+PF_Err DrawSurfaceList(
+    PF_InData* in_data,
+    PF_OutData* out_data,
+    PF_ParamDef* params[],
+    PF_EventExtra* event_extra) {
+    SceneData scene{};
+    PF_Handle scene_handle = params[kParamSceneData]->u.arb_d.value;
+    if (!scene_handle) {
+        return PF_Err_NONE;
+    }
+    const auto* scene_data =
+        static_cast<const SceneData*>(PF_LOCK_HANDLE(scene_handle));
+    if (!scene_data) {
+        return PF_Err_OUT_OF_MEMORY;
+    }
+    if (IsValidScene(*scene_data)) {
+        scene = *scene_data;
+    } else {
+        InitializeScene(scene, in_data->width, in_data->height);
+    }
+    PF_UNLOCK_HANDLE(scene_handle);
+
+    PF_Err error = PF_Err_NONE;
+    DRAWBOT_Suites drawbot_suites{};
+    error = AEFX_AcquireDrawbotSuites(
+        in_data,
+        out_data,
+        &drawbot_suites);
+    if (error != PF_Err_NONE) {
+        return error;
+    }
+
+    AEGP_SuiteHandler suites(in_data->pica_basicP);
+    DRAWBOT_DrawRef drawing_ref = nullptr;
+    DRAWBOT_SurfaceRef drawing_surface = nullptr;
+    DRAWBOT_SupplierRef supplier = nullptr;
+    error = suites.EffectCustomUISuite1()->PF_GetDrawingReference(
+        event_extra->contextH,
+        &drawing_ref);
+    if (error == PF_Err_NONE && drawing_ref) {
+        error = drawbot_suites.drawbot_suiteP->GetSurface(
+            drawing_ref,
+            &drawing_surface);
+    }
+    if (error == PF_Err_NONE && drawing_ref) {
+        error = drawbot_suites.drawbot_suiteP->GetSupplier(
+            drawing_ref,
+            &supplier);
+    }
+    if (error != PF_Err_NONE || !drawing_surface || !supplier) {
+        AEFX_ReleaseDrawbotSuites(in_data, out_data);
+        return error;
+    }
+
+    try {
+        const float left =
+            static_cast<float>(event_extra->effect_win.current_frame.left);
+        const float top =
+            static_cast<float>(event_extra->effect_win.current_frame.top);
+        const float width = static_cast<float>(
+            event_extra->effect_win.current_frame.right -
+            event_extra->effect_win.current_frame.left);
+        const float height = static_cast<float>(
+            event_extra->effect_win.current_frame.bottom -
+            event_extra->effect_win.current_frame.top);
+        const DRAWBOT_ColorRGBA background = AppUiColor(
+            suites,
+            PF_App_Color_FILL,
+            {0.12F, 0.12F, 0.12F, 1.0F});
+        const DRAWBOT_ColorRGBA text_color = AppUiColor(
+            suites,
+            PF_App_Color_TEXT,
+            {0.86F, 0.86F, 0.86F, 1.0F});
+        const DRAWBOT_ColorRGBA disabled_color = AppUiColor(
+            suites,
+            PF_App_Color_TEXT_DISABLED,
+            {0.42F, 0.42F, 0.42F, 1.0F});
+        const DRAWBOT_ColorRGBA frame_color = AppUiColor(
+            suites,
+            PF_App_Color_FRAME,
+            {0.05F, 0.05F, 0.05F, 1.0F});
+        const DRAWBOT_ColorRGBA selected_color{
+            0.18F,
+            0.42F,
+            0.68F,
+            1.0F};
+        const DRAWBOT_ColorRGBA alternate_color{
+            std::min(1.0F, background.red + 0.025F),
+            std::min(1.0F, background.green + 0.025F),
+            std::min(1.0F, background.blue + 0.025F),
+            1.0F};
+
+        const DRAWBOT_RectF32 background_rect{left, top, width, height};
+        suites.SurfaceSuiteCurrent()->PaintRect(
+            drawing_surface,
+            &background,
+            &background_rect);
+
+        float default_font_size = 11.0F;
+        drawbot_suites.supplier_suiteP->GetDefaultFontSize(
+            supplier,
+            &default_font_size);
+        DRAWBOT_FontP font(
+            drawbot_suites.supplier_suiteP,
+            supplier,
+            std::max(10.0F, default_font_size));
+        DRAWBOT_BrushP text_brush(
+            drawbot_suites.supplier_suiteP,
+            supplier,
+            &text_color);
+
+        for (std::uint32_t row = 0; row < kMaximumSurfaces; ++row) {
+            const float row_top =
+                top + static_cast<float>(row * kSurfaceListRowHeight);
+            DRAWBOT_RectF32 row_rect{
+                left,
+                row_top,
+                width,
+                static_cast<float>(kSurfaceListRowHeight)};
+            if (row < scene.surface_count &&
+                row == scene.selected_surface) {
+                suites.SurfaceSuiteCurrent()->PaintRect(
+                    drawing_surface,
+                    &selected_color,
+                    &row_rect);
+            } else if ((row & 1U) != 0U) {
+                suites.SurfaceSuiteCurrent()->PaintRect(
+                    drawing_surface,
+                    &alternate_color,
+                    &row_rect);
+            }
+
+            DRAWBOT_PathP separator(
+                drawbot_suites.supplier_suiteP,
+                supplier);
+            drawbot_suites.path_suiteP->MoveTo(
+                separator,
+                left,
+                row_top + static_cast<float>(kSurfaceListRowHeight));
+            drawbot_suites.path_suiteP->LineTo(
+                separator,
+                left + width,
+                row_top + static_cast<float>(kSurfaceListRowHeight));
+            DRAWBOT_PenP separator_pen(
+                drawbot_suites.supplier_suiteP,
+                supplier,
+                &frame_color,
+                1.0F);
+            drawbot_suites.surface_suiteP->StrokePath(
+                drawing_surface,
+                separator_pen,
+                separator);
+
+            if (row >= scene.surface_count) {
+                continue;
+            }
+            const SurfaceData& surface = scene.surfaces[row];
+            const bool visible = surface.enabled != 0;
+            DrawSurfaceVisibilityIcon(
+                drawbot_suites,
+                drawing_surface,
+                supplier,
+                left + 14.0F,
+                row_top + static_cast<float>(kSurfaceListRowHeight) * 0.5F,
+                visible,
+                visible ? text_color : disabled_color);
+
+            const auto label = SurfaceListText(row, surface.id);
+            const DRAWBOT_PointF32 origin{
+                left + kSurfaceListVisibilityWidth + 4.0F,
+                row_top + static_cast<float>(kSurfaceListRowHeight) * 0.72F};
+            if (visible) {
+                drawbot_suites.surface_suiteP->DrawString(
+                    drawing_surface,
+                    text_brush,
+                    font,
+                    label.data(),
+                    &origin,
+                    kDRAWBOT_TextAlignment_Default,
+                    kDRAWBOT_TextTruncation_End,
+                    std::max(
+                        0.0F,
+                        width - kSurfaceListVisibilityWidth - 8.0F));
+            } else {
+                DRAWBOT_BrushP disabled_brush(
+                    drawbot_suites.supplier_suiteP,
+                    supplier,
+                    &disabled_color);
+                drawbot_suites.surface_suiteP->DrawString(
+                    drawing_surface,
+                    disabled_brush,
+                    font,
+                    label.data(),
+                    &origin,
+                    kDRAWBOT_TextAlignment_Default,
+                    kDRAWBOT_TextTruncation_End,
+                    std::max(
+                        0.0F,
+                        width - kSurfaceListVisibilityWidth - 8.0F));
+            }
+        }
+        drawbot_suites.surface_suiteP->Flush(drawing_surface);
+    } catch (const DRAWBOT_Exception& draw_error) {
+        error = static_cast<PF_Err>(draw_error.mErr);
+    }
+
+    const PF_Err release_error =
+        AEFX_ReleaseDrawbotSuites(in_data, out_data);
+    if (error == PF_Err_NONE) {
+        error = release_error;
+    }
+    if (error == PF_Err_NONE) {
+        event_extra->evt_out_flags = PF_EO_HANDLED_EVENT;
+    }
+    return error;
+}
+
+PF_Err HandleSurfaceListEvent(
+    PF_InData* in_data,
+    PF_OutData* out_data,
+    PF_ParamDef* params[],
+    PF_EventExtra* event_extra) {
+    if (event_extra->effect_win.area != PF_EA_CONTROL ||
+        event_extra->effect_win.index != kParamSurfaceCount) {
+        return PF_Err_NONE;
+    }
+    if (event_extra->e_type == PF_Event_DRAW) {
+        return DrawSurfaceList(
+            in_data,
+            out_data,
+            params,
+            event_extra);
+    }
+    if (event_extra->e_type == PF_Event_ADJUST_CURSOR) {
+        event_extra->u.adjust_cursor.set_cursor = PF_Cursor_FINGER_POINTER;
+        event_extra->evt_out_flags = PF_EO_HANDLED_EVENT;
+        return PF_Err_NONE;
+    }
+    if (event_extra->e_type != PF_Event_DO_CLICK) {
+        return PF_Err_NONE;
+    }
+
+    const PF_UnionableRect& frame =
+        event_extra->effect_win.current_frame;
+    const PF_Point mouse = event_extra->u.do_click.screen_point;
+    const float width = static_cast<float>(frame.right - frame.left);
+    const float height = static_cast<float>(frame.bottom - frame.top);
+    const float mouse_x =
+        mouse.h >= frame.left && mouse.h <= frame.right
+            ? static_cast<float>(mouse.h - frame.left)
+            : static_cast<float>(mouse.h);
+    const float mouse_y =
+        mouse.v >= frame.top && mouse.v <= frame.bottom
+            ? static_cast<float>(mouse.v - frame.top)
+            : static_cast<float>(mouse.v);
+    if (mouse_x < 0.0F || mouse_x > width ||
+        mouse_y < 0.0F || mouse_y >= height) {
+        return PF_Err_NONE;
+    }
+    const std::uint32_t row = static_cast<std::uint32_t>(
+        mouse_y / static_cast<float>(kSurfaceListRowHeight));
+
+    PF_Handle scene_handle = params[kParamSceneData]->u.arb_d.value;
+    if (!scene_handle) {
+        return PF_Err_NONE;
+    }
+    auto* scene = static_cast<SceneData*>(PF_LOCK_HANDLE(scene_handle));
+    if (!scene) {
+        return PF_Err_OUT_OF_MEMORY;
+    }
+    if (!IsValidScene(*scene)) {
+        InitializeScene(*scene, in_data->width, in_data->height);
+    }
+    bool changed = false;
+    if (row < scene->surface_count) {
+        if (mouse_x < kSurfaceListVisibilityWidth) {
+            SurfaceData& surface = scene->surfaces[row];
+            surface.enabled = surface.enabled == 0 ? 1U : 0U;
+            changed = true;
+        } else if (row != scene->selected_surface) {
+            CaptureSurfaceAtCurrentFrame(
+                params,
+                scene->surfaces[scene->selected_surface]);
+            scene->selected_surface = row;
+            UpdateSurfaceUiParams(params, *scene);
+            changed = true;
+        }
+    }
+    PF_UNLOCK_HANDLE(scene_handle);
+
+    event_extra->evt_out_flags = PF_EO_HANDLED_EVENT;
+    if (changed) {
+        params[kParamSceneData]->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+        out_data->out_flags |= PF_OutFlag_REFRESH_UI;
+        event_extra->evt_out_flags = static_cast<PF_EventOutFlags>(
+            PF_EO_HANDLED_EVENT | PF_EO_ALWAYS_UPDATE | PF_EO_UPDATE_NOW);
+    }
+    return PF_Err_NONE;
+}
+
+}  // namespace
+
 PF_Err HandleSurfaceGizmoEvent(
     PF_InData* in_data,
     PF_OutData* out_data,
@@ -2858,12 +3280,25 @@ PF_Err HandleSurfaceGizmoEvent(
     if (!event_extra ||
         (event_extra->e_type != PF_Event_DRAW &&
          event_extra->e_type != PF_Event_DO_CLICK &&
-         event_extra->e_type != PF_Event_DRAG)) {
+         event_extra->e_type != PF_Event_DRAG &&
+         event_extra->e_type != PF_Event_ADJUST_CURSOR)) {
         return PF_Err_NONE;
     }
-    if (!event_extra || !event_extra->contextH ||
-        (*event_extra->contextH)->w_type != PF_Window_COMP || !params ||
+    if (!event_extra->contextH || !params ||
         !params[kParamInput] || !params[kParamSceneData]) {
+        return PF_Err_NONE;
+    }
+    if ((*event_extra->contextH)->w_type == PF_Window_EFFECT) {
+        return HandleSurfaceListEvent(
+            in_data,
+            out_data,
+            params,
+            event_extra);
+    }
+    if ((*event_extra->contextH)->w_type != PF_Window_COMP) {
+        return PF_Err_NONE;
+    }
+    if (event_extra->e_type == PF_Event_ADJUST_CURSOR) {
         return PF_Err_NONE;
     }
     const A_long input_width =
@@ -3815,9 +4250,11 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
 
     AEFX_CLR_STRUCT(def);
     def.flags = PF_ParamFlag_CANNOT_TIME_VARY;
-    def.ui_flags = PF_PUI_DISABLED;
+    def.ui_flags = PF_PUI_CONTROL | PF_PUI_DONT_ERASE_CONTROL;
+    def.ui_width = kSurfaceListUiWidth;
+    def.ui_height = kSurfaceListUiHeight;
     PF_ADD_SLIDER(
-        "Surface Count",
+        "Surface List",
         1,
         static_cast<A_long>(kMaximumSurfaces),
         1,
@@ -3827,6 +4264,7 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
 
     AEFX_CLR_STRUCT(def);
     def.flags = PF_ParamFlag_CANNOT_TIME_VARY | PF_ParamFlag_SUPERVISE;
+    def.ui_flags = PF_PUI_NO_ECW_UI;
     PF_ADD_POPUP(
         "Selected Surface",
         static_cast<A_long>(kMaximumSurfaces),
@@ -4547,7 +4985,8 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
 
     PF_CustomUIInfo custom_ui;
     AEFX_CLR_STRUCT(custom_ui);
-    custom_ui.events = PF_CustomEFlag_LAYER | PF_CustomEFlag_COMP;
+    custom_ui.events =
+        PF_CustomEFlag_LAYER | PF_CustomEFlag_COMP | PF_CustomEFlag_EFFECT;
     custom_ui.comp_ui_width = 0;
     custom_ui.comp_ui_height = 0;
     custom_ui.comp_ui_alignment = PF_UIAlignment_NONE;

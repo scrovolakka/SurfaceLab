@@ -2,7 +2,8 @@
 
 Independent After Effects native effect prototype for editable bicubic surfaces.
 
-Version 0.15.8 adds a 3D Null controller-rig foundation on top of the SmartFX,
+Version 0.15.9 adds a fixed Surface List and 3D Null controller-rig foundation
+on top of the SmartFX,
 After Effects active-camera, and composition-light support. Up to
 eight pages can now keep and render independent point, depth, transform,
 deformation, source, image, and material streams. Selecting a surface changes
@@ -51,6 +52,8 @@ surface:
 - direct local XYZ Scale dragging from red, green, and blue square handles
 - direct XYZ Rotation dragging from the matching outer diamond handles
 - Interaction Mode filtering for All, Surface, Control Points, and Deform
+- fixed eight-row Surface List with direct selection and per-surface
+  visibility toggles (no wheel scrolling required)
 - Gizmo Tool filtering for All, Position, Rotation, and Scale
 - four pink Curl handle pairs: tip Amount/Radius and fold Length/Direction
 - one yellow Roll handle pair on the selected edge: Angle and Length
