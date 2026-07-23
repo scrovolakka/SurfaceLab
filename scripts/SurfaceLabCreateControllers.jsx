@@ -6,15 +6,20 @@
     var SCENE_POSITION = 505;
     var SCENE_ROTATIONS = [506, 507, 508];
     var SCENE_SCALES = [509, 510, 511];
-    // SurfaceLab's rotation math is opposite-handed to AE's layer rotations, so
-    // ALL THREE axes negate. Y and Z show this directly in the 2D silhouette
-    // (in-plane), which is why they read as "reversed" until flipped. X hides
-    // it: an X rotation squishes height by cos(theta) (even in theta, so the 2D
-    // shape is identical for +/-theta) while the near/far tilt follows
-    // sin(theta) (odd). So a missing X flip is invisible in 2D and shows up
-    // only as a depth mismatch under X rotation -- the "X synced but depth
-    // off" symptom. Negating X fixes the depth and leaves the 2D unchanged.
-    var ROTATION_AXIS_SIGNS = [-1, -1, -1];
+    // Per-axis sign relating AE null rotation to SurfaceLab's rotation param.
+    // With the rig fully registered (hinge on the origin, render and Nulls
+    // through the same AE camera) these match directly, so [1, 1, 1] is the
+    // default. The earlier non-unit maps were compensating for registration
+    // bugs (hinge offset, internal-vs-AE camera) that are now fixed, and were
+    // measured while those bugs distorted the result.
+    //
+    // To recalibrate one axis: create the rig, rotate the Surface Root on that
+    // axis by +30, and watch the Comp view (active camera). If the render and
+    // the control-Null cage stay glued, the sign is right; if they peel apart,
+    // negate that axis. X is special: its 2D silhouette is identical for +/-30
+    // (height scales by cos), so judge X only by whether the near/far DEPTH
+    // tilt of the render matches the Nulls, not by the 2D outline.
+    var ROTATION_AXIS_SIGNS = [1, 1, 1];
     var MAX_CONTROLS = 16;
     var assignedProperties = [];
     var createdLayers = [];
