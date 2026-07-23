@@ -4136,10 +4136,12 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
     AEFX_CLR_STRUCT(def);
     def.param_type = PF_Param_POINT_3D;
     PF_STRNNCPY(def.PF_DEF_NAME, "Position", sizeof(def.PF_DEF_NAME));
-    def.u.point3d_d.x_value = def.u.point3d_d.x_dephault =
-        static_cast<double>(in_data->width) * 0.5;
-    def.u.point3d_d.y_value = def.u.point3d_d.y_dephault =
-        static_cast<double>(in_data->height) * 0.5;
+    // POINT_3D dephaults are percentages of the layer (50% = center), matching
+    // the Surface Position param below. 50/50 keeps the default Position equal
+    // to the scene pivot, so a freshly applied effect gets an identity scene
+    // transform. Pixel values here would be read as huge percentages.
+    def.u.point3d_d.x_value = def.u.point3d_d.x_dephault = 50.0;
+    def.u.point3d_d.y_value = def.u.point3d_d.y_dephault = 50.0;
     def.u.point3d_d.z_value = def.u.point3d_d.z_dephault = 0.0;
     def.uu.id = kDiskScenePosition;
     error = PF_ADD_PARAM(in_data, -1, &def);

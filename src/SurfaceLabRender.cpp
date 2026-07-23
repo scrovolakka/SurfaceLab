@@ -2085,8 +2085,9 @@ constexpr A_long kSmartInputCheckoutId = 0;
 constexpr A_long kSmartSourceCheckoutBase = 1;
 
 struct SmartParameterSet {
-    SmartParameterSet()
-        : definitions(static_cast<std::size_t>(kParamCount)),
+    explicit SmartParameterSet(PF_InData* in_data)
+        : in_data(in_data),
+          definitions(static_cast<std::size_t>(kParamCount)),
           pointers(static_cast<std::size_t>(kParamCount)),
           checked(static_cast<std::size_t>(kParamCount), false) {
         for (std::size_t index = 0; index < pointers.size(); ++index) {
@@ -2094,6 +2095,21 @@ struct SmartParameterSet {
         }
     }
 
+    SmartParameterSet(const SmartParameterSet&) = delete;
+    SmartParameterSet& operator=(const SmartParameterSet&) = delete;
+
+    // Every checkout must be balanced with a checkin, including on the error
+    // returns out of SmartPreRender; otherwise each PreRender leaks its
+    // checked-out params (and the arbitrary SceneData copy with them).
+    ~SmartParameterSet() noexcept {
+        for (std::size_t index = 0; index < checked.size(); ++index) {
+            if (checked[index]) {
+                PF_CHECKIN_PARAM(in_data, &definitions[index]);
+            }
+        }
+    }
+
+    PF_InData* in_data{};
     std::vector<PF_ParamDef> definitions;
     std::vector<PF_ParamDef*> pointers;
     std::vector<bool> checked;
@@ -2380,7 +2396,7 @@ PF_Err SmartPreRender(
         1,
         input_result.max_result_rect.bottom -
             input_result.max_result_rect.top);
-    SmartParameterSet parameters;
+    SmartParameterSet parameters(in_data);
     error = CheckoutSmartRenderParameters(in_data, parameters);
     if (error != PF_Err_NONE) {
         return error;
