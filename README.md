@@ -85,3 +85,18 @@ work/build/surfacelab/SurfaceLab.plugin
 
 For manual testing, copy the bundle to an After Effects plug-ins directory while
 After Effects is closed, then start After Effects and apply `SurfaceLab > SurfaceLab`.
+
+## Model unit tests
+
+The scene data model and its V1–V13 on-disk migration chain live in
+`src/SurfaceLabModel.{h,cpp}` and depend on nothing from the After Effects SDK,
+so they can be built and run on any platform without Adobe headers:
+
+```sh
+cmake -S . -B work/build/tests -DSURFACELAB_BUILD_PLUGIN=OFF -DSURFACELAB_BUILD_TESTS=ON
+cmake --build work/build/tests
+ctest --test-dir work/build/tests --output-on-failure
+```
+
+The tests exercise initialization, validation, and the migration paths that are
+hard to observe through the plug-in UI.
