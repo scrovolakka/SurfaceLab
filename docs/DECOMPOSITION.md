@@ -83,6 +83,13 @@ Done:
   (`SurfaceLabUI.cpp`): probe step / limit margin, solver damping and caps,
   minimum screen-direction lengths, and handle edge fractions.
 
-Remaining (AE-coupled, verify on Mac):
-- Extend the `IsValidScene` spirit to gizmo projection failure and texture-border
-  edges (see the review findings for the specific spots).
+- The `IsValidScene` spirit now covers the two review spots:
+  `ResolveBorderCoordinate` rejects non-finite coordinates before the border
+  modes run (keeps NaN out of the pixel-index casts in `SampleTexture`), and
+  `ProjectScaleHandle` / `ProjectRotationHandle` propagate
+  `NormalizeScreenDirection` failure instead of ignoring it — the last
+  projection-failure signals in the gizmo that were dropped. The rasterizer
+  (degenerate-area guard), `HitProjectedSurface` (per-point visibility), and
+  the `Drag*` writes (range clamps) were audited and already defensive.
+
+Nothing outstanding.

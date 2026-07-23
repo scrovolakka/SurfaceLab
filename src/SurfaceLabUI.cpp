@@ -1412,7 +1412,10 @@ bool ProjectScaleHandle(
         return false;
     }
     Point2 screen_direction;
-    NormalizeScreenDirection(pivot_frame, axis_frame, axis, screen_direction);
+    if (!NormalizeScreenDirection(
+            pivot_frame, axis_frame, axis, screen_direction)) {
+        return false;
+    }
     frame_point = {
         pivot_frame.x + screen_direction.x * kGizmoScaleAxisLength,
         pivot_frame.y + screen_direction.y * kGizmoScaleAxisLength};
@@ -1481,7 +1484,10 @@ bool ProjectRotationHandle(
         return false;
     }
     Point2 screen_direction;
-    NormalizeScreenDirection(origin_frame, ring_frame, axis, screen_direction);
+    if (!NormalizeScreenDirection(
+            origin_frame, ring_frame, axis, screen_direction)) {
+        return false;
+    }
     frame_point = {
         origin_frame.x + screen_direction.x * kGizmoRotationHandleRadius,
         origin_frame.y + screen_direction.y * kGizmoRotationHandleRadius};

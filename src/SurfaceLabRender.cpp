@@ -126,6 +126,13 @@ Point2 MapImageCoordinates(
 }
 
 bool ResolveBorderCoordinate(double& coordinate, std::uint32_t border_mode) {
+    // A non-finite coordinate (degenerate surface math upstream) must never
+    // reach the pixel-index arithmetic: clamp/repeat/mirror would all keep it
+    // NaN and the float-to-int casts below SampleTexture are undefined for it.
+    // Treat it like an out-of-range transparent sample instead.
+    if (!std::isfinite(coordinate)) {
+        return false;
+    }
     if (coordinate >= 0.0 && coordinate <= 1.0) {
         return true;
     }
