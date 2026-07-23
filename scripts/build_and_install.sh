@@ -31,7 +31,14 @@ if pgrep -x "After Effects" >/dev/null 2>&1 || \
     exit 1
 fi
 
-echo "==> Configuring ($build_dir)"
+# Always build from scratch. An incremental directory can silently link
+# stale objects compiled from since-reverted working-tree edits (ninja
+# trusts mtimes, and git checkouts can leave sources older than objects),
+# shipping code that no longer exists in the repo. That exact failure put a
+# discarded rotation-origin experiment into an installed binary once; a
+# clean build is cheap insurance against it happening again.
+echo "==> Configuring ($build_dir, clean)"
+rm -rf "$build_dir"
 cmake -S "$repo_root" -B "$build_dir" -G Ninja
 
 echo "==> Building"
