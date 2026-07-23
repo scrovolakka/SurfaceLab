@@ -300,3 +300,12 @@ SceneData ResolveSceneForFrame(
     PF_ParamDef* params[],
     A_long input_width,
     A_long input_height);
+
+// Arbitrary-data glue, defined in SurfaceLab.cpp. ParamsSetup (in
+// SurfaceLabUI.cpp) registers the scene parameter with these.
+void* SceneRefcon();
+PF_Err CreateSceneHandle(
+    PF_InData* in_data,
+    PF_ArbitraryH* destination,
+    double width,
+    double height);
