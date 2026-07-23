@@ -72,14 +72,17 @@ cmake --build work/build/tests
 ctest --test-dir work/build/tests --output-on-failure
 ```
 
-## Follow-on refactors (the split has landed)
+## Follow-on refactors
 
-Verifiable against the model tests:
-- Replace `PrimaryAnimationParam`'s switch with a `constexpr` table.
-- Factor the shared field-copy boilerplate out of the `MigrateSceneV*` chain.
+Done:
+- `PrimaryAnimationParam` is now an explicit `constexpr` table with boundary
+  static_asserts (`SurfaceLabInternal.h`).
+- The `MigrateSceneV1..V8` field-copy boilerplate is factored into cumulative
+  group helpers (`SurfaceLabModel.cpp`); V11/V12 stay memcpy-based verbatim.
+- The gizmo magic numbers are named constants next to the kGizmo* hit radii
+  (`SurfaceLabUI.cpp`): probe step / limit margin, solver damping and caps,
+  minimum screen-direction lengths, and handle edge fractions.
 
-AE-coupled (verify on Mac):
-- Name the magic numbers in the gizmo math (hit radius, falloff, forwarding
-  epsilon).
+Remaining (AE-coupled, verify on Mac):
 - Extend the `IsValidScene` spirit to gizmo projection failure and texture-border
   edges (see the review findings for the specific spots).
