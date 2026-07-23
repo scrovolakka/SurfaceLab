@@ -2,10 +2,11 @@
 
 Independent After Effects native effect prototype for editable bicubic surfaces.
 
-Version 0.15.10 adds `Finish`, `Depth`, `UV`, and view-space `Normals` render
-views, a fixed Surface List, and a 3D Null controller-rig foundation on top of
-the SmartFX,
-After Effects active-camera, and composition-light support. Up to
+Version 0.15.11 adds a shared Scene Transform and reorganizes the effect UI into
+five collapsed top-level groups. `Finish`, `Depth`, `UV`, and view-space
+`Normals` render views, a fixed Surface List, and a hierarchical 3D Null
+controller rig build on the SmartFX, After Effects active-camera, and
+composition-light support. Up to
 eight pages can now keep and render independent point, depth, transform,
 deformation, source, image, and material streams. Selecting a surface changes
 which bank is shown without changing the other pages' animation. All four
@@ -23,6 +24,11 @@ surface:
 - up to 8 surfaces in one effect instance
 - add, duplicate, delete, and selected-surface controls
 - per-surface Size, Position, Rotation, and XYZ Scale controls
+- shared Scene Position, XYZ Rotation, and XYZ Scale parent transform
+- collapsed Scene Transform, Surfaces, Camera, Lights, and Render Settings
+  top-level groups
+- Control Points, Depth, and per-surface Transform grouped under
+  `Surfaces > Selected Surface`
 - Center, four-edge, and relative Custom X/Y Rotation Origin controls
 - keyframeable selected-surface transform, deformation, and material controls
 - independent per-surface X/Y Divisions controls
@@ -68,7 +74,8 @@ surface:
 - 8-bpc, 16-bpc, and 32-bpc float rendering
 - camera/light snapshots resolved during Smart PreRender, outside Smart Render
 - legacy 8/16-bpc render fallback for hosts that do not use SmartFX
-- companion script for a selected surface's Root + 16 point 3D Null rig
+- companion script for one shared Scene Root plus each selected surface's
+  Root + 16 point 3D Null rig
 - Apple Silicon plug-in bundle
 
 It does not yet implement native layer attachments or Metal. The composition-panel
@@ -80,21 +87,26 @@ animation streams and the remaining surfaces receive separate initialized banks.
 
 ## 3D Null controller prototype
 
-`scripts/SurfaceLabCreateControllers.jsx` creates one 3D Root Null and sixteen
+`scripts/SurfaceLabCreateControllers.jsx` creates or reuses one
+`SurfaceLab - Scene Root`, then creates a child 3D Root Null and sixteen
 parented 3D point Nulls for the surface currently selected in the effect. Move a
 point Null to edit that control's X, Y, and Depth together. Move, rotate, or
-scale the Root to transform the whole surface with standard After Effects tools.
+scale a surface Root to transform only that surface; transform the Scene Root
+to move, rotate, or scale every SurfaceLab surface together.
 Creating the rig switches `Camera Source` to the active After Effects camera and
 `Coordinate Space` to `Composition World`. In that mode the renderer cancels
 the unparented 2D host layer's affine transform before compositing, so the
 rendered mesh, SurfaceLab gizmo, and native 3D Nulls stay registered while the
 camera or host layer moves.
 
-The binding uses the surface's persistent ID and animation bank rather than its
-visible page number, so adding, deleting, or reordering other surfaces does not
-retarget an existing rig. SurfaceLab still stores the canonical cage in effect
-coordinates; the Null children expose local offsets from the Root. The renderer
-and controller foundation share the same Local/Cage/World transform contract.
+The Scene Root drives the top-level Scene Transform streams. Each surface Root
+drives only its persistent surface animation bank, so the shared parent does not
+rewrite individual control cages. The binding uses the surface's persistent ID
+and animation bank rather than its visible page number, so adding, deleting, or
+reordering other surfaces does not retarget an existing rig. SurfaceLab still
+stores the canonical cage in effect coordinates; the Null children expose local
+offsets from the surface Root. The renderer and controller foundation share the
+same Local/Cage/Scene/World transform contract.
 
 To create a rig:
 
@@ -102,8 +114,8 @@ To create a rig:
    `Selected Surface`.
 2. Run `File > Scripts > Run Script File...` and select
    `scripts/SurfaceLabCreateControllers.jsx`.
-3. Animate the generated `SurfaceLab S… - Root` or any of its sixteen
-   `SurfaceLab S… - Control row,column` Nulls.
+3. Animate `SurfaceLab - Scene Root`, the generated `SurfaceLab S… - Root`, or
+   any of its sixteen `SurfaceLab S… - Control row,column` Nulls.
 
 To return one surface to its flat control cage, select either its SurfaceLab
 source layer or any generated controller Null, then run

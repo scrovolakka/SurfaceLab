@@ -12,7 +12,7 @@
 
 constexpr A_long kMajorVersion = 0;
 constexpr A_long kMinorVersion = 15;
-constexpr A_long kBugVersion = 10;
+constexpr A_long kBugVersion = 11;
 constexpr A_long kBuildVersion = 1;
 constexpr PF_ParamIndex kSurfaceAnimationPropertyCount = 84;
 constexpr PF_ParamIndex kSurfaceAnimationBankStride =
@@ -21,10 +21,28 @@ constexpr PF_ParamIndex kAdditionalSurfaceAnimationBanks = 7;
 
 enum ParamIndex {
     kParamInput = 0,
-    kParamTessellation,
-    kParamWireframe,
+    kParamSceneTransformStart,
+    kParamScenePosition,
+    kParamSceneRotationX,
+    kParamSceneRotationY,
+    kParamSceneRotationZ,
+    kParamSceneScaleX,
+    kParamSceneScaleY,
+    kParamSceneScaleZ,
+    kParamSceneTransformEnd,
+    kParamSceneData,
+    kParamSurfacesStart,
+    kParamSurfaceCount,
+    kParamSurfaceSelect,
+    kParamAddSurface,
+    kParamDuplicateSurface,
+    kParamDeleteSurface,
+    kParamControllerSurfaceId,
+    kParamControllerAnimationBank,
     kParamGizmoInteractionMode,
     kParamGizmoTool,
+    kParamSelectedSurfaceStart,
+    kParamControlPointsStart,
     kParamPoint00,
     kParamPoint01,
     kParamPoint02,
@@ -41,11 +59,8 @@ enum ParamIndex {
     kParamPoint31,
     kParamPoint32,
     kParamPoint33,
-    kParamPerspective,
-    kParamCameraDistance,
-    kParamRotationX,
-    kParamRotationY,
-    kParamRotationZ,
+    kParamControlPointsEnd,
+    kParamDepthStart,
     kParamDepth00,
     kParamDepth01,
     kParamDepth02,
@@ -62,18 +77,14 @@ enum ParamIndex {
     kParamDepth31,
     kParamDepth32,
     kParamDepth33,
-    kParamSceneData,
-    kParamSurfacesStart,
-    kParamSurfaceCount,
-    kParamSurfaceSelect,
-    kParamAddSurface,
-    kParamDuplicateSurface,
-    kParamDeleteSurface,
-    kParamControllerSurfaceId,
-    kParamControllerAnimationBank,
+    kParamDepthEnd,
+    kParamSurfaceTransformStart,
     kParamSurfaceSizeX,
     kParamSurfaceSizeY,
     kParamSurfacePosition,
+    kParamRotationX,
+    kParamRotationY,
+    kParamRotationZ,
     kParamSurfaceRotationOriginStart,
     kParamSurfaceRotationOriginMode,
     kParamSurfaceRotationOriginX,
@@ -84,6 +95,7 @@ enum ParamIndex {
     kParamSurfaceScaleY,
     kParamSurfaceScaleZ,
     kParamSurfaceScaleEnd,
+    kParamSurfaceTransformEnd,
     kParamSurfaceDivisionsStart,
     kParamSurfaceDivisionsX,
     kParamSurfaceDivisionsY,
@@ -146,11 +158,14 @@ enum ParamIndex {
     kParamSurfaceSpecular,
     kParamSurfaceShininess,
     kParamSurfaceMaterialEnd,
+    kParamSelectedSurfaceEnd,
     kParamSurfaceAnimationBanksStart,
     kParamSurfacesEnd =
         kParamSurfaceAnimationBanksStart +
         kAdditionalSurfaceAnimationBanks * kSurfaceAnimationBankStride,
     kParamCameraStart,
+    kParamPerspective,
+    kParamCameraDistance,
     kParamCameraSource,
     kParamCoordinateSpace,
     kParamCameraOffsetX,
@@ -169,6 +184,8 @@ enum ParamIndex {
     kParamAmbientLight,
     kParamLightsEnd,
     kParamRenderSettingsStart,
+    kParamTessellation,
+    kParamWireframe,
     kParamRenderView,
     kParamTextureFilter,
     kParamBackfaceCulling,
@@ -303,7 +320,24 @@ enum ParamDiskId {
     kDiskControllerSurfaceId = 500,
     kDiskControllerAnimationBank = 501,
     kDiskCoordinateSpace = 502,
-    kDiskRenderView = 503
+    kDiskRenderView = 503,
+    kDiskSceneTransformStart = 504,
+    kDiskScenePosition = 505,
+    kDiskSceneRotationX = 506,
+    kDiskSceneRotationY = 507,
+    kDiskSceneRotationZ = 508,
+    kDiskSceneScaleX = 509,
+    kDiskSceneScaleY = 510,
+    kDiskSceneScaleZ = 511,
+    kDiskSceneTransformEnd = 512,
+    kDiskSelectedSurfaceStart = 513,
+    kDiskControlPointsStart = 514,
+    kDiskControlPointsEnd = 515,
+    kDiskDepthStart = 516,
+    kDiskDepthEnd = 517,
+    kDiskSurfaceTransformStart = 518,
+    kDiskSurfaceTransformEnd = 519,
+    kDiskSelectedSurfaceEnd = 520
 };
 
 // The companion controller script resolves streams by these serialized IDs.
@@ -314,6 +348,8 @@ static_assert(kDiskSurfacePosition == 310);
 static_assert(kDiskSurfaceScaleX == 312 && kDiskSurfaceScaleZ == 314);
 static_assert(kDiskCoordinateSpace == 502);
 static_assert(kDiskRenderView == 503);
+static_assert(kDiskScenePosition == 505);
+static_assert(kDiskSceneScaleZ == 511);
 
 extern "C" {
 

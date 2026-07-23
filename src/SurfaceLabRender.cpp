@@ -46,10 +46,13 @@ Vertex ProjectVertex(
     double u,
     double v,
     const CameraState& camera) {
+    const Point3 scene_point =
+        ApplyScenePointTransform(point, camera.scene_transform);
+    normal = ApplySceneNormalTransform(normal, camera.scene_transform);
     Point3 camera_point{
-        point.x - camera.position.x,
-        point.y - camera.position.y,
-        point.z - camera.position.z};
+        scene_point.x - camera.position.x,
+        scene_point.y - camera.position.y,
+        scene_point.z - camera.position.z};
     if (camera.use_basis) {
         const Point3 delta = camera_point;
         camera_point = {
@@ -67,7 +70,7 @@ Vertex ProjectVertex(
     Vertex vertex;
     vertex.u = u;
     vertex.v = v;
-    vertex.world_position = point;
+    vertex.world_position = scene_point;
     vertex.normal = Normalize(normal);
     vertex.visible = IsFinitePoint3(camera_point) && camera_depth > 1.0;
     if (vertex.visible) {
@@ -1168,6 +1171,45 @@ CameraState BuildCameraState(
     return camera;
 }
 
+SceneCoordinateTransform BuildSceneCoordinateTransform(
+    PF_ParamDef* params[],
+    double center_x,
+    double center_y,
+    double scale_x,
+    double scale_y,
+    double scale_z) {
+    constexpr double kDegreesToRadians = 3.14159265358979323846 / 180.0;
+    constexpr double kMinimumScale = 1.0e-6;
+    const auto safe_scale = [](double value) {
+        if (!std::isfinite(value)) {
+            return 1.0;
+        }
+        if (std::abs(value) >= kMinimumScale) {
+            return value;
+        }
+        return value < 0.0 ? -kMinimumScale : kMinimumScale;
+    };
+    const PF_Point3DDef& position = params[kParamScenePosition]->u.point3d_d;
+    SceneCoordinateTransform transform;
+    transform.pivot = {center_x, center_y, 0.0};
+    transform.position = {
+        position.x_value * scale_x,
+        position.y_value * scale_y,
+        position.z_value * scale_z};
+    transform.rotation_radians = {
+        FIX_2_FLOAT(params[kParamSceneRotationX]->u.ad.value) *
+            kDegreesToRadians,
+        FIX_2_FLOAT(params[kParamSceneRotationY]->u.ad.value) *
+            kDegreesToRadians,
+        FIX_2_FLOAT(params[kParamSceneRotationZ]->u.ad.value) *
+            kDegreesToRadians};
+    transform.scale = {
+        safe_scale(params[kParamSceneScaleX]->u.fs_d.value / 100.0),
+        safe_scale(params[kParamSceneScaleY]->u.fs_d.value / 100.0),
+        safe_scale(params[kParamSceneScaleZ]->u.fs_d.value / 100.0)};
+    return transform;
+}
+
 namespace {
 bool ResolveCompTime(PF_InData* in_data, A_Time& comp_time) {
     if (!in_data || !in_data->effect_ref || in_data->time_scale == 0) {
@@ -1703,6 +1745,13 @@ CameraState BuildResolvedCameraState(
             use_comp_world,
             camera);
     }
+    camera.scene_transform = BuildSceneCoordinateTransform(
+        params,
+        center_x,
+        center_y,
+        scale_x,
+        scale_y,
+        scale_z);
     return camera;
 }
 
@@ -2077,13 +2126,21 @@ PF_Err CheckoutSmartParameter(
 PF_Err CheckoutSmartRenderParameters(
     PF_InData* in_data,
     SmartParameterSet& parameters) {
-    constexpr std::array<PF_ParamIndex, 23> kFrameParameters = {
+    constexpr std::array<PF_ParamIndex, 31> kFrameParameters = {
+        kParamScenePosition,
+        kParamSceneRotationX,
+        kParamSceneRotationY,
+        kParamSceneRotationZ,
+        kParamSceneScaleX,
+        kParamSceneScaleY,
+        kParamSceneScaleZ,
         kParamTessellation,
         kParamWireframe,
         kParamPerspective,
         kParamCameraDistance,
         kParamSceneData,
         kParamCameraSource,
+        kParamCoordinateSpace,
         kParamCameraOffsetX,
         kParamCameraOffsetY,
         kParamCameraOffsetZ,

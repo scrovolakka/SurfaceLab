@@ -41,6 +41,85 @@ bool TryInvertAffine2D(
            std::isfinite(inverse.ty);
 }
 
+Point3 ApplySceneVectorTransform(
+    Point3 vector,
+    const SceneCoordinateTransform& transform) {
+    vector.x *= transform.scale.x;
+    vector.y *= transform.scale.y;
+    vector.z *= transform.scale.z;
+    return RotatePoint(
+        vector,
+        0.0,
+        0.0,
+        0.0,
+        transform.rotation_radians.x,
+        transform.rotation_radians.y,
+        transform.rotation_radians.z);
+}
+
+Point3 ApplyScenePointTransform(
+    Point3 point,
+    const SceneCoordinateTransform& transform) {
+    const Point3 relative{
+        point.x - transform.pivot.x,
+        point.y - transform.pivot.y,
+        point.z - transform.pivot.z};
+    const Point3 transformed =
+        ApplySceneVectorTransform(relative, transform);
+    return {
+        transform.position.x + transformed.x,
+        transform.position.y + transformed.y,
+        transform.position.z + transformed.z};
+}
+
+Point3 ApplySceneNormalTransform(
+    Point3 normal,
+    const SceneCoordinateTransform& transform) {
+    constexpr double kMinimumScale = 1.0e-10;
+    const auto safe_inverse = [](double value) {
+        return std::abs(value) > kMinimumScale ? 1.0 / value : 0.0;
+    };
+    normal.x *= safe_inverse(transform.scale.x);
+    normal.y *= safe_inverse(transform.scale.y);
+    normal.z *= safe_inverse(transform.scale.z);
+    return Normalize(RotatePoint(
+        normal,
+        0.0,
+        0.0,
+        0.0,
+        transform.rotation_radians.x,
+        transform.rotation_radians.y,
+        transform.rotation_radians.z));
+}
+
+bool TryInverseScenePointTransform(
+    Point3 point,
+    const SceneCoordinateTransform& transform,
+    Point3& untransformed) {
+    constexpr double kMinimumScale = 1.0e-10;
+    if (std::abs(transform.scale.x) <= kMinimumScale ||
+        std::abs(transform.scale.y) <= kMinimumScale ||
+        std::abs(transform.scale.z) <= kMinimumScale) {
+        return false;
+    }
+    Point3 relative{
+        point.x - transform.position.x,
+        point.y - transform.position.y,
+        point.z - transform.position.z};
+    relative = InverseRotateVector(
+        relative,
+        transform.rotation_radians.x,
+        transform.rotation_radians.y,
+        transform.rotation_radians.z);
+    untransformed = {
+        transform.pivot.x + relative.x / transform.scale.x,
+        transform.pivot.y + relative.y / transform.scale.y,
+        transform.pivot.z + relative.z / transform.scale.z};
+    return std::isfinite(untransformed.x) &&
+           std::isfinite(untransformed.y) &&
+           std::isfinite(untransformed.z);
+}
+
 SurfaceCoordinateTransform BuildSurfaceCoordinateTransform(
     const SurfaceData& surface,
     Point3 legacy_pivot,

@@ -3829,6 +3829,9 @@ PF_Err UpdateParameterUi(
     if (error == A_Err_NONE) {
         error = set_hidden(kParamSurfaceTwistEdge, true);
     }
+    if (error == A_Err_NONE) {
+        error = set_hidden(kParamSelectedSurfaceStart, selected_bank != 0);
+    }
     for (std::size_t property = 0;
          property < static_cast<std::size_t>(kSurfaceAnimationPropertyCount) &&
          error == A_Err_NONE;
@@ -3860,10 +3863,8 @@ PF_Err AddSurfaceAnimationBankParams(
     PF_ParamDef def;
     const A_long disk_base = 10000 + static_cast<A_long>(bank) * 100;
     A_long property = 0;
-    char topic_name[32];
-    std::snprintf(topic_name, sizeof(topic_name), "Surface %u Animation", bank + 1);
     AEFX_CLR_STRUCT(def);
-    PF_ADD_TOPIC(topic_name, disk_base);
+    PF_ADD_TOPIC("Selected Surface", disk_base);
 
     for (int row = 0; row < 4; ++row) {
         for (int column = 0; column < 4; ++column) {
@@ -4128,104 +4129,56 @@ PF_Err AddSurfaceAnimationBankParams(
 PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
     PF_ParamDef def;
     AEFX_CLR_STRUCT(def);
+    PF_Err error = PF_Err_NONE;
 
-    PF_ADD_SLIDER(
-        "Tessellation",
-        2,
-        32,
-        2,
-        32,
-        12,
-        kDiskTessellation);
+    PF_ADD_TOPIC("Scene Transform", kDiskSceneTransformStart);
 
     AEFX_CLR_STRUCT(def);
-    PF_ADD_CHECKBOX("Wireframe", "Show tessellation", FALSE, 0, kDiskWireframe);
-
-    AEFX_CLR_STRUCT(def);
-    def.flags = PF_ParamFlag_CANNOT_TIME_VARY | PF_ParamFlag_CANNOT_INTERP;
-    PF_ADD_POPUP(
-        "Interaction Mode",
-        4,
-        kGizmoInteractionAll,
-        "All|Surface|Control Points|Deform",
-        kDiskGizmoInteractionMode);
-
-    AEFX_CLR_STRUCT(def);
-    def.flags = PF_ParamFlag_CANNOT_TIME_VARY | PF_ParamFlag_CANNOT_INTERP;
-    PF_ADD_POPUP(
-        "Gizmo Tool",
-        4,
-        kGizmoToolAll,
-        "All|Position|Rotation|Scale",
-        kDiskGizmoTool);
-
-    for (int row = 0; row < 4; ++row) {
-        for (int column = 0; column < 4; ++column) {
-            const int index = row * 4 + column;
-            char name[32];
-            std::snprintf(name, sizeof(name), "Control %d,%d", row + 1, column + 1);
-            AEFX_CLR_STRUCT(def);
-            def.flags = PF_ParamFlag_SUPERVISE;
-            PF_ADD_POINT(
-                name,
-                100.0 * static_cast<double>(column) / 3.0,
-                100.0 * static_cast<double>(row) / 3.0,
-                FALSE,
-                kDiskPoint00 + index);
-        }
+    def.param_type = PF_Param_POINT_3D;
+    PF_STRNNCPY(def.PF_DEF_NAME, "Position", sizeof(def.PF_DEF_NAME));
+    def.u.point3d_d.x_value = def.u.point3d_d.x_dephault =
+        static_cast<double>(in_data->width) * 0.5;
+    def.u.point3d_d.y_value = def.u.point3d_d.y_dephault =
+        static_cast<double>(in_data->height) * 0.5;
+    def.u.point3d_d.z_value = def.u.point3d_d.z_dephault = 0.0;
+    def.uu.id = kDiskScenePosition;
+    error = PF_ADD_PARAM(in_data, -1, &def);
+    if (error != PF_Err_NONE) {
+        return error;
     }
 
     AEFX_CLR_STRUCT(def);
-    PF_ADD_CHECKBOX(
-        "Perspective",
-        "Use internal perspective camera",
-        TRUE,
-        0,
-        kDiskPerspective);
+    PF_ADD_ANGLE("Rotation X", 0.0, kDiskSceneRotationX);
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_ANGLE("Rotation Y", 0.0, kDiskSceneRotationY);
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_ANGLE("Rotation Z", 0.0, kDiskSceneRotationZ);
 
-    AEFX_CLR_STRUCT(def);
-    PF_ADD_SLIDER(
-        "Camera Distance",
-        100,
-        10000,
-        100,
-        5000,
-        2000,
-        kDiskCameraDistance);
-
-    AEFX_CLR_STRUCT(def);
-    def.flags = PF_ParamFlag_SUPERVISE;
-    PF_ADD_ANGLE("Rotation X", 0.0, kDiskRotationX);
-    AEFX_CLR_STRUCT(def);
-    def.flags = PF_ParamFlag_SUPERVISE;
-    PF_ADD_ANGLE("Rotation Y", 0.0, kDiskRotationY);
-    AEFX_CLR_STRUCT(def);
-    def.flags = PF_ParamFlag_SUPERVISE;
-    PF_ADD_ANGLE("Rotation Z", 0.0, kDiskRotationZ);
-
-    for (int row = 0; row < 4; ++row) {
-        for (int column = 0; column < 4; ++column) {
-            const int index = row * 4 + column;
-            char name[32];
-            std::snprintf(name, sizeof(name), "Depth %d,%d", row + 1, column + 1);
-            AEFX_CLR_STRUCT(def);
-            def.flags = PF_ParamFlag_SUPERVISE;
-            PF_ADD_FLOAT_SLIDERX(
-                name,
-                -4000.0,
-                4000.0,
-                -2000.0,
-                2000.0,
-                0.0,
-                PF_Precision_TENTHS,
-                0,
-                PF_ParamFlag_SUPERVISE,
-                kDiskDepth00 + index);
-        }
+    const char* scene_scale_names[3] = {"Scale X", "Scale Y", "Scale Z"};
+    const A_long scene_scale_disk_ids[3] = {
+        kDiskSceneScaleX,
+        kDiskSceneScaleY,
+        kDiskSceneScaleZ};
+    for (int index = 0; index < 3; ++index) {
+        AEFX_CLR_STRUCT(def);
+        PF_ADD_FLOAT_SLIDERX(
+            scene_scale_names[index],
+            -1000.0,
+            1000.0,
+            -400.0,
+            400.0,
+            100.0,
+            PF_Precision_TENTHS,
+            PF_ValueDisplayFlag_PERCENT,
+            PF_ParamFlag_NONE,
+            scene_scale_disk_ids[index]);
     }
+
+    AEFX_CLR_STRUCT(def);
+    PF_END_TOPIC(kDiskSceneTransformEnd);
 
     PF_ArbitraryH default_scene = nullptr;
-    PF_Err error = CreateSceneHandle(
+    error = CreateSceneHandle(
         in_data,
         &default_scene,
         in_data->width,
@@ -4318,6 +4271,75 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
         kDiskControllerAnimationBank);
 
     AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_CANNOT_TIME_VARY | PF_ParamFlag_CANNOT_INTERP;
+    PF_ADD_POPUP(
+        "Interaction Mode",
+        4,
+        kGizmoInteractionAll,
+        "All|Surface|Control Points|Deform",
+        kDiskGizmoInteractionMode);
+
+    AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_CANNOT_TIME_VARY | PF_ParamFlag_CANNOT_INTERP;
+    PF_ADD_POPUP(
+        "Gizmo Tool",
+        4,
+        kGizmoToolAll,
+        "All|Position|Rotation|Scale",
+        kDiskGizmoTool);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_TOPIC("Selected Surface", kDiskSelectedSurfaceStart);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_TOPIC("Control Points", kDiskControlPointsStart);
+    for (int row = 0; row < 4; ++row) {
+        for (int column = 0; column < 4; ++column) {
+            const int index = row * 4 + column;
+            char name[32];
+            std::snprintf(name, sizeof(name), "Control %d,%d", row + 1, column + 1);
+            AEFX_CLR_STRUCT(def);
+            def.flags = PF_ParamFlag_SUPERVISE;
+            PF_ADD_POINT(
+                name,
+                100.0 * static_cast<double>(column) / 3.0,
+                100.0 * static_cast<double>(row) / 3.0,
+                FALSE,
+                kDiskPoint00 + index);
+        }
+    }
+    AEFX_CLR_STRUCT(def);
+    PF_END_TOPIC(kDiskControlPointsEnd);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_TOPIC("Depth", kDiskDepthStart);
+    for (int row = 0; row < 4; ++row) {
+        for (int column = 0; column < 4; ++column) {
+            const int index = row * 4 + column;
+            char name[32];
+            std::snprintf(name, sizeof(name), "Depth %d,%d", row + 1, column + 1);
+            AEFX_CLR_STRUCT(def);
+            def.flags = PF_ParamFlag_SUPERVISE;
+            PF_ADD_FLOAT_SLIDERX(
+                name,
+                -4000.0,
+                4000.0,
+                -2000.0,
+                2000.0,
+                0.0,
+                PF_Precision_TENTHS,
+                0,
+                PF_ParamFlag_SUPERVISE,
+                kDiskDepth00 + index);
+        }
+    }
+    AEFX_CLR_STRUCT(def);
+    PF_END_TOPIC(kDiskDepthEnd);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_TOPIC("Transform", kDiskSurfaceTransformStart);
+
+    AEFX_CLR_STRUCT(def);
     def.flags = PF_ParamFlag_SUPERVISE;
     PF_ADD_FLOAT_SLIDERX(
         "Size X",
@@ -4357,6 +4379,16 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
     if (error != PF_Err_NONE) {
         return error;
     }
+
+    AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_SUPERVISE;
+    PF_ADD_ANGLE("Rotation X", 0.0, kDiskRotationX);
+    AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_SUPERVISE;
+    PF_ADD_ANGLE("Rotation Y", 0.0, kDiskRotationY);
+    AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_SUPERVISE;
+    PF_ADD_ANGLE("Rotation Z", 0.0, kDiskRotationZ);
 
     AEFX_CLR_STRUCT(def);
     PF_ADD_TOPIC("Rotation Origin", kDiskSurfaceRotationOriginStart);
@@ -4419,6 +4451,9 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
 
     AEFX_CLR_STRUCT(def);
     PF_END_TOPIC(kDiskSurfaceScaleEnd);
+
+    AEFX_CLR_STRUCT(def);
+    PF_END_TOPIC(kDiskSurfaceTransformEnd);
 
     AEFX_CLR_STRUCT(def);
     PF_ADD_TOPIC("Divisions", kDiskSurfaceDivisionsStart);
@@ -4815,6 +4850,9 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
     AEFX_CLR_STRUCT(def);
     PF_END_TOPIC(kDiskSurfaceMaterialEnd);
 
+    AEFX_CLR_STRUCT(def);
+    PF_END_TOPIC(kDiskSelectedSurfaceEnd);
+
     for (std::uint32_t bank = 1; bank < kMaximumSurfaces; ++bank) {
         const PF_Err bank_error = AddSurfaceAnimationBankParams(in_data, bank);
         if (bank_error != PF_Err_NONE) {
@@ -4827,6 +4865,24 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
 
     AEFX_CLR_STRUCT(def);
     PF_ADD_TOPIC("Camera", kDiskCameraStart);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_CHECKBOX(
+        "Perspective",
+        "Use internal perspective camera",
+        TRUE,
+        0,
+        kDiskPerspective);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_SLIDER(
+        "Camera Distance",
+        100,
+        10000,
+        100,
+        5000,
+        2000,
+        kDiskCameraDistance);
 
     AEFX_CLR_STRUCT(def);
     def.flags = PF_ParamFlag_CANNOT_TIME_VARY;
@@ -4935,6 +4991,24 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
 
     AEFX_CLR_STRUCT(def);
     PF_ADD_TOPIC("Render Settings", kDiskRenderSettingsStart);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_SLIDER(
+        "Tessellation",
+        2,
+        32,
+        2,
+        32,
+        12,
+        kDiskTessellation);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_CHECKBOX(
+        "Wireframe",
+        "Show tessellation",
+        FALSE,
+        0,
+        kDiskWireframe);
 
     AEFX_CLR_STRUCT(def);
     PF_ADD_POPUP(
