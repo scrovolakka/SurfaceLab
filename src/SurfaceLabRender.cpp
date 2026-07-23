@@ -215,6 +215,37 @@ double QuantizePixelChannel(double value) {
 }
 
 template <typename Pixel>
+Pixel MakeOpaqueViewPixel(double red, double green, double blue) {
+    const double white = PixelChannelWhite<Pixel>();
+    const auto channel = [&](double value) {
+        return QuantizePixelChannel<Pixel>(
+            std::clamp(value, 0.0, 1.0) * white);
+    };
+    Pixel pixel{};
+    pixel.alpha = static_cast<decltype(pixel.alpha)>(white);
+    pixel.red = static_cast<decltype(pixel.red)>(channel(red));
+    pixel.green = static_cast<decltype(pixel.green)>(channel(green));
+    pixel.blue = static_cast<decltype(pixel.blue)>(channel(blue));
+    return pixel;
+}
+
+Point3 DirectionToCameraSpace(
+    const Point3& direction,
+    const CameraState& camera) {
+    if (camera.use_basis) {
+        return Normalize({
+            Dot(direction, camera.right),
+            Dot(direction, camera.down),
+            Dot(direction, camera.forward)});
+    }
+    return Normalize(InverseRotateVector(
+        direction,
+        camera.rotation_x,
+        camera.rotation_y,
+        camera.rotation_z));
+}
+
+template <typename Pixel>
 Pixel ApplyOpacity(Pixel pixel, float opacity_percent) {
     const double multiplier = std::clamp(
         static_cast<double>(opacity_percent) / 100.0,
@@ -421,6 +452,53 @@ void ClearWorld(PF_LayerDef& output) {
 }
 
 template <typename Pixel>
+void FinalizeDepthView(
+    PF_LayerDef& output,
+    const std::vector<float>& depth_buffer) {
+    float minimum_inverse_depth = std::numeric_limits<float>::infinity();
+    float maximum_inverse_depth = -std::numeric_limits<float>::infinity();
+    for (float inverse_depth : depth_buffer) {
+        if (std::isfinite(inverse_depth) && inverse_depth > 0.0F) {
+            minimum_inverse_depth =
+                std::min(minimum_inverse_depth, inverse_depth);
+            maximum_inverse_depth =
+                std::max(maximum_inverse_depth, inverse_depth);
+        }
+    }
+    if (!std::isfinite(minimum_inverse_depth) ||
+        !std::isfinite(maximum_inverse_depth)) {
+        return;
+    }
+    const double range = static_cast<double>(
+        maximum_inverse_depth - minimum_inverse_depth);
+    for (A_long y = 0; y < output.height; ++y) {
+        auto* row = reinterpret_cast<Pixel*>(
+            reinterpret_cast<A_u_char*>(output.data) +
+            static_cast<std::ptrdiff_t>(y) *
+                static_cast<std::ptrdiff_t>(output.rowbytes));
+        for (A_long x = 0; x < output.width; ++x) {
+            const float inverse_depth =
+                depth_buffer[static_cast<std::size_t>(y) *
+                                 static_cast<std::size_t>(output.width) +
+                             static_cast<std::size_t>(x)];
+            if (!std::isfinite(inverse_depth) || inverse_depth <= 0.0F) {
+                continue;
+            }
+            const double normalized =
+                range > 1.0e-12
+                    ? (static_cast<double>(inverse_depth) -
+                       minimum_inverse_depth) /
+                          range
+                    : 1.0;
+            row[x] = MakeOpaqueViewPixel<Pixel>(
+                normalized,
+                normalized,
+                normalized);
+        }
+    }
+}
+
+template <typename Pixel>
 void RasterizeTriangle(
     const Vertex& a,
     const Vertex& b,
@@ -431,7 +509,9 @@ void RasterizeTriangle(
     PF_LayerDef& output,
     std::vector<float>& depth_buffer,
     bool perspective,
+    const CameraState& camera,
     const LightingState& lighting,
+    A_long render_view,
     TextureFace texture_face) {
     if (!a.visible || !b.visible || !c.visible ||
         !IsFiniteRasterVertex(a) ||
@@ -544,6 +624,31 @@ void RasterizeTriangle(
                         -shading_normal.x,
                         -shading_normal.y,
                         -shading_normal.z};
+                }
+                if (render_view == kRenderViewDepth) {
+                    depth_buffer[depth_index] =
+                        static_cast<float>(inverse_depth);
+                    continue;
+                }
+                if (render_view == kRenderViewUv) {
+                    depth_buffer[depth_index] =
+                        static_cast<float>(inverse_depth);
+                    output_row[x] = MakeOpaqueViewPixel<Pixel>(
+                        u,
+                        v,
+                        1.0 - u);
+                    continue;
+                }
+                if (render_view == kRenderViewNormalsViewSpace) {
+                    const Point3 view_normal =
+                        DirectionToCameraSpace(shading_normal, camera);
+                    depth_buffer[depth_index] =
+                        static_cast<float>(inverse_depth);
+                    output_row[x] = MakeOpaqueViewPixel<Pixel>(
+                        view_normal.x * 0.5 + 0.5,
+                        view_normal.y * 0.5 + 0.5,
+                        0.5 - view_normal.z * 0.5);
+                    continue;
                 }
                 Pixel sampled = SampleTexture<Pixel>(
                     surface,
@@ -767,7 +872,8 @@ void RasterizeSurface(
     double scale_x,
     double scale_y,
     double scale_z,
-    bool wireframe) {
+    bool wireframe,
+    A_long render_view) {
     const SurfaceEvaluationState evaluation = BuildSurfaceEvaluationState(
         surface,
         camera,
@@ -834,7 +940,9 @@ void RasterizeSurface(
             output,
             depth_buffer,
             camera.perspective,
+            camera,
             lighting,
+            render_view,
             texture_face);
         RasterizeTriangle<Pixel>(
             top_left,
@@ -846,7 +954,9 @@ void RasterizeSurface(
             output,
             depth_buffer,
             camera.perspective,
+            camera,
             lighting,
+            render_view,
             texture_face);
     };
 
@@ -956,7 +1066,7 @@ void RasterizeSurface(
         }
     }
 
-    if (wireframe) {
+    if (wireframe && render_view == kRenderViewFinish) {
         const auto draw_grid = [&](const std::array<Vertex, 33 * 33>& vertices) {
             for (int row = 0; row <= divisions_y; ++row) {
                 for (int column = 0; column < divisions_x; ++column) {
@@ -1705,6 +1815,7 @@ struct RenderFrameSnapshot {
     double scale_y{1.0};
     double scale_z{1.0};
     bool wireframe{};
+    A_long render_view{kRenderViewFinish};
     std::array<bool, kMaximumSurfaces> source_slots{};
 };
 
@@ -1724,6 +1835,10 @@ RenderFrameSnapshot BuildRenderFrameSnapshot(
         std::max<A_u_long>(1U, in_data->downsample_y.den);
     snapshot.scale_z = (snapshot.scale_x + snapshot.scale_y) * 0.5;
     snapshot.wireframe = params[kParamWireframe]->u.bd.value != FALSE;
+    snapshot.render_view = std::clamp<A_long>(
+        params[kParamRenderView]->u.pd.value,
+        kRenderViewFinish,
+        kRenderViewNormalsViewSpace);
     snapshot.camera = BuildResolvedCameraState(
         in_data,
         params,
@@ -1791,18 +1906,20 @@ RenderFrameSnapshot BuildRenderFrameSnapshot(
         static_cast<int>(kMaximumDivisions));
     snapshot.scene =
         ResolveSceneForFrame(in_data, params, input_width, input_height);
-    for (std::uint32_t index = 0;
-         index < snapshot.scene.surface_count;
-         ++index) {
-        const SurfaceData& surface = snapshot.scene.surfaces[index];
-        if (surface.enabled == 0) {
-            continue;
+    if (snapshot.render_view == kRenderViewFinish) {
+        for (std::uint32_t index = 0;
+             index < snapshot.scene.surface_count;
+             ++index) {
+            const SurfaceData& surface = snapshot.scene.surfaces[index];
+            if (surface.enabled == 0) {
+                continue;
+            }
+            snapshot.source_slots[surface.source_slot] = true;
+            const std::uint32_t back_slot = surface.back_source_slot == 0
+                                                ? surface.source_slot
+                                                : surface.back_source_slot - 1;
+            snapshot.source_slots[back_slot] = true;
         }
-        snapshot.source_slots[surface.source_slot] = true;
-        const std::uint32_t back_slot = surface.back_source_slot == 0
-                                            ? surface.source_slot
-                                            : surface.back_source_slot - 1;
-        snapshot.source_slots[back_slot] = true;
     }
     return snapshot;
 }
@@ -1883,7 +2000,8 @@ PF_Err RenderSurface(PF_InData* in_data, PF_ParamDef* params[], PF_LayerDef* out
             snapshot.scale_x,
             snapshot.scale_y,
             snapshot.scale_z,
-            snapshot.wireframe);
+            snapshot.wireframe,
+            snapshot.render_view);
 
         if (separate_back_checkout) {
             const PF_Err back_checkin_error = back_checkout.Checkin();
@@ -1895,6 +2013,9 @@ PF_Err RenderSurface(PF_InData* in_data, PF_ParamDef* params[], PF_LayerDef* out
         if (front_checkin_error != PF_Err_NONE) {
             return front_checkin_error;
         }
+    }
+    if (snapshot.render_view == kRenderViewDepth) {
+        FinalizeDepthView<Pixel>(*output, depth_buffer);
     }
 
     return PF_Err_NONE;
@@ -1956,7 +2077,7 @@ PF_Err CheckoutSmartParameter(
 PF_Err CheckoutSmartRenderParameters(
     PF_InData* in_data,
     SmartParameterSet& parameters) {
-    constexpr std::array<PF_ParamIndex, 22> kFrameParameters = {
+    constexpr std::array<PF_ParamIndex, 23> kFrameParameters = {
         kParamTessellation,
         kParamWireframe,
         kParamPerspective,
@@ -1975,6 +2096,7 @@ PF_Err CheckoutSmartRenderParameters(
         kParamLightRotationY,
         kParamLightIntensity,
         kParamAmbientLight,
+        kParamRenderView,
         kParamTextureFilter,
         kParamBackfaceCulling,
         kParamOutputBoundsMode,
@@ -2158,7 +2280,11 @@ PF_Err RenderSmartFrame(
             snapshot.scale_x,
             snapshot.scale_y,
             snapshot.scale_z,
-            snapshot.wireframe);
+            snapshot.wireframe,
+            snapshot.render_view);
+    }
+    if (snapshot.render_view == kRenderViewDepth) {
+        FinalizeDepthView<Pixel>(output, depth_buffer);
     }
     return PF_Err_NONE;
 }

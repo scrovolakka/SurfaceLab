@@ -23,6 +23,10 @@ struct GlobalData {
 
 constexpr A_long kTextureFilterNearest = 1;
 constexpr A_long kTextureFilterBilinear = 2;
+constexpr A_long kRenderViewFinish = 1;
+constexpr A_long kRenderViewDepth = 2;
+constexpr A_long kRenderViewUv = 3;
+constexpr A_long kRenderViewNormalsViewSpace = 4;
 constexpr A_long kOutputBoundsSource = 1;
 constexpr A_long kOutputBoundsAuto = 2;
 constexpr A_long kOutputBoundsFixed = 3;

@@ -4938,6 +4938,14 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
 
     AEFX_CLR_STRUCT(def);
     PF_ADD_POPUP(
+        "Render View",
+        4,
+        kRenderViewFinish,
+        "Finish|Depth|UV|Normals (View Space)",
+        kDiskRenderView);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_POPUP(
         "Texture Filter",
         2,
         kTextureFilterBilinear,
