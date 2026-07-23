@@ -12,7 +12,7 @@
 
 constexpr A_long kMajorVersion = 0;
 constexpr A_long kMinorVersion = 15;
-constexpr A_long kBugVersion = 7;
+constexpr A_long kBugVersion = 8;
 constexpr A_long kBuildVersion = 1;
 constexpr PF_ParamIndex kSurfaceAnimationPropertyCount = 84;
 constexpr PF_ParamIndex kSurfaceAnimationBankStride =
@@ -69,6 +69,8 @@ enum ParamIndex {
     kParamAddSurface,
     kParamDuplicateSurface,
     kParamDeleteSurface,
+    kParamControllerSurfaceId,
+    kParamControllerAnimationBank,
     kParamSurfaceSizeX,
     kParamSurfaceSizeY,
     kParamSurfacePosition,
@@ -293,8 +295,19 @@ enum ParamDiskId {
     kDiskGizmoInteractionMode,
     kDiskGizmoTool,
     kDiskCameraSource,
-    kDiskLightSource
+    kDiskLightSource,
+    // Reserved script-facing metadata. Explicit IDs avoid renumbering any
+    // existing serialized parameter streams.
+    kDiskControllerSurfaceId = 500,
+    kDiskControllerAnimationBank = 501
 };
+
+// The companion controller script resolves streams by these serialized IDs.
+static_assert(kDiskRotationX == 5 && kDiskRotationZ == 7);
+static_assert(kDiskPoint00 == 100 && kDiskDepth00 == 200);
+static_assert(kDiskSurfaceSizeX == 308 && kDiskSurfaceSizeY == 309);
+static_assert(kDiskSurfacePosition == 310);
+static_assert(kDiskSurfaceScaleX == 312 && kDiskSurfaceScaleZ == 314);
 
 extern "C" {
 

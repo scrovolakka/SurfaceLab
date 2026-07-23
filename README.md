@@ -2,8 +2,8 @@
 
 Independent After Effects native effect prototype for editable bicubic surfaces.
 
-Version 0.15.7 adds optional After Effects active-camera and composition-light
-linking while preserving the existing internal camera and light controls. Up to
+Version 0.15.8 adds a 3D Null controller-rig foundation on top of the SmartFX,
+After Effects active-camera, and composition-light support. Up to
 eight pages can now keep and render independent point, depth, transform,
 deformation, source, image, and material streams. Selecting a surface changes
 which bank is shown without changing the other pages' animation. All four
@@ -62,15 +62,45 @@ surface:
 - 8-bpc, 16-bpc, and 32-bpc float rendering
 - camera/light snapshots resolved during Smart PreRender, outside Smart Render
 - legacy 8/16-bpc render fallback for hosts that do not use SmartFX
+- companion script for a selected surface's Root + 16 point 3D Null rig
 - Apple Silicon plug-in bundle
 
-It does not yet implement layer attachments or Metal. The composition-panel
+It does not yet implement native layer attachments or Metal. The composition-panel
 surface gizmo continues to use SurfaceLab's internal camera in this milestone;
 the After Effects camera source controls the rendered result. The selected
 surface uses the currently visible animation bank; unselected surfaces continue
 to evaluate their own hidden banks. Scene data from the 0.3 through 0.14.1 series
 is migrated automatically. The previously selected surface keeps the original
 animation streams and the remaining surfaces receive separate initialized banks.
+
+## 3D Null controller prototype
+
+`scripts/SurfaceLabCreateControllers.jsx` creates one 3D Root Null and sixteen
+parented 3D point Nulls for the surface currently selected in the effect. Move a
+point Null to edit that control's X, Y, and Depth together. Move, rotate, or
+scale the Root to transform the whole surface with standard After Effects tools.
+
+The binding uses the surface's persistent ID and animation bank rather than its
+visible page number, so adding, deleting, or reordering other surfaces does not
+retarget an existing rig. SurfaceLab still stores the canonical cage in effect
+coordinates; the Null children expose local offsets from the Root. The renderer
+and controller foundation share the same Local/Cage/World transform contract.
+
+To create a rig:
+
+1. Select the layer containing SurfaceLab and choose the intended surface in
+   `Selected Surface`.
+2. Run `File > Scripts > Run Script File...` and select
+   `scripts/SurfaceLabCreateControllers.jsx`.
+3. Animate the generated `SL S… Root` or any of its sixteen `Prow,column` Nulls.
+
+This first prototype intentionally refuses to overwrite existing expressions or
+keyframes on the bound SurfaceLab streams. It also assumes Center Rotation Origin
+for exact Root/renderer visual agreement; custom or edge origins continue to
+render correctly but the Null hierarchy's displayed pivot will differ. Renaming
+or deleting generated layers breaks their expressions. Apply transforms to the
+effect layer itself only after validating the rig, because transformed source
+layers are not yet mirrored in the Null hierarchy display.
 
 ## Build on macOS
 

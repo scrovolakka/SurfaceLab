@@ -672,59 +672,23 @@ SurfaceEvaluationState BuildSurfaceEvaluationState(
     SurfaceEvaluationState state;
     state.control_points =
         ToControlPoints(surface, render_scale_x, render_scale_y, render_scale_z);
-    constexpr double kDegreesToRadians = 3.14159265358979323846 / 180.0;
-    state.rotation_x = surface.rotation_x * kDegreesToRadians;
-    state.rotation_y = surface.rotation_y * kDegreesToRadians;
-    state.rotation_z = surface.rotation_z * kDegreesToRadians;
-    state.pivot_x = surface.transform_mode != 0
-                        ? static_cast<double>(surface.position_x) * render_scale_x
-                        : camera.center_x;
-    state.pivot_y = surface.transform_mode != 0
-                        ? static_cast<double>(surface.position_y) * render_scale_y
-                        : camera.center_y;
-    state.pivot_z = surface.transform_mode != 0
-                        ? static_cast<double>(surface.position_z) * render_scale_z
-                        : 0.0;
-    state.scale_x = surface.transform_mode != 0
-                        ? static_cast<double>(surface.scale_x) / 100.0
-                        : 1.0;
-    state.scale_y = surface.transform_mode != 0
-                        ? static_cast<double>(surface.scale_y) / 100.0
-                        : 1.0;
-    state.scale_z = surface.transform_mode != 0
-                        ? static_cast<double>(surface.scale_z) / 100.0
-                        : 1.0;
-    double origin_x_percent = 50.0;
-    double origin_y_percent = 50.0;
-    switch (surface.rotation_origin_mode) {
-        case kRotationOriginLeftEdge:
-            origin_x_percent = 0.0;
-            break;
-        case kRotationOriginRightEdge:
-            origin_x_percent = 100.0;
-            break;
-        case kRotationOriginTopEdge:
-            origin_y_percent = 0.0;
-            break;
-        case kRotationOriginBottomEdge:
-            origin_y_percent = 100.0;
-            break;
-        case kRotationOriginCustom:
-            origin_x_percent = static_cast<double>(surface.rotation_origin_x);
-            origin_y_percent = static_cast<double>(surface.rotation_origin_y);
-            break;
-        default:
-            break;
-    }
-    state.rotation_origin_x =
-        state.pivot_x + (origin_x_percent / 100.0 - 0.5) *
-                            static_cast<double>(surface.size_x) *
-                            render_scale_x * state.scale_x;
-    state.rotation_origin_y =
-        state.pivot_y + (origin_y_percent / 100.0 - 0.5) *
-                            static_cast<double>(surface.size_y) *
-                            render_scale_y * state.scale_y;
-    state.rotation_origin_z = state.pivot_z;
+    state.coordinate_transform = BuildSurfaceCoordinateTransform(
+        surface,
+        {camera.center_x, camera.center_y, 0.0},
+        {render_scale_x, render_scale_y, render_scale_z});
+    const SurfaceCoordinateTransform& transform = state.coordinate_transform;
+    state.rotation_x = transform.rotation_radians.x;
+    state.rotation_y = transform.rotation_radians.y;
+    state.rotation_z = transform.rotation_radians.z;
+    state.pivot_x = transform.pivot.x;
+    state.pivot_y = transform.pivot.y;
+    state.pivot_z = transform.pivot.z;
+    state.scale_x = transform.scale.x;
+    state.scale_y = transform.scale.y;
+    state.scale_z = transform.scale.z;
+    state.rotation_origin_x = transform.rotation_origin.x;
+    state.rotation_origin_y = transform.rotation_origin.y;
+    state.rotation_origin_z = transform.rotation_origin.z;
     state.deform_extent_x = std::max(
         1.0e-6,
         static_cast<double>(surface.size_x) * render_scale_x *
@@ -745,9 +709,7 @@ Point3 EvaluateTransformedPoint(
     double u,
     double v) {
     Point3 point = EvaluatePatch(state.control_points, u, v);
-    point.x = state.pivot_x + (point.x - state.pivot_x) * state.scale_x;
-    point.y = state.pivot_y + (point.y - state.pivot_y) * state.scale_y;
-    point.z = state.pivot_z + (point.z - state.pivot_z) * state.scale_z;
+    point = ScaleSurfaceCagePoint(point, state.coordinate_transform);
     ApplySurfaceDeform(
         point,
         surface,
@@ -758,14 +720,7 @@ Point3 EvaluateTransformedPoint(
         state.pivot_z,
         state.deform_extent_x,
         state.deform_extent_y);
-    return RotatePoint(
-        point,
-        state.rotation_origin_x,
-        state.rotation_origin_y,
-        state.rotation_origin_z,
-        state.rotation_x,
-        state.rotation_y,
-        state.rotation_z);
+    return RotateSurfaceWorldPoint(point, state.coordinate_transform);
 }
 
 namespace {

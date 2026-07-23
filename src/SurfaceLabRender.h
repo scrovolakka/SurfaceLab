@@ -16,6 +16,7 @@
 // points, pivot, rotation origin, and deformation extents.
 struct SurfaceEvaluationState {
     std::array<Point3, 16> control_points{};
+    SurfaceCoordinateTransform coordinate_transform{};
     double pivot_x{};
     double pivot_y{};
     double pivot_z{};
