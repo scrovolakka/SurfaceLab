@@ -12,7 +12,7 @@
 
 constexpr A_long kMajorVersion = 0;
 constexpr A_long kMinorVersion = 15;
-constexpr A_long kBugVersion = 8;
+constexpr A_long kBugVersion = 9;
 constexpr A_long kBuildVersion = 1;
 constexpr PF_ParamIndex kSurfaceAnimationPropertyCount = 84;
 constexpr PF_ParamIndex kSurfaceAnimationBankStride =
