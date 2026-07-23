@@ -1090,6 +1090,34 @@ constexpr double kGizmoRotationHandleRadius = 76.0;
 constexpr int kGizmoCurveSamples = 18;
 constexpr int kGizmoHitSubdivisions = 8;
 
+// Drag-solver probes and guards. The probe step is the parameter-space
+// perturbation used for the finite-difference Jacobians; ForwardEpsilon flips
+// its sign within kGizmoLimitMargin of a parameter's maximum so the probe
+// stays inside the legal range. The damping terms keep the damped-least-squares
+// solves usable when the surface is nearly edge-on, and a solved step is capped
+// at kGizmoMaxSolvedDelta parameter units per event.
+constexpr double kGizmoProbeStep = 1.0;
+constexpr double kGizmoLimitMargin = 0.5;
+constexpr double kGizmoSolverDamping = 1.0e-4;
+constexpr double kGizmoScalarSolverDamping = 1.0e-5;
+constexpr double kGizmoSolverSingularityGuard = 1.0e-10;
+constexpr double kGizmoMaxSolvedDelta = 2000.0;
+
+// Minimum projected screen-direction lengths (frame pixels) below which a
+// handle falls back to its default direction instead of normalizing noise.
+constexpr double kGizmoMinDepthDirection = 0.5;
+constexpr double kGizmoMinAxisDirection = 0.75;
+constexpr double kGizmoMinRotationTangent = 0.05;
+constexpr double kGizmoMinCurlDirection = 1.0e-5;
+
+// Handle placement in normalized surface coordinates: how far along its edge
+// the roll/twist handle pair sits, and how far inward the twist-falloff handle
+// moves at 100% falloff (never closer to the edge than the minimum).
+constexpr double kGizmoRollHandleEdgeFraction = 0.38;
+constexpr double kGizmoTwistHandleEdgeFraction = 0.62;
+constexpr double kGizmoTwistFalloffInwardScale = 0.5;
+constexpr double kGizmoTwistFalloffMinimum = 0.01;
+
 struct GizmoHandleHit {
     GizmoDragTarget target{kGizmoDragNone};
     std::uint32_t index{};
@@ -1270,7 +1298,7 @@ bool ProjectControlDepthHandle(
         const double candidate_x = depth_point.x - control_point.x;
         const double candidate_y = depth_point.y - control_point.y;
         const double length = std::hypot(candidate_x, candidate_y);
-        if (length > 0.5) {
+        if (length > kGizmoMinDepthDirection) {
             direction_x = candidate_x / length;
             direction_y = candidate_y / length;
         }
@@ -1330,7 +1358,7 @@ bool NormalizeScreenDirection(
     const double dx = endpoint.x - anchor.x;
     const double dy = endpoint.y - anchor.y;
     const double length = std::hypot(dx, dy);
-    if (length > 0.75) {
+    if (length > kGizmoMinAxisDirection) {
         direction = {dx / length, dy / length};
     } else {
         direction = FallbackTransformDirection(axis);
@@ -1516,7 +1544,7 @@ void RollHandleCoordinates(
     bool extent_handle,
     double& u,
     double& v) {
-    constexpr double along_edge = 0.38;
+    constexpr double along_edge = kGizmoRollHandleEdgeFraction;
     const double inward = extent_handle
                               ? std::clamp(
                                     static_cast<double>(surface.roll_length) /
@@ -1550,15 +1578,16 @@ void TwistHandleCoordinates(
     bool falloff_handle,
     double& u,
     double& v) {
-    constexpr double along_edge = 0.62;
+    constexpr double along_edge = kGizmoTwistHandleEdgeFraction;
     const double inward = falloff_handle
-                              ? 0.5 * std::clamp(
-                                          static_cast<double>(
-                                              surface.edge_twists[edge - 1]
-                                                  .falloff) /
-                                              100.0,
-                                          0.01,
-                                          1.0)
+                              ? kGizmoTwistFalloffInwardScale *
+                                    std::clamp(
+                                        static_cast<double>(
+                                            surface.edge_twists[edge - 1]
+                                                .falloff) /
+                                            100.0,
+                                        kGizmoTwistFalloffMinimum,
+                                        1.0)
                               : 0.0;
     switch (edge) {
         case kTwistEdgeRight:
@@ -1614,7 +1643,7 @@ bool ProjectCurlTipHandle(
     double dx = corner_point.x - center_point.x;
     double dy = corner_point.y - center_point.y;
     double length = std::hypot(dx, dy);
-    if (length < 1.0e-5) {
+    if (length < kGizmoMinCurlDirection) {
         dx = u < 0.5 ? -1.0 : 1.0;
         dy = v < 0.5 ? -1.0 : 1.0;
         length = std::sqrt(2.0);
@@ -1777,20 +1806,19 @@ bool SolveProjectedDelta(
     const double screen_y = target.y - base.y;
 
     // Damped least squares remains usable when the surface is nearly edge-on.
-    constexpr double damping = 1.0e-4;
-    const double a = j00 * j00 + j10 * j10 + damping;
+    const double a = j00 * j00 + j10 * j10 + kGizmoSolverDamping;
     const double b = j00 * j01 + j10 * j11;
-    const double c = j01 * j01 + j11 * j11 + damping;
+    const double c = j01 * j01 + j11 * j11 + kGizmoSolverDamping;
     const double rhs_x = j00 * screen_x + j10 * screen_y;
     const double rhs_y = j01 * screen_x + j11 * screen_y;
     const double determinant = a * c - b * b;
-    if (std::abs(determinant) < 1.0e-10) {
+    if (std::abs(determinant) < kGizmoSolverSingularityGuard) {
         return false;
     }
     delta_x = (rhs_x * c - rhs_y * b) / determinant;
     delta_y = (a * rhs_y - b * rhs_x) / determinant;
-    delta_x = std::clamp(delta_x, -2000.0, 2000.0);
-    delta_y = std::clamp(delta_y, -2000.0, 2000.0);
+    delta_x = std::clamp(delta_x, -kGizmoMaxSolvedDelta, kGizmoMaxSolvedDelta);
+    delta_y = std::clamp(delta_y, -kGizmoMaxSolvedDelta, kGizmoMaxSolvedDelta);
     return std::isfinite(delta_x) && std::isfinite(delta_y);
 }
 
@@ -1803,19 +1831,21 @@ bool SolveProjectedScalarDelta(
     const double derivative_x = (perturbed.x - base.x) / epsilon;
     const double derivative_y = (perturbed.y - base.y) / epsilon;
     const double denominator =
-        derivative_x * derivative_x + derivative_y * derivative_y + 1.0e-5;
-    if (denominator <= 1.0e-10) {
+        derivative_x * derivative_x + derivative_y * derivative_y +
+        kGizmoScalarSolverDamping;
+    if (denominator <= kGizmoSolverSingularityGuard) {
         return false;
     }
     delta = (derivative_x * (target.x - base.x) +
              derivative_y * (target.y - base.y)) /
             denominator;
-    delta = std::clamp(delta, -2000.0, 2000.0);
+    delta = std::clamp(delta, -kGizmoMaxSolvedDelta, kGizmoMaxSolvedDelta);
     return std::isfinite(delta);
 }
 
 double ForwardEpsilon(double value, double maximum) {
-    return value >= maximum - 0.5 ? -1.0 : 1.0;
+    return value >= maximum - kGizmoLimitMargin ? -kGizmoProbeStep
+                                                : kGizmoProbeStep;
 }
 
 void SetFloatParameter(
@@ -1870,7 +1900,7 @@ bool DragControlPoint(
             in_data, event_extra, surface, camera, u, v, base)) {
         return false;
     }
-    constexpr double epsilon = 1.0;
+    constexpr double epsilon = kGizmoProbeStep;
     SurfaceData x_surface = surface;
     x_surface.control_points[control_index].x += epsilon;
     UpdateDerivedTransform(x_surface);
@@ -2040,11 +2070,11 @@ bool DragSurfaceRotation(
     double tangent_x = perturbed.x - base.x;
     double tangent_y = perturbed.y - base.y;
     double tangent_length = std::hypot(tangent_x, tangent_y);
-    if (tangent_length < 0.05) {
+    if (tangent_length < kGizmoMinRotationTangent) {
         const double radial_x = base.x - anchor.x;
         const double radial_y = base.y - anchor.y;
         tangent_length = std::hypot(radial_x, radial_y);
-        if (tangent_length < 0.05) {
+        if (tangent_length < kGizmoMinRotationTangent) {
             return false;
         }
         tangent_x = -radial_y / tangent_length;
@@ -2084,7 +2114,7 @@ bool DragSurfacePosition(
             in_data, event_extra, surface, camera, 0.5, 0.5, base)) {
         return false;
     }
-    constexpr float epsilon = 1.0F;
+    constexpr float epsilon = static_cast<float>(kGizmoProbeStep);
     SurfaceData x_surface = surface;
     SurfaceData y_surface = surface;
     for (StoredPoint3& point : x_surface.control_points) {
@@ -2163,7 +2193,7 @@ bool DragRotationOrigin(
             in_data, event_extra, surface, camera, base)) {
         return false;
     }
-    constexpr float epsilon = 1.0F;
+    constexpr float epsilon = static_cast<float>(kGizmoProbeStep);
     SurfaceData x_surface = surface;
     SurfaceData y_surface = surface;
     x_surface.rotation_origin_x += epsilon;
