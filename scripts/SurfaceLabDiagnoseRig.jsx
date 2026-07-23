@@ -11,7 +11,7 @@
     var SCENE_POSITION = 505;
     var SCENE_ROTATIONS = [506, 507, 508];
     var SCENE_SCALES = [509, 510, 511];
-    var ROTATION_AXIS_SIGNS = [1, 1, 1];
+    var ROTATION_AXIS_SIGNS = [1, -1, -1];
     var MAX_CONTROLS = 16;
     var lines = [];
 

@@ -7,11 +7,11 @@
     var SCENE_ROTATIONS = [506, 507, 508];
     var SCENE_SCALES = [509, 510, 511];
     // Per-axis sign map between AE null rotations and SurfaceLab's rotation
-    // params. Verified empirically on a registered rig: the raw values match
-    // on every axis (an earlier -1 on Y, deduced from a misregistered scene,
-    // made Y swing opposite the null). Kept as a table so a future mismatch
-    // is a one-character fix applied to both the expressions and the seeding.
-    var ROTATION_AXIS_SIGNS = [1, 1, 1];
+    // params, calibrated on a fully registered rig rendered through the same
+    // AE active camera as the Nulls: X matches, Y and Z run opposite (the
+    // {X same, Y flipped, Z flipped} pattern of an axis-convention mirror).
+    // Earlier calibrations taken under broken registration were unreliable.
+    var ROTATION_AXIS_SIGNS = [1, -1, -1];
     var MAX_CONTROLS = 16;
     var assignedProperties = [];
     var createdLayers = [];
