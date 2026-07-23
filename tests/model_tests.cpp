@@ -364,6 +364,39 @@ void TestSurfaceCoordinateRejectsSingularInverse() {
     CHECK(!TrySurfaceWorldToCage({1.0, 2.0, 3.0}, transform, cage));
 }
 
+void TestSceneCoordinateRoundTrip() {
+    const char* test_name = "SceneCoordinateRoundTrip";
+    SceneCoordinateTransform transform;
+    transform.pivot = {960.0, 540.0, 0.0};
+    transform.position = {1150.0, 430.0, 280.0};
+    transform.scale = {1.25, -0.8, 1.5};
+    transform.rotation_radians = {0.31, -0.54, 0.82};
+    const Point3 source{218.0, 63.0, 300.0};
+    const Point3 transformed =
+        ApplyScenePointTransform(source, transform);
+    Point3 restored{};
+    CHECK(TryInverseScenePointTransform(
+        transformed,
+        transform,
+        restored));
+    CHECK(NearlyEqual(restored.x, source.x));
+    CHECK(NearlyEqual(restored.y, source.y));
+    CHECK(NearlyEqual(restored.z, source.z));
+}
+
+void TestSceneCoordinateIdentityAtPivot() {
+    const char* test_name = "SceneCoordinateIdentityAtPivot";
+    SceneCoordinateTransform transform;
+    transform.pivot = {960.0, 540.0, 0.0};
+    transform.position = transform.pivot;
+    const Point3 source{218.0, 63.0, 300.0};
+    const Point3 transformed =
+        ApplyScenePointTransform(source, transform);
+    CHECK(NearlyEqual(transformed.x, source.x));
+    CHECK(NearlyEqual(transformed.y, source.y));
+    CHECK(NearlyEqual(transformed.z, source.z));
+}
+
 void TestAffineRoundTrip() {
     const char* test_name = "AffineRoundTrip";
     const Affine2D transform{
@@ -458,6 +491,8 @@ int main() {
     TestSurfaceCoordinateLocalRoundTrip();
     TestSurfaceCoordinateWorldRoundTrip();
     TestSurfaceCoordinateRejectsSingularInverse();
+    TestSceneCoordinateRoundTrip();
+    TestSceneCoordinateIdentityAtPivot();
     TestAffineRoundTrip();
     TestValidatorRejectsDuplicateBanks();
     TestValidatorRejectsNonFiniteGeometry();

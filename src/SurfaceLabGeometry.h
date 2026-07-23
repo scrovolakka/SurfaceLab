@@ -128,6 +128,33 @@ struct SurfaceCoordinateTransform {
     Point3 rotation_radians{};
 };
 
+// Parent transform shared by every surface. The fixed pivot is the
+// composition/effect center and Position is the parent origin, so the default
+// Position == pivot produces an identity transform.
+struct SceneCoordinateTransform {
+    Point3 pivot{};
+    Point3 position{};
+    Point3 scale{1.0, 1.0, 1.0};
+    Point3 rotation_radians{};
+};
+
+Point3 ApplyScenePointTransform(
+    Point3 point,
+    const SceneCoordinateTransform& transform);
+
+Point3 ApplySceneVectorTransform(
+    Point3 vector,
+    const SceneCoordinateTransform& transform);
+
+Point3 ApplySceneNormalTransform(
+    Point3 normal,
+    const SceneCoordinateTransform& transform);
+
+bool TryInverseScenePointTransform(
+    Point3 point,
+    const SceneCoordinateTransform& transform,
+    Point3& untransformed);
+
 SurfaceCoordinateTransform BuildSurfaceCoordinateTransform(
     const SurfaceData& surface,
     Point3 legacy_pivot,

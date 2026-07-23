@@ -235,6 +235,7 @@ struct Vertex {
 };
 
 struct CameraState {
+    SceneCoordinateTransform scene_transform{};
     Point3 position{};
     Point3 right{1.0, 0.0, 0.0};
     Point3 down{0.0, 1.0, 0.0};

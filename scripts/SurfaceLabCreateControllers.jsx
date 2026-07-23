@@ -3,6 +3,9 @@
     var META_SURFACE_ID = 500;
     var META_ANIMATION_BANK = 501;
     var COORDINATE_SPACE = 502;
+    var SCENE_POSITION = 505;
+    var SCENE_ROTATIONS = [506, 507, 508];
+    var SCENE_SCALES = [509, 510, 511];
     var MAX_CONTROLS = 16;
     var assignedProperties = [];
     var createdLayers = [];
@@ -158,6 +161,19 @@
         return null;
     }
 
+    function findSceneRoot(comp, sourceLayerId) {
+        var marker = "SurfaceLab Scene Rig; sourceLayerId=" +
+            sourceLayerId + ";";
+        for (var index = 1; index <= comp.numLayers; index += 1) {
+            var layer = comp.layer(index);
+            if (layer.comment.indexOf(marker) === 0 &&
+                    layer.comment.indexOf("; role=scene-root") >= 0) {
+                return layer;
+            }
+        }
+        return null;
+    }
+
     function uniqueLayerName(comp, requested) {
         if (!comp.layer(requested)) {
             return requested;
@@ -173,22 +189,20 @@
         return "SurfaceLab S" + surfaceId + " - Root";
     }
 
+    function sceneRootLayerName() {
+        return "SurfaceLab - Scene Root";
+    }
+
     function controlLayerName(surfaceId, row, column) {
         return "SurfaceLab S" + surfaceId +
             " - Control " + row + "," + column;
     }
 
-    function rootLayerPositionExpression(sourceLayer, effect, positionMatchName) {
-        return "var s=thisComp.layer(" + sourceLayer.index + ");\n" +
-            "var p=s.effect(" + effect.propertyIndex + ")(" +
-            quoteExpressionString(positionMatchName) + ");\n" +
-            "[p[0],p[1],p[2]];";
-    }
-
-    function rootPositionSetup(rootName) {
+    function rootPositionSetup(rootName, scenePivot) {
         return "var r=thisComp.layer(" + quoteExpressionString(rootName) + ");\n" +
-            "var rw=r.toWorld(r.anchorPoint);\n" +
-            "var rz=rw.length>2?rw[2]:0;\n";
+            "var rp=r.transform.position;\n" +
+            "var sp=[" + scenePivot[0] + "," + scenePivot[1] + "," +
+            scenePivot[2] + "];\n";
     }
 
     function childPositionsArray(childNames) {
@@ -209,29 +223,30 @@
             "Math.max(0.001,hi-lo);";
     }
 
-    function positionExpression(rootName, childNames) {
-        return rootPositionSetup(rootName) +
+    function positionExpression(rootName, childNames, scenePivot) {
+        return rootPositionSetup(rootName, scenePivot) +
             "var ps=" + childPositionsArray(childNames) + ";\n" +
             "var minX=ps[0][0],maxX=minX,minY=ps[0][1],maxY=minY,z=0;\n" +
             "for(var i=0;i<ps.length;i++){minX=Math.min(minX,ps[i][0]);" +
             "maxX=Math.max(maxX,ps[i][0]);minY=Math.min(minY,ps[i][1]);" +
             "maxY=Math.max(maxY,ps[i][1]);z+=ps[i][2];}\n" +
-            "[rw[0]+(minX+maxX)/2,rw[1]+(minY+maxY)/2," +
-            "rz+z/ps.length];";
+            "[sp[0]+rp[0]+(minX+maxX)/2," +
+            "sp[1]+rp[1]+(minY+maxY)/2," +
+            "sp[2]+rp[2]+z/ps.length];";
     }
 
-    function pointExpression(rootName, childName) {
-        return rootPositionSetup(rootName) +
+    function pointExpression(rootName, childName, scenePivot) {
+        return rootPositionSetup(rootName, scenePivot) +
             "var lp=thisComp.layer(" + quoteExpressionString(childName) +
             ").transform.position;\n" +
-            "[rw[0]+lp[0],rw[1]+lp[1]];";
+            "[sp[0]+rp[0]+lp[0],sp[1]+rp[1]+lp[1]];";
     }
 
-    function depthExpression(rootName, childName) {
-        return rootPositionSetup(rootName) +
+    function depthExpression(rootName, childName, scenePivot) {
+        return rootPositionSetup(rootName, scenePivot) +
             "var lp=thisComp.layer(" + quoteExpressionString(childName) +
             ").transform.position;\n" +
-            "rz+lp[2];";
+            "sp[2]+rp[2]+lp[2];";
     }
 
     function rotationExpression(rootName, axis) {
@@ -244,6 +259,11 @@
     function scaleExpression(rootName, axis) {
         return "thisComp.layer(" + quoteExpressionString(rootName) +
             ").transform.scale[" + axis + "];";
+    }
+
+    function scenePositionExpression(rootName) {
+        return "var r=thisComp.layer(" + quoteExpressionString(rootName) + ");\n" +
+            "r.toWorld(r.anchorPoint);";
     }
 
     var comp = app.project && app.project.activeItem;
@@ -292,6 +312,13 @@
         }
 
         var ids = diskIdsForBank(bank);
+        var scenePositionProperty = propertyForDiskId(
+            effect,
+            SCENE_POSITION,
+            "Position");
+        var sceneRotationProperties = [];
+        var sceneScaleProperties = [];
+        var sceneRoot = findSceneRoot(comp, sourceLayerId);
         var coordinateSpaceProperty = propertyForDiskId(
             effect,
             COORDINATE_SPACE,
@@ -306,6 +333,14 @@
         var scaleProperties = [];
         var controlledProperties = [];
         var index;
+        for (index = 0; index < 3; index += 1) {
+            sceneRotationProperties.push(propertyForDiskId(
+                effect,
+                SCENE_ROTATIONS[index]));
+            sceneScaleProperties.push(propertyForDiskId(
+                effect,
+                SCENE_SCALES[index]));
+        }
         for (index = 0; index < MAX_CONTROLS; index += 1) {
             pointProperties.push(propertyForDiskId(effect, ids.points[index]));
             depthProperties.push(propertyForDiskId(effect, ids.depths[index]));
@@ -325,6 +360,12 @@
         controlledProperties.push(sizeYProperty);
         controlledProperties.push(positionProperty);
         ensureNoExistingAutomation(controlledProperties);
+        if (!sceneRoot) {
+            ensureNoExistingAutomation(
+                [scenePositionProperty]
+                    .concat(sceneRotationProperties)
+                    .concat(sceneScaleProperties));
+        }
 
         var initialPosition = valueAtCurrentTime(positionProperty, comp);
         var initialRotation = [];
@@ -333,11 +374,65 @@
             initialRotation.push(valueAtCurrentTime(rotationProperties[index], comp));
             initialScale.push(valueAtCurrentTime(scaleProperties[index], comp));
         }
+        var initialScenePosition =
+            valueAtCurrentTime(scenePositionProperty, comp);
+        var initialSceneRotation = [];
+        var initialSceneScale = [];
+        for (index = 0; index < 3; index += 1) {
+            initialSceneRotation.push(valueAtCurrentTime(
+                sceneRotationProperties[index],
+                comp));
+            initialSceneScale.push(valueAtCurrentTime(
+                sceneScaleProperties[index],
+                comp));
+        }
+        var scenePivot = [
+            sourceLayer.width / 2,
+            sourceLayer.height / 2,
+            0
+        ];
 
         app.beginUndoGroup("Create SurfaceLab 3D Controllers");
         undoStarted = true;
         setSetupValue(cameraSourceProperty, 2);
         setSetupValue(coordinateSpaceProperty, 2);
+
+        if (!sceneRoot) {
+            var sceneRootName = uniqueLayerName(
+                comp,
+                sceneRootLayerName());
+            sceneRoot = comp.layers.addNull();
+            createdLayers.push(sceneRoot);
+            sceneRoot.threeDLayer = true;
+            sceneRoot.name = sceneRootName;
+            sceneRoot.label = 11;
+            sceneRoot.comment = "SurfaceLab Scene Rig; sourceLayerId=" +
+                sourceLayerId + "; role=scene-root";
+            var sceneTransform = sceneRoot.property("ADBE Transform Group");
+            sceneTransform.property("ADBE Anchor Point")
+                .setValue([0, 0, 0]);
+            sceneTransform.property("ADBE Position")
+                .setValue(initialScenePosition);
+            sceneTransform.property("ADBE Rotate X")
+                .setValue(initialSceneRotation[0]);
+            sceneTransform.property("ADBE Rotate Y")
+                .setValue(initialSceneRotation[1]);
+            sceneTransform.property("ADBE Rotate Z")
+                .setValue(initialSceneRotation[2]);
+            sceneTransform.property("ADBE Scale")
+                .setValue(initialSceneScale);
+            setExpression(
+                scenePositionProperty,
+                scenePositionExpression(sceneRootName));
+            for (index = 0; index < 3; index += 1) {
+                setExpression(
+                    sceneRotationProperties[index],
+                    rotationExpression(sceneRootName, index));
+                setExpression(
+                    sceneScaleProperties[index],
+                    scaleExpression(sceneRootName, index));
+            }
+        }
 
         var rootName = uniqueLayerName(comp, rootLayerName(surfaceId));
         var root = comp.layers.addNull();
@@ -349,26 +444,21 @@
             "; sourceLayerId=" + sourceLayerId + "; bank=" + bank +
             "; role=root";
 
-        var rootPosition = root.property("ADBE Transform Group")
-            .property("ADBE Position");
-        rootPosition.expression = rootLayerPositionExpression(
-            sourceLayer,
-            effect,
-            positionProperty.matchName);
-        if (rootPosition.expressionError) {
-            fail("Unable to convert the SurfaceLab position: " +
-                rootPosition.expressionError);
-        }
-        var initialRootWorld = rootPosition.value;
-        rootPosition.expression = "";
-        rootPosition.setValue(initialRootWorld);
-        root.property("ADBE Transform Group").property("ADBE Rotate X")
+        root.parent = sceneRoot;
+        var rootTransform = root.property("ADBE Transform Group");
+        rootTransform.property("ADBE Anchor Point").setValue([0, 0, 0]);
+        rootTransform.property("ADBE Position").setValue([
+            initialPosition[0] - scenePivot[0],
+            initialPosition[1] - scenePivot[1],
+            initialPosition[2] - scenePivot[2]
+        ]);
+        rootTransform.property("ADBE Rotate X")
             .setValue(initialRotation[0]);
-        root.property("ADBE Transform Group").property("ADBE Rotate Y")
+        rootTransform.property("ADBE Rotate Y")
             .setValue(initialRotation[1]);
-        root.property("ADBE Transform Group").property("ADBE Rotate Z")
+        rootTransform.property("ADBE Rotate Z")
             .setValue(initialRotation[2]);
-        root.property("ADBE Transform Group").property("ADBE Scale")
+        rootTransform.property("ADBE Scale")
             .setValue(initialScale);
 
         var childNames = [];
@@ -401,16 +491,16 @@
         for (index = 0; index < MAX_CONTROLS; index += 1) {
             setExpression(
                 pointProperties[index],
-                pointExpression(rootName, childNames[index]));
+                pointExpression(rootName, childNames[index], scenePivot));
             setExpression(
                 depthProperties[index],
-                depthExpression(rootName, childNames[index]));
+                depthExpression(rootName, childNames[index], scenePivot));
         }
         setExpression(sizeXProperty, boundsExpression(childNames, 0));
         setExpression(sizeYProperty, boundsExpression(childNames, 1));
         setExpression(
             positionProperty,
-            positionExpression(rootName, childNames));
+            positionExpression(rootName, childNames, scenePivot));
         for (index = 0; index < 3; index += 1) {
             setExpression(
                 rotationProperties[index],

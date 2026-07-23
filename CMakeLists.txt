@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.25)
 
 set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum supported macOS version")
 
-project(SurfaceLab VERSION 0.15.10 LANGUAGES C CXX)
+project(SurfaceLab VERSION 0.15.11 LANGUAGES C CXX)
 
 # The After Effects plug-in is macOS-only and needs the licensed AE SDK. The
 # scene-model unit tests are host-independent and build anywhere, so they are a
