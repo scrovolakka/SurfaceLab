@@ -96,7 +96,8 @@ To create a rig:
    `Selected Surface`.
 2. Run `File > Scripts > Run Script File...` and select
    `scripts/SurfaceLabCreateControllers.jsx`.
-3. Animate the generated `SL S… Root` or any of its sixteen `Prow,column` Nulls.
+3. Animate the generated `SurfaceLab S… - Root` or any of its sixteen
+   `SurfaceLab S… - Control row,column` Nulls.
 
 This first prototype intentionally refuses to overwrite existing expressions or
 keyframes on the bound SurfaceLab streams. It also assumes Center Rotation Origin

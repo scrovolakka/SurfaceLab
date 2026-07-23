@@ -167,6 +167,15 @@
         return requested + " " + suffix;
     }
 
+    function rootLayerName(surfaceId) {
+        return "SurfaceLab S" + surfaceId + " - Root";
+    }
+
+    function controlLayerName(surfaceId, row, column) {
+        return "SurfaceLab S" + surfaceId +
+            " - Control " + row + "," + column;
+    }
+
     function rootLayerPositionExpression(sourceLayer, effect, positionMatchName) {
         return "var s=thisComp.layer(" + sourceLayer.index + ");\n" +
             "var p=s.effect(" + effect.propertyIndex + ")(" +
@@ -328,7 +337,7 @@
         setSetupValue(cameraSourceProperty, 2);
         setSetupValue(coordinateSpaceProperty, 2);
 
-        var rootName = uniqueLayerName(comp, "SL S" + surfaceId + " Root");
+        var rootName = uniqueLayerName(comp, rootLayerName(surfaceId));
         var root = comp.layers.addNull();
         createdLayers.push(root);
         root.threeDLayer = true;
@@ -365,7 +374,7 @@
             var column = index % 4 + 1;
             var childName = uniqueLayerName(
                 comp,
-                "SL S" + surfaceId + " P" + row + "," + column);
+                controlLayerName(surfaceId, row, column));
             var child = comp.layers.addNull();
             createdLayers.push(child);
             child.threeDLayer = true;
