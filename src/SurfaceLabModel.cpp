@@ -92,7 +92,7 @@ void InitializeFlatSurface(
 }
 
 void InitializeScene(SceneData& scene, double width, double height) {
-    scene = {};
+    scene = SceneData{};
     scene.magic = kSceneMagic;
     scene.schema_version = kSceneSchemaVersion;
     scene.reserved[kAnimationStreamsInitializedIndex] = 1;
@@ -316,7 +316,7 @@ namespace {
 
 template <typename SceneV>
 void CopySceneHeader(const SceneV& source, SceneData& destination) {
-    destination = {};
+    destination = SceneData{};
     destination.magic = kSceneMagic;
     destination.schema_version = kSceneSchemaVersion;
     destination.active = source.active;
@@ -546,7 +546,7 @@ void MigrateSceneV9(const SceneDataV9& source, SceneData& destination) {
 }
 
 void MigrateSceneV11(const SceneDataV11& source, SceneData& destination) {
-    destination = {};
+    destination = SceneData{};
     destination.magic = source.magic;
     destination.schema_version = kSceneSchemaVersion;
     destination.active = source.active;
@@ -573,7 +573,7 @@ void MigrateSceneV10(const SceneDataV11& source, SceneData& destination) {
 }
 
 void MigrateSceneV12(const SceneDataV12& source, SceneData& destination) {
-    destination = {};
+    destination = SceneData{};
     destination.magic = source.magic;
     destination.schema_version = kSceneSchemaVersion;
     destination.active = source.active;

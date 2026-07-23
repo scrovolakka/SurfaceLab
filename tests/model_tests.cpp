@@ -2,8 +2,7 @@
 // migration chain. These exercise SurfaceLabModel.{h,cpp} with no After Effects
 // SDK present, so they build and run on any platform:
 //
-//   c++ -std=c++17 -I src src/SurfaceLabModel.cpp \
-//       src/SurfaceLabGeometry.cpp tests/model_tests.cpp -o model_tests
+//   c++ -std=c++17 -I src src/SurfaceLabModel.cpp src/SurfaceLabGeometry.cpp tests/model_tests.cpp -o model_tests
 //   ./model_tests
 //
 // The goal is a fast regression net around the most bug-prone, least
