@@ -147,9 +147,11 @@
 
     function findExistingRig(comp, surfaceId, sourceLayerId) {
         var marker = "SurfaceLab Controller Rig; surfaceId=" + surfaceId +
-            "; sourceLayerId=" + sourceLayerId + "; role=root";
+            "; sourceLayerId=" + sourceLayerId + ";";
         for (var index = 1; index <= comp.numLayers; index += 1) {
-            if (comp.layer(index).comment === marker) {
+            var comment = comp.layer(index).comment;
+            if (comment.indexOf(marker) === 0 &&
+                    comment.indexOf("; role=root") >= 0) {
                 return comp.layer(index);
             }
         }
@@ -344,7 +346,8 @@
         root.name = rootName;
         root.label = 9;
         root.comment = "SurfaceLab Controller Rig; surfaceId=" + surfaceId +
-            "; sourceLayerId=" + sourceLayerId + "; role=root";
+            "; sourceLayerId=" + sourceLayerId + "; bank=" + bank +
+            "; role=root";
 
         var rootPosition = root.property("ADBE Transform Group")
             .property("ADBE Position");

@@ -102,6 +102,14 @@ To create a rig:
 3. Animate the generated `SurfaceLab S… - Root` or any of its sixteen
    `SurfaceLab S… - Control row,column` Nulls.
 
+To return one surface to its flat control cage, select either its SurfaceLab
+source layer or any generated controller Null, then run
+`scripts/SurfaceLabResetSelectedSurface.jsx`. The reset clears point, depth,
+position, rotation, and scale animation for that surface and removes only the
+controller Nulls carrying the matching SurfaceLab surface/layer marker. Source
+assignment, material, deformation, camera, and lighting settings are preserved.
+The complete operation is one After Effects undo step.
+
 This first prototype intentionally refuses to overwrite existing expressions or
 keyframes on the bound SurfaceLab streams. It also assumes Center Rotation Origin
 for exact Root/renderer visual agreement; custom or edge origins continue to
