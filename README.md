@@ -66,8 +66,7 @@ surface:
 - Apple Silicon plug-in bundle
 
 It does not yet implement native layer attachments or Metal. The composition-panel
-surface gizmo continues to use SurfaceLab's internal camera in this milestone;
-the After Effects camera source controls the rendered result. The selected
+surface gizmo now uses the same resolved camera snapshot as rendering. The selected
 surface uses the currently visible animation bank; unselected surfaces continue
 to evaluate their own hidden banks. Scene data from the 0.3 through 0.14.1 series
 is migrated automatically. The previously selected surface keeps the original
@@ -79,6 +78,11 @@ animation streams and the remaining surfaces receive separate initialized banks.
 parented 3D point Nulls for the surface currently selected in the effect. Move a
 point Null to edit that control's X, Y, and Depth together. Move, rotate, or
 scale the Root to transform the whole surface with standard After Effects tools.
+Creating the rig switches `Camera Source` to the active After Effects camera and
+`Coordinate Space` to `Composition World`. In that mode the renderer cancels
+the unparented 2D host layer's affine transform before compositing, so the
+rendered mesh, SurfaceLab gizmo, and native 3D Nulls stay registered while the
+camera or host layer moves.
 
 The binding uses the surface's persistent ID and animation bank rather than its
 visible page number, so adding, deleting, or reordering other surfaces does not
@@ -98,9 +102,9 @@ This first prototype intentionally refuses to overwrite existing expressions or
 keyframes on the bound SurfaceLab streams. It also assumes Center Rotation Origin
 for exact Root/renderer visual agreement; custom or edge origins continue to
 render correctly but the Null hierarchy's displayed pivot will differ. Renaming
-or deleting generated layers breaks their expressions. Apply transforms to the
-effect layer itself only after validating the rig, because transformed source
-layers are not yet mirrored in the Null hierarchy display.
+or deleting generated layers breaks their expressions. Composition World rigs
+require SurfaceLab to remain on an unparented 2D host layer; a 3D or parented host
+would add another camera projection that cannot represent the deformed mesh.
 
 ## Build on macOS
 

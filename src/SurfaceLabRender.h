@@ -64,6 +64,20 @@ CameraState BuildCameraState(
     double scale_y,
     double scale_z);
 
+// Builds the same camera snapshot for rendering and custom UI. When the
+// selected source is the active After Effects camera, this resolves its
+// current transform and zoom; otherwise it returns the internal camera.
+CameraState BuildResolvedCameraState(
+    PF_InData* in_data,
+    PF_ParamDef* params[],
+    double center_x,
+    double center_y,
+    double output_offset_x,
+    double output_offset_y,
+    double scale_x,
+    double scale_y,
+    double scale_z);
+
 PF_Err FrameSetup(
     PF_InData* in_data,
     PF_OutData* out_data,

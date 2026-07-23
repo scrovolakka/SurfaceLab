@@ -1412,10 +1412,12 @@ bool ProjectTwistHandle(
 }
 
 CameraState BuildGizmoCamera(
+    PF_InData* in_data,
     PF_ParamDef* params[],
     A_long input_width,
     A_long input_height) {
-    return BuildCameraState(
+    return BuildResolvedCameraState(
+        in_data,
         params,
         static_cast<double>(input_width) * 0.5,
         static_cast<double>(input_height) * 0.5,
@@ -2880,7 +2882,7 @@ PF_Err HandleSurfaceGizmoEvent(
     }
     SurfaceData surface = scene.surfaces[scene.selected_surface];
     const CameraState camera =
-        BuildGizmoCamera(params, input_width, input_height);
+        BuildGizmoCamera(in_data, params, input_width, input_height);
     const GizmoVisibility visibility = ResolveGizmoVisibility(params);
 
     if (event_extra->e_type == PF_Event_DRAW) {
@@ -4396,6 +4398,15 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
         kCameraSourceInternal,
         "Internal|After Effects Active Camera",
         kDiskCameraSource);
+
+    AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_CANNOT_TIME_VARY;
+    PF_ADD_POPUP(
+        "Coordinate Space",
+        2,
+        kCoordinateSpaceLayerLocal,
+        "Layer Local (Legacy)|Composition World",
+        kDiskCoordinateSpace);
 
     const char* camera_offset_names[3] = {
         "Camera Offset X",

@@ -364,6 +364,29 @@ void TestSurfaceCoordinateRejectsSingularInverse() {
     CHECK(!TrySurfaceWorldToCage({1.0, 2.0, 3.0}, transform, cage));
 }
 
+void TestAffineRoundTrip() {
+    const char* test_name = "AffineRoundTrip";
+    const Affine2D transform{
+        1.2,
+        -0.35,
+        0.45,
+        0.8,
+        240.0,
+        -90.0};
+    Affine2D inverse;
+    CHECK(TryInvertAffine2D(transform, inverse));
+    const Point2 source{218.0, 63.0};
+    const Point2 mapped = ApplyAffine2D(transform, source);
+    const Point2 restored = ApplyAffine2D(inverse, mapped);
+    CHECK(NearlyEqual(restored.x, source.x));
+    CHECK(NearlyEqual(restored.y, source.y));
+
+    Affine2D ignored;
+    CHECK(!TryInvertAffine2D(
+        {1.0, 2.0, 2.0, 4.0, 0.0, 0.0},
+        ignored));
+}
+
 void TestValidatorRejectsDuplicateBanks() {
     const char* test_name = "ValidatorDuplicateBanks";
     SceneData scene{};
@@ -435,6 +458,7 @@ int main() {
     TestSurfaceCoordinateLocalRoundTrip();
     TestSurfaceCoordinateWorldRoundTrip();
     TestSurfaceCoordinateRejectsSingularInverse();
+    TestAffineRoundTrip();
     TestValidatorRejectsDuplicateBanks();
     TestValidatorRejectsNonFiniteGeometry();
     TestResolveDivisionsClampsAtUseSite();

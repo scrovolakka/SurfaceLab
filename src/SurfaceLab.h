@@ -152,6 +152,7 @@ enum ParamIndex {
         kAdditionalSurfaceAnimationBanks * kSurfaceAnimationBankStride,
     kParamCameraStart,
     kParamCameraSource,
+    kParamCoordinateSpace,
     kParamCameraOffsetX,
     kParamCameraOffsetY,
     kParamCameraOffsetZ,
@@ -299,7 +300,8 @@ enum ParamDiskId {
     // Reserved script-facing metadata. Explicit IDs avoid renumbering any
     // existing serialized parameter streams.
     kDiskControllerSurfaceId = 500,
-    kDiskControllerAnimationBank = 501
+    kDiskControllerAnimationBank = 501,
+    kDiskCoordinateSpace = 502
 };
 
 // The companion controller script resolves streams by these serialized IDs.
@@ -308,6 +310,7 @@ static_assert(kDiskPoint00 == 100 && kDiskDepth00 == 200);
 static_assert(kDiskSurfaceSizeX == 308 && kDiskSurfaceSizeY == 309);
 static_assert(kDiskSurfacePosition == 310);
 static_assert(kDiskSurfaceScaleX == 312 && kDiskSurfaceScaleZ == 314);
+static_assert(kDiskCoordinateSpace == 502);
 
 extern "C" {
 

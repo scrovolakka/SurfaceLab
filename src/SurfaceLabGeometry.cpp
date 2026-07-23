@@ -8,6 +8,39 @@
 // ApplySurfaceDeform are exported (declared in the header); the remaining
 // helpers are used only here.
 
+Point2 ApplyAffine2D(const Affine2D& transform, Point2 point) {
+    return {
+        transform.xx * point.x + transform.xy * point.y + transform.tx,
+        transform.yx * point.x + transform.yy * point.y + transform.ty};
+}
+
+bool TryInvertAffine2D(
+    const Affine2D& transform,
+    Affine2D& inverse) {
+    constexpr double kMinimumDeterminant = 1.0e-12;
+    const double determinant =
+        transform.xx * transform.yy - transform.xy * transform.yx;
+    if (!std::isfinite(determinant) ||
+        std::abs(determinant) <= kMinimumDeterminant) {
+        return false;
+    }
+    const double inverse_determinant = 1.0 / determinant;
+    inverse.xx = transform.yy * inverse_determinant;
+    inverse.xy = -transform.xy * inverse_determinant;
+    inverse.yx = -transform.yx * inverse_determinant;
+    inverse.yy = transform.xx * inverse_determinant;
+    inverse.tx =
+        -(inverse.xx * transform.tx + inverse.xy * transform.ty);
+    inverse.ty =
+        -(inverse.yx * transform.tx + inverse.yy * transform.ty);
+    return std::isfinite(inverse.xx) &&
+           std::isfinite(inverse.xy) &&
+           std::isfinite(inverse.yx) &&
+           std::isfinite(inverse.yy) &&
+           std::isfinite(inverse.tx) &&
+           std::isfinite(inverse.ty);
+}
+
 SurfaceCoordinateTransform BuildSurfaceCoordinateTransform(
     const SurfaceData& surface,
     Point3 legacy_pivot,

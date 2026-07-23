@@ -2,9 +2,11 @@
     var EFFECT_MATCH_NAME = "XPK SurfaceLab";
     var META_SURFACE_ID = 500;
     var META_ANIMATION_BANK = 501;
+    var COORDINATE_SPACE = 502;
     var MAX_CONTROLS = 16;
     var assignedProperties = [];
     var createdLayers = [];
+    var changedSetupProperties = [];
 
     function fail(message) {
         throw new Error(message);
@@ -106,6 +108,16 @@
         assignedProperties.push(property);
     }
 
+    function setSetupValue(property, value) {
+        if (property.value !== value) {
+            changedSetupProperties.push({
+                property: property,
+                value: property.value
+            });
+            property.setValue(value);
+        }
+    }
+
     function ensureNoExistingAutomation(properties) {
         for (var index = 0; index < properties.length; index += 1) {
             if (properties[index].expressionEnabled) {
@@ -157,15 +169,15 @@
 
     function rootLayerPositionExpression(sourceLayer, effect, positionMatchName) {
         return "var s=thisComp.layer(" + sourceLayer.index + ");\n" +
-            "s.toWorld(s.effect(" + effect.propertyIndex + ")(" +
-            quoteExpressionString(positionMatchName) + "));";
+            "var p=s.effect(" + effect.propertyIndex + ")(" +
+            quoteExpressionString(positionMatchName) + ");\n" +
+            "[p[0],p[1],p[2]];";
     }
 
     function rootPositionSetup(rootName) {
         return "var r=thisComp.layer(" + quoteExpressionString(rootName) + ");\n" +
             "var rw=r.toWorld(r.anchorPoint);\n" +
-            "var rp=thisLayer.fromWorld(rw);\n" +
-            "var rz=rp.length>2?rp[2]:rw[2];\n";
+            "var rz=rw.length>2?rw[2]:0;\n";
     }
 
     function childPositionsArray(childNames) {
@@ -193,7 +205,7 @@
             "for(var i=0;i<ps.length;i++){minX=Math.min(minX,ps[i][0]);" +
             "maxX=Math.max(maxX,ps[i][0]);minY=Math.min(minY,ps[i][1]);" +
             "maxY=Math.max(maxY,ps[i][1]);z+=ps[i][2];}\n" +
-            "[rp[0]+(minX+maxX)/2,rp[1]+(minY+maxY)/2," +
+            "[rw[0]+(minX+maxX)/2,rw[1]+(minY+maxY)/2," +
             "rz+z/ps.length];";
     }
 
@@ -201,7 +213,7 @@
         return rootPositionSetup(rootName) +
             "var lp=thisComp.layer(" + quoteExpressionString(childName) +
             ").transform.position;\n" +
-            "[rp[0]+lp[0],rp[1]+lp[1]];";
+            "[rw[0]+lp[0],rw[1]+lp[1]];";
     }
 
     function depthExpression(rootName, childName) {
@@ -239,6 +251,13 @@
         alert("The selected layer does not contain SurfaceLab.");
         return;
     }
+    if (sourceLayer.threeDLayer || sourceLayer.parent !== null) {
+        alert(
+            "Composition World controllers require SurfaceLab on an " +
+            "unparented 2D host layer. Keep the rendered surface in the " +
+            "3D controller rig instead of transforming the host layer.");
+        return;
+    }
 
     var undoStarted = false;
     try {
@@ -262,6 +281,14 @@
         }
 
         var ids = diskIdsForBank(bank);
+        var coordinateSpaceProperty = propertyForDiskId(
+            effect,
+            COORDINATE_SPACE,
+            "Coordinate Space");
+        var cameraSourceProperty = effect.property("Camera Source");
+        if (!cameraSourceProperty) {
+            fail("SurfaceLab Camera Source parameter was not found.");
+        }
         var pointProperties = [];
         var depthProperties = [];
         var rotationProperties = [];
@@ -298,6 +325,8 @@
 
         app.beginUndoGroup("Create SurfaceLab 3D Controllers");
         undoStarted = true;
+        setSetupValue(cameraSourceProperty, 2);
+        setSetupValue(coordinateSpaceProperty, 2);
 
         var rootName = uniqueLayerName(comp, "SL S" + surfaceId + " Root");
         var root = comp.layers.addNull();
@@ -405,6 +434,15 @@
             try {
                 createdLayers[cleanupIndex].remove();
             } catch (ignoredLayerCleanup) {
+            }
+        }
+        for (cleanupIndex = changedSetupProperties.length - 1;
+                cleanupIndex >= 0;
+                cleanupIndex -= 1) {
+            try {
+                changedSetupProperties[cleanupIndex].property.setValue(
+                    changedSetupProperties[cleanupIndex].value);
+            } catch (ignoredSetupCleanup) {
             }
         }
         alert("SurfaceLab controllers were not created.\n\n" + error.message);

@@ -32,6 +32,24 @@ inline double Dot(Point3 a, Point3 b) {
     return a.x * b.x + a.y * b.y + a.z * b.z;
 }
 
+// Row-major 2D affine mapping:
+//   x' = xx * x + xy * y + tx
+//   y' = yx * x + yy * y + ty
+struct Affine2D {
+    double xx{1.0};
+    double xy{};
+    double yx{};
+    double yy{1.0};
+    double tx{};
+    double ty{};
+};
+
+Point2 ApplyAffine2D(const Affine2D& transform, Point2 point);
+
+bool TryInvertAffine2D(
+    const Affine2D& transform,
+    Affine2D& inverse);
+
 inline Point3 RotatePoint(
     Point3 point,
     double center_x,

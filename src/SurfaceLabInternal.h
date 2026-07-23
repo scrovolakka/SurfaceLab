@@ -35,6 +35,8 @@ constexpr A_long kGizmoToolAll = 1;
 constexpr A_long kGizmoToolPosition = 2;
 constexpr A_long kGizmoToolRotation = 3;
 constexpr A_long kGizmoToolScale = 4;
+constexpr A_long kCoordinateSpaceLayerLocal = 1;
+constexpr A_long kCoordinateSpaceCompWorld = 2;
 constexpr A_long kCameraSourceInternal = 1;
 constexpr A_long kCameraSourceAfterEffects = 2;
 constexpr A_long kLightSourceInternal = 1;
@@ -241,8 +243,10 @@ struct CameraState {
     double center_y{};
     double output_offset_x{};
     double output_offset_y{};
+    Affine2D comp_to_output{};
     bool perspective{};
     bool use_basis{};
+    bool use_comp_to_output{};
 };
 
 struct Bounds2D {

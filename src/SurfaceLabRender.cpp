@@ -72,16 +72,22 @@ Vertex ProjectVertex(
     vertex.visible = IsFinitePoint3(camera_point) && camera_depth > 1.0;
     if (vertex.visible) {
         vertex.inverse_depth = 1.0 / camera_depth;
+        Point2 projected;
         if (camera.perspective) {
             const double projection_scale = camera.focal_distance * vertex.inverse_depth;
-            vertex.x = camera.center_x + camera_point.x * projection_scale +
-                       camera.output_offset_x;
-            vertex.y = camera.center_y + camera_point.y * projection_scale +
-                       camera.output_offset_y;
+            projected = {
+                camera.center_x + camera_point.x * projection_scale,
+                camera.center_y + camera_point.y * projection_scale};
         } else {
-            vertex.x = camera.center_x + camera_point.x + camera.output_offset_x;
-            vertex.y = camera.center_y + camera_point.y + camera.output_offset_y;
+            projected = {
+                camera.center_x + camera_point.x,
+                camera.center_y + camera_point.y};
         }
+        if (camera.use_comp_to_output) {
+            projected = ApplyAffine2D(camera.comp_to_output, projected);
+        }
+        vertex.x = projected.x + camera.output_offset_x;
+        vertex.y = projected.y + camera.output_offset_y;
         vertex.visible = std::isfinite(vertex.x) &&
                          std::isfinite(vertex.y) &&
                          std::isfinite(vertex.inverse_depth) &&
@@ -1092,6 +1098,7 @@ bool ResolveAfterEffectsCamera(
     double scale_x,
     double scale_y,
     double scale_z,
+    bool use_comp_world,
     CameraState& camera) {
     A_Time comp_time{};
     if (!ResolveCompTime(in_data, comp_time)) {
@@ -1140,6 +1147,64 @@ bool ResolveAfterEffectsCamera(
     camera.output_offset_y = output_offset_y;
     camera.perspective = true;
     camera.use_basis = true;
+
+    // In Composition World mode SurfaceLab points and 3D controller Nulls
+    // share AE comp-world coordinates. The effect output is still a 2D layer,
+    // so cancel that host layer's affine transform before AE composites it.
+    if (use_comp_world) {
+        AEGP_LayerH effect_layer = nullptr;
+        AEGP_LayerFlags layer_flags = AEGP_LayerFlag_NONE;
+        AEGP_CompH comp = nullptr;
+        AEGP_ItemH comp_item = nullptr;
+        A_long comp_width = 0;
+        A_long comp_height = 0;
+        A_Matrix4 effect_to_world{};
+        if (suites.PFInterfaceSuite1()->AEGP_GetEffectLayer(
+                in_data->effect_ref,
+                &effect_layer) == A_Err_NONE &&
+            effect_layer &&
+            suites.LayerSuite5()->AEGP_GetLayerFlags(
+                effect_layer,
+                &layer_flags) == A_Err_NONE &&
+            (layer_flags & AEGP_LayerFlag_LAYER_IS_3D) == 0 &&
+            suites.LayerSuite5()->AEGP_GetLayerParentComp(
+                effect_layer,
+                &comp) == A_Err_NONE &&
+            comp &&
+            suites.CompSuite4()->AEGP_GetItemFromComp(
+                comp,
+                &comp_item) == A_Err_NONE &&
+            comp_item &&
+            suites.ItemSuite6()->AEGP_GetItemDimensions(
+                comp_item,
+                &comp_width,
+                &comp_height) == A_Err_NONE &&
+            comp_width > 0 &&
+            comp_height > 0 &&
+            suites.LayerSuite5()->AEGP_GetLayerToWorldXform(
+                effect_layer,
+                &comp_time,
+                &effect_to_world) == A_Err_NONE) {
+            const double safe_scale_x = std::max(1.0e-12, scale_x);
+            const double safe_scale_y = std::max(1.0e-12, scale_y);
+            const Affine2D output_to_comp{
+                effect_to_world.mat[0][0],
+                effect_to_world.mat[1][0] * safe_scale_x / safe_scale_y,
+                effect_to_world.mat[0][1] * safe_scale_y / safe_scale_x,
+                effect_to_world.mat[1][1],
+                effect_to_world.mat[3][0] * scale_x,
+                effect_to_world.mat[3][1] * scale_y};
+            Affine2D comp_to_output;
+            if (TryInvertAffine2D(output_to_comp, comp_to_output)) {
+                camera.center_x =
+                    static_cast<double>(comp_width) * scale_x * 0.5;
+                camera.center_y =
+                    static_cast<double>(comp_height) * scale_y * 0.5;
+                camera.comp_to_output = comp_to_output;
+                camera.use_comp_to_output = true;
+            }
+        }
+    }
     return true;
 }
 
@@ -1492,6 +1557,45 @@ OutputBounds ComputeOutputBounds(
 
 }  // namespace
 
+CameraState BuildResolvedCameraState(
+    PF_InData* in_data,
+    PF_ParamDef* params[],
+    double center_x,
+    double center_y,
+    double output_offset_x,
+    double output_offset_y,
+    double scale_x,
+    double scale_y,
+    double scale_z) {
+    CameraState camera = BuildCameraState(
+        params,
+        center_x,
+        center_y,
+        output_offset_x,
+        output_offset_y,
+        scale_x,
+        scale_y,
+        scale_z);
+    if (params[kParamCameraSource]->u.pd.value ==
+        kCameraSourceAfterEffects) {
+        const bool use_comp_world =
+            params[kParamCoordinateSpace]->u.pd.value ==
+            kCoordinateSpaceCompWorld;
+        ResolveAfterEffectsCamera(
+            in_data,
+            center_x,
+            center_y,
+            output_offset_x,
+            output_offset_y,
+            scale_x,
+            scale_y,
+            scale_z,
+            use_comp_world,
+            camera);
+    }
+    return camera;
+}
+
 PF_Err FrameSetup(
     PF_InData* in_data,
     PF_OutData* out_data,
@@ -1508,7 +1612,8 @@ PF_Err FrameSetup(
     const double scale_z = (scale_x + scale_y) * 0.5;
     const SceneData scene =
         ResolveSceneForFrame(in_data, params, input.width, input.height);
-    CameraState camera = BuildCameraState(
+    const CameraState camera = BuildResolvedCameraState(
+        in_data,
         params,
         static_cast<double>(input.width) * 0.5,
         static_cast<double>(input.height) * 0.5,
@@ -1517,19 +1622,6 @@ PF_Err FrameSetup(
         scale_x,
         scale_y,
         scale_z);
-    if (params[kParamCameraSource]->u.pd.value ==
-        kCameraSourceAfterEffects) {
-        ResolveAfterEffectsCamera(
-            in_data,
-            static_cast<double>(input.width) * 0.5,
-            static_cast<double>(input.height) * 0.5,
-            0.0,
-            0.0,
-            scale_x,
-            scale_y,
-            scale_z,
-            camera);
-    }
     const OutputBounds bounds = ComputeOutputBounds(
         params,
         input.width,
@@ -1632,7 +1724,8 @@ RenderFrameSnapshot BuildRenderFrameSnapshot(
         std::max<A_u_long>(1U, in_data->downsample_y.den);
     snapshot.scale_z = (snapshot.scale_x + snapshot.scale_y) * 0.5;
     snapshot.wireframe = params[kParamWireframe]->u.bd.value != FALSE;
-    snapshot.camera = BuildCameraState(
+    snapshot.camera = BuildResolvedCameraState(
+        in_data,
         params,
         static_cast<double>(input_width) * 0.5,
         static_cast<double>(input_height) * 0.5,
@@ -1641,19 +1734,6 @@ RenderFrameSnapshot BuildRenderFrameSnapshot(
         snapshot.scale_x,
         snapshot.scale_y,
         snapshot.scale_z);
-    if (params[kParamCameraSource]->u.pd.value ==
-        kCameraSourceAfterEffects) {
-        ResolveAfterEffectsCamera(
-            in_data,
-            static_cast<double>(input_width) * 0.5,
-            static_cast<double>(input_height) * 0.5,
-            output_offset_x,
-            output_offset_y,
-            snapshot.scale_x,
-            snapshot.scale_y,
-            snapshot.scale_z,
-            snapshot.camera);
-    }
 
     LightingState& lighting = snapshot.lighting;
     lighting.enabled = params[kParamLightingEnabled]->u.bd.value != FALSE;
