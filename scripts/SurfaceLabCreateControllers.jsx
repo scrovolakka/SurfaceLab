@@ -455,11 +455,12 @@
 
         app.beginUndoGroup("Create SurfaceLab 3D Controllers");
         undoStarted = true;
-        // Only hand projection to the AE camera when the comp actually has
-        // one; otherwise keep the internal camera so the render stays visible.
-        if (comp.activeCamera) {
-            setSetupValue(cameraSourceProperty, 2);
-        }
+        // AE always draws the 3D Nulls through the comp's active camera, so a
+        // Comp World rig must render through it too -- including when no
+        // camera exists yet: leaving the internal camera here would break
+        // registration the moment a camera is added later. For exact
+        // registration keep a camera layer in the comp.
+        setSetupValue(cameraSourceProperty, 2);
         setSetupValue(coordinateSpaceProperty, 2);
         // The rig owns the hinge from here on: switch to Custom origin and
         // seed the percentages that reproduce the mode the user had chosen,

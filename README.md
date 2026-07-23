@@ -99,11 +99,14 @@ parented 3D point Nulls for the surface currently selected in the effect. Move a
 point Null to edit that control's X, Y, and Depth together. Move, rotate, or
 scale a surface Root to transform only that surface; transform the Scene Root
 to move, rotate, or scale every SurfaceLab surface together.
-Creating the rig switches `Camera Source` to the active After Effects camera and
+Creating the rig switches `Camera Source` to the After Effects active camera and
 `Coordinate Space` to `Composition World`. In that mode the renderer cancels
 the unparented 2D host layer's affine transform before compositing, so the
 rendered mesh, SurfaceLab gizmo, and native 3D Nulls stay registered while the
-camera or host layer moves.
+camera or host layer moves. After Effects always draws 3D Nulls through the
+comp's active camera, so keep a camera layer in the comp: with `Camera Source`
+on the internal camera (or no camera layer at all) the Null overlay and the
+render are projected differently and cannot line up exactly.
 
 The Scene Root drives the top-level Scene Transform streams. Each surface Root
 drives only its persistent surface animation bank, so the shared parent does not

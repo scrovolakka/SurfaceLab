@@ -319,6 +319,17 @@
 
     // Consistency checks.
     out("Consistency checks:");
+    if (coordinateSpace && cameraSource) {
+        check(
+            "Comp World renders through the AE camera",
+            !(coordinateSpace.value === 2 && cameraSource.value !== 2),
+            "AE draws 3D Nulls through the comp camera; with the internal " +
+            "camera the render and rig cannot register");
+    }
+    if (cameraSource && cameraSource.value === 2 && !comp.activeCamera) {
+        out("  [WARN] Camera Source is AE Active Camera but the comp has no " +
+            "camera layer; add one for exact registration.");
+    }
     if (surfaceRoot && positionProperty && sizeXProperty && sizeYProperty &&
             originModeProperty && originXProperty && originYProperty) {
         var scenePivot = [
@@ -347,22 +358,25 @@
             position[1] + (py / 100 - 0.5) * sizeYProperty.value,
             position[2]
         ];
+        // Compare in Scene-Root-local space: root local must equal
+        // origin - scenePivot. This stays valid however the Scene Root has
+        // been moved, rotated, or scaled, since locals are unaffected.
         var rootPosition = surfaceRoot.property("ADBE Transform Group")
             .property("ADBE Position").value;
-        var rootWorld = [
-            rootPosition[0] + scenePivot[0],
-            rootPosition[1] + scenePivot[1],
-            rootPosition[2] + scenePivot[2]
+        var expectedLocal = [
+            expectedOrigin[0] - scenePivot[0],
+            expectedOrigin[1] - scenePivot[1],
+            expectedOrigin[2] - scenePivot[2]
         ];
         var originDelta = Math.sqrt(
-            Math.pow(rootWorld[0] - expectedOrigin[0], 2) +
-            Math.pow(rootWorld[1] - expectedOrigin[1], 2) +
-            Math.pow(rootWorld[2] - expectedOrigin[2], 2));
+            Math.pow(rootPosition[0] - expectedLocal[0], 2) +
+            Math.pow(rootPosition[1] - expectedLocal[1], 2) +
+            Math.pow(rootPosition[2] - expectedLocal[2], 2));
         check(
             "Surface Root sits on the rotation origin",
             originDelta < 1.0,
-            "root(world)=" + formatValue(rootWorld) +
-            " vs origin=" + formatValue(expectedOrigin) +
+            "root(local)=" + formatValue(rootPosition) +
+            " vs origin-pivot=" + formatValue(expectedLocal) +
             " delta=" + round2(originDelta));
 
         var rootTransform = surfaceRoot.property("ADBE Transform Group");
