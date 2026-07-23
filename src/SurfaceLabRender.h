@@ -69,3 +69,13 @@ PF_Err FrameSetup(
     PF_ParamDef* params[]);
 
 PF_Err Render(PF_InData* in_data, PF_ParamDef* params[], PF_LayerDef* output);
+
+PF_Err SmartPreRender(
+    PF_InData* in_data,
+    PF_OutData* out_data,
+    PF_PreRenderExtra* extra);
+
+PF_Err SmartRender(
+    PF_InData* in_data,
+    PF_OutData* out_data,
+    PF_SmartRenderExtra* extra);

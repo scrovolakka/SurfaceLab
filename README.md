@@ -9,7 +9,8 @@ deformation, source, image, and material streams. Selecting a surface changes
 which bank is shown without changing the other pages' animation. All four
 Corner Curl and all four Edge Twist streams remain visible simultaneously.
 
-The current milestone implements a CPU-rendered 4 x 4 bicubic Bezier surface:
+The current milestone implements a CPU SmartFX-rendered 4 x 4 bicubic Bezier
+surface:
 
 - 16 editable After Effects point parameters
 - legacy-compatible global tessellation
@@ -58,8 +59,9 @@ The current milestone implements a CPU-rendered 4 x 4 bicubic Bezier surface:
 - Source, Auto, and Fixed Padding output-bounds modes
 - automatic projected-mesh bounds including thickness and a configurable margin
 - project-save, copy/paste, and Undo/Redo-ready arbitrary scene data
-- 8-bpc and 16-bpc rendering
-- serialized render execution while AE camera/light suites are in use
+- 8-bpc, 16-bpc, and 32-bpc float rendering
+- camera/light snapshots resolved during Smart PreRender, outside Smart Render
+- legacy 8/16-bpc render fallback for hosts that do not use SmartFX
 - Apple Silicon plug-in bundle
 
 It does not yet implement layer attachments or Metal. The composition-panel

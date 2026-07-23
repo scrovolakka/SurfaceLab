@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <type_traits>
 #include <vector>
 
@@ -179,19 +180,52 @@ bool ResolveBorderCoordinate(double& coordinate, std::uint32_t border_mode) {
 }
 
 template <typename Pixel>
+constexpr double PixelChannelMaximum() {
+    if constexpr (std::is_same_v<Pixel, PF_PixelFloat>) {
+        return static_cast<double>(
+            std::numeric_limits<PF_FpShort>::max());
+    } else if constexpr (std::is_same_v<Pixel, PF_Pixel16>) {
+        return static_cast<double>(PF_MAX_CHAN16);
+    } else {
+        return static_cast<double>(PF_MAX_CHAN8);
+    }
+}
+
+template <typename Pixel>
+constexpr double PixelChannelWhite() {
+    if constexpr (std::is_same_v<Pixel, PF_PixelFloat>) {
+        return 1.0;
+    }
+    return PixelChannelMaximum<Pixel>();
+}
+
+template <typename Pixel>
+double QuantizePixelChannel(double value) {
+    if constexpr (std::is_same_v<Pixel, PF_PixelFloat>) {
+        return value;
+    } else {
+        return std::lround(value);
+    }
+}
+
+template <typename Pixel>
 Pixel ApplyOpacity(Pixel pixel, float opacity_percent) {
     const double multiplier = std::clamp(
         static_cast<double>(opacity_percent) / 100.0,
         0.0,
         1.0);
     pixel.alpha = static_cast<decltype(pixel.alpha)>(
-        std::lround(static_cast<double>(pixel.alpha) * multiplier));
+        QuantizePixelChannel<Pixel>(
+            static_cast<double>(pixel.alpha) * multiplier));
     pixel.red = static_cast<decltype(pixel.red)>(
-        std::lround(static_cast<double>(pixel.red) * multiplier));
+        QuantizePixelChannel<Pixel>(
+            static_cast<double>(pixel.red) * multiplier));
     pixel.green = static_cast<decltype(pixel.green)>(
-        std::lround(static_cast<double>(pixel.green) * multiplier));
+        QuantizePixelChannel<Pixel>(
+            static_cast<double>(pixel.green) * multiplier));
     pixel.blue = static_cast<decltype(pixel.blue)>(
-        std::lround(static_cast<double>(pixel.blue) * multiplier));
+        QuantizePixelChannel<Pixel>(
+            static_cast<double>(pixel.blue) * multiplier));
     return pixel;
 }
 
@@ -283,10 +317,10 @@ Pixel ApplyLighting(
         const double value =
             static_cast<double>(channel) * diffuse * diffuse_coefficient +
             alpha * specular * specular_coefficient;
-        const double maximum = std::is_same_v<Pixel, PF_Pixel16>
-                                   ? static_cast<double>(PF_MAX_CHAN16)
-                                   : static_cast<double>(PF_MAX_CHAN8);
-        return std::lround(std::clamp(value, 0.0, maximum));
+        return QuantizePixelChannel<Pixel>(std::clamp(
+            value,
+            0.0,
+            PixelChannelMaximum<Pixel>()));
     };
     pixel.red = static_cast<decltype(pixel.red)>(
         shade(pixel.red, diffuse_light.x, specular_light.x));
@@ -354,7 +388,8 @@ Pixel SampleTexture(
                            static_cast<double>(c10) * tx;
         const double bottom = static_cast<double>(c01) * (1.0 - tx) +
                               static_cast<double>(c11) * tx;
-        return std::lround(top * (1.0 - ty) + bottom * ty);
+        return QuantizePixelChannel<Pixel>(
+            top * (1.0 - ty) + bottom * ty);
     };
     Pixel result{};
     result.alpha = static_cast<decltype(result.alpha)>(
@@ -596,17 +631,12 @@ void DrawLine(PF_LayerDef& output, Point2 start, Point2 end) {
     int error = dx + dy;
 
     Pixel line_pixel{};
-    if constexpr (std::is_same_v<Pixel, PF_Pixel16>) {
-        line_pixel.alpha = PF_MAX_CHAN16;
-        line_pixel.red = PF_MAX_CHAN16;
-        line_pixel.green = PF_MAX_CHAN16;
-        line_pixel.blue = PF_MAX_CHAN16;
-    } else {
-        line_pixel.alpha = PF_MAX_CHAN8;
-        line_pixel.red = PF_MAX_CHAN8;
-        line_pixel.green = PF_MAX_CHAN8;
-        line_pixel.blue = PF_MAX_CHAN8;
-    }
+    const auto white = static_cast<decltype(line_pixel.alpha)>(
+        PixelChannelWhite<Pixel>());
+    line_pixel.alpha = white;
+    line_pixel.red = white;
+    line_pixel.green = white;
+    line_pixel.blue = white;
 
     while (true) {
         if (x0 >= 0 && x0 < output.width && y0 >= 0 && y0 < output.height) {
@@ -1422,6 +1452,89 @@ void LimitExpandedAxis(
     output_maximum = source_size + (available - allocated_left);
 }
 
+struct OutputBounds {
+    A_long minimum_x{};
+    A_long minimum_y{};
+    A_long maximum_x{};
+    A_long maximum_y{};
+};
+
+OutputBounds ComputeOutputBounds(
+    PF_ParamDef* params[],
+    A_long input_width,
+    A_long input_height,
+    const SceneData& scene,
+    const CameraState& camera,
+    double scale_x,
+    double scale_y,
+    double scale_z) {
+    const A_long mode = std::clamp<A_long>(
+        params[kParamOutputBoundsMode]->u.pd.value,
+        kOutputBoundsSource,
+        kOutputBoundsFixed);
+    const A_long padding_x = static_cast<A_long>(std::lround(
+        std::max<A_long>(0, params[kParamOutputPaddingX]->u.sd.value) *
+        scale_x));
+    const A_long padding_y = static_cast<A_long>(std::lround(
+        std::max<A_long>(0, params[kParamOutputPaddingY]->u.sd.value) *
+        scale_y));
+
+    OutputBounds bounds{0, 0, input_width, input_height};
+    if (mode == kOutputBoundsFixed) {
+        LimitExpandedAxis(
+            -static_cast<double>(padding_x),
+            static_cast<double>(input_width + padding_x),
+            input_width,
+            PF_MAX_WORLD_WIDTH,
+            bounds.minimum_x,
+            bounds.maximum_x);
+        LimitExpandedAxis(
+            -static_cast<double>(padding_y),
+            static_cast<double>(input_height + padding_y),
+            input_height,
+            PF_MAX_WORLD_HEIGHT,
+            bounds.minimum_y,
+            bounds.maximum_y);
+    } else if (mode == kOutputBoundsAuto) {
+        const int legacy_tessellation = std::clamp(
+            static_cast<int>(params[kParamTessellation]->u.sd.value),
+            static_cast<int>(kMinimumDivisions),
+            static_cast<int>(kMaximumDivisions));
+        Bounds2D projected_bounds{
+            0.0,
+            0.0,
+            static_cast<double>(input_width),
+            static_cast<double>(input_height)};
+        for (std::uint32_t index = 0; index < scene.surface_count; ++index) {
+            if (scene.surfaces[index].enabled != 0) {
+                AccumulateSurfaceBounds(
+                    projected_bounds,
+                    scene.surfaces[index],
+                    legacy_tessellation,
+                    camera,
+                    scale_x,
+                    scale_y,
+                    scale_z);
+            }
+        }
+        LimitExpandedAxis(
+            projected_bounds.minimum_x - padding_x,
+            projected_bounds.maximum_x + padding_x,
+            input_width,
+            PF_MAX_WORLD_WIDTH,
+            bounds.minimum_x,
+            bounds.maximum_x);
+        LimitExpandedAxis(
+            projected_bounds.minimum_y - padding_y,
+            projected_bounds.maximum_y + padding_y,
+            input_height,
+            PF_MAX_WORLD_HEIGHT,
+            bounds.minimum_y,
+            bounds.maximum_y);
+    }
+    return bounds;
+}
+
 }  // namespace
 
 PF_Err FrameSetup(
@@ -1433,104 +1546,51 @@ PF_Err FrameSetup(
         return PF_Err_BAD_CALLBACK_PARAM;
     }
 
-    const A_long mode = std::clamp<A_long>(
-        params[kParamOutputBoundsMode]->u.pd.value,
-        kOutputBoundsSource,
-        kOutputBoundsFixed);
     const double scale_x = static_cast<double>(in_data->downsample_x.num) /
                            std::max<A_u_long>(1U, in_data->downsample_x.den);
     const double scale_y = static_cast<double>(in_data->downsample_y.num) /
                            std::max<A_u_long>(1U, in_data->downsample_y.den);
     const double scale_z = (scale_x + scale_y) * 0.5;
-    const A_long padding_x = static_cast<A_long>(std::lround(
-        std::max<A_long>(0, params[kParamOutputPaddingX]->u.sd.value) * scale_x));
-    const A_long padding_y = static_cast<A_long>(std::lround(
-        std::max<A_long>(0, params[kParamOutputPaddingY]->u.sd.value) * scale_y));
-
-    A_long minimum_x = 0;
-    A_long minimum_y = 0;
-    A_long maximum_x = input.width;
-    A_long maximum_y = input.height;
-
-    if (mode == kOutputBoundsFixed) {
-        LimitExpandedAxis(
-            -static_cast<double>(padding_x),
-            static_cast<double>(input.width + padding_x),
-            input.width,
-            PF_MAX_WORLD_WIDTH,
-            minimum_x,
-            maximum_x);
-        LimitExpandedAxis(
-            -static_cast<double>(padding_y),
-            static_cast<double>(input.height + padding_y),
-            input.height,
-            PF_MAX_WORLD_HEIGHT,
-            minimum_y,
-            maximum_y);
-    } else if (mode == kOutputBoundsAuto) {
-        const int legacy_tessellation = std::clamp(
-            static_cast<int>(params[kParamTessellation]->u.sd.value), 2, 32);
-        const SceneData scene =
-            ResolveSceneForFrame(in_data, params, input.width, input.height);
-        CameraState camera = BuildCameraState(
-            params,
+    const SceneData scene =
+        ResolveSceneForFrame(in_data, params, input.width, input.height);
+    CameraState camera = BuildCameraState(
+        params,
+        static_cast<double>(input.width) * 0.5,
+        static_cast<double>(input.height) * 0.5,
+        0.0,
+        0.0,
+        scale_x,
+        scale_y,
+        scale_z);
+    if (params[kParamCameraSource]->u.pd.value ==
+        kCameraSourceAfterEffects) {
+        ResolveAfterEffectsCamera(
+            in_data,
             static_cast<double>(input.width) * 0.5,
             static_cast<double>(input.height) * 0.5,
             0.0,
             0.0,
             scale_x,
             scale_y,
-            scale_z);
-        if (params[kParamCameraSource]->u.pd.value ==
-            kCameraSourceAfterEffects) {
-            ResolveAfterEffectsCamera(
-                in_data,
-                static_cast<double>(input.width) * 0.5,
-                static_cast<double>(input.height) * 0.5,
-                0.0,
-                0.0,
-                scale_x,
-                scale_y,
-                scale_z,
-                camera);
-        }
-        Bounds2D bounds{
-            0.0,
-            0.0,
-            static_cast<double>(input.width),
-            static_cast<double>(input.height)};
-        for (std::uint32_t index = 0; index < scene.surface_count; ++index) {
-            if (scene.surfaces[index].enabled != 0) {
-                AccumulateSurfaceBounds(
-                    bounds,
-                    scene.surfaces[index],
-                    legacy_tessellation,
-                    camera,
-                    scale_x,
-                    scale_y,
-                    scale_z);
-            }
-        }
-        LimitExpandedAxis(
-            bounds.minimum_x - padding_x,
-            bounds.maximum_x + padding_x,
-            input.width,
-            PF_MAX_WORLD_WIDTH,
-            minimum_x,
-            maximum_x);
-        LimitExpandedAxis(
-            bounds.minimum_y - padding_y,
-            bounds.maximum_y + padding_y,
-            input.height,
-            PF_MAX_WORLD_HEIGHT,
-            minimum_y,
-            maximum_y);
+            scale_z,
+            camera);
     }
+    const OutputBounds bounds = ComputeOutputBounds(
+        params,
+        input.width,
+        input.height,
+        scene,
+        camera,
+        scale_x,
+        scale_y,
+        scale_z);
 
-    out_data->width = std::max<A_long>(1, maximum_x - minimum_x);
-    out_data->height = std::max<A_long>(1, maximum_y - minimum_y);
-    out_data->origin.h = -minimum_x;
-    out_data->origin.v = -minimum_y;
+    out_data->width =
+        std::max<A_long>(1, bounds.maximum_x - bounds.minimum_x);
+    out_data->height =
+        std::max<A_long>(1, bounds.maximum_y - bounds.minimum_y);
+    out_data->origin.h = -bounds.minimum_x;
+    out_data->origin.v = -bounds.minimum_y;
     return PF_Err_NONE;
 }
 
@@ -1589,48 +1649,58 @@ bool IsUsableTextureWorld(const PF_LayerDef& world) {
            world.rowbytes != 0;
 }
 
-template <typename Pixel>
-PF_Err RenderSurface(PF_InData* in_data, PF_ParamDef* params[], PF_LayerDef* output) {
-    const PF_LayerDef& input = params[kParamInput]->u.ld;
-    if (!IsUsableTextureWorld(input) ||
-        !output->data ||
-        output->width <= 0 ||
-        output->height <= 0 ||
-        output->rowbytes == 0) {
-        return PF_Err_BAD_CALLBACK_PARAM;
-    }
+struct RenderFrameSnapshot {
+    SceneData scene{};
+    CameraState camera{};
+    LightingState lighting{};
+    int legacy_tessellation{static_cast<int>(kDefaultDivisions)};
+    double scale_x{1.0};
+    double scale_y{1.0};
+    double scale_z{1.0};
+    bool wireframe{};
+    std::array<bool, kMaximumSurfaces> source_slots{};
+};
 
-    const double scale_x = static_cast<double>(in_data->downsample_x.num) /
-                           static_cast<double>(in_data->downsample_x.den);
-    const double scale_y = static_cast<double>(in_data->downsample_y.num) /
-                           static_cast<double>(in_data->downsample_y.den);
-    const double scale_z = (scale_x + scale_y) * 0.5;
-    const bool wireframe = params[kParamWireframe]->u.bd.value != FALSE;
-    constexpr double kDegreesToRadians = 3.14159265358979323846 / 180.0;
-    CameraState camera = BuildCameraState(
+RenderFrameSnapshot BuildRenderFrameSnapshot(
+    PF_InData* in_data,
+    PF_ParamDef* params[],
+    A_long input_width,
+    A_long input_height,
+    double output_offset_x,
+    double output_offset_y) {
+    RenderFrameSnapshot snapshot;
+    snapshot.scale_x =
+        static_cast<double>(in_data->downsample_x.num) /
+        std::max<A_u_long>(1U, in_data->downsample_x.den);
+    snapshot.scale_y =
+        static_cast<double>(in_data->downsample_y.num) /
+        std::max<A_u_long>(1U, in_data->downsample_y.den);
+    snapshot.scale_z = (snapshot.scale_x + snapshot.scale_y) * 0.5;
+    snapshot.wireframe = params[kParamWireframe]->u.bd.value != FALSE;
+    snapshot.camera = BuildCameraState(
         params,
-        static_cast<double>(input.width) * 0.5,
-        static_cast<double>(input.height) * 0.5,
-        static_cast<double>(in_data->output_origin_x),
-        static_cast<double>(in_data->output_origin_y),
-        scale_x,
-        scale_y,
-        scale_z);
+        static_cast<double>(input_width) * 0.5,
+        static_cast<double>(input_height) * 0.5,
+        output_offset_x,
+        output_offset_y,
+        snapshot.scale_x,
+        snapshot.scale_y,
+        snapshot.scale_z);
     if (params[kParamCameraSource]->u.pd.value ==
         kCameraSourceAfterEffects) {
         ResolveAfterEffectsCamera(
             in_data,
-            static_cast<double>(input.width) * 0.5,
-            static_cast<double>(input.height) * 0.5,
-            static_cast<double>(in_data->output_origin_x),
-            static_cast<double>(in_data->output_origin_y),
-            scale_x,
-            scale_y,
-            scale_z,
-            camera);
+            static_cast<double>(input_width) * 0.5,
+            static_cast<double>(input_height) * 0.5,
+            output_offset_x,
+            output_offset_y,
+            snapshot.scale_x,
+            snapshot.scale_y,
+            snapshot.scale_z,
+            snapshot.camera);
     }
 
-    LightingState lighting;
+    LightingState& lighting = snapshot.lighting;
     lighting.enabled = params[kParamLightingEnabled]->u.bd.value != FALSE;
     lighting.backface_culling =
         params[kParamBackfaceCulling]->u.bd.value != FALSE;
@@ -1646,10 +1716,13 @@ PF_Err RenderSurface(PF_InData* in_data, PF_ParamDef* params[], PF_LayerDef* out
         params[kParamAmbientLight]->u.fs_d.value / 100.0,
         0.0,
         1.0);
+    constexpr double kDegreesToRadians = 3.14159265358979323846 / 180.0;
     const double light_rotation_x =
-        FIX_2_FLOAT(params[kParamLightRotationX]->u.ad.value) * kDegreesToRadians;
+        FIX_2_FLOAT(params[kParamLightRotationX]->u.ad.value) *
+        kDegreesToRadians;
     const double light_rotation_y =
-        FIX_2_FLOAT(params[kParamLightRotationY]->u.ad.value) * kDegreesToRadians;
+        FIX_2_FLOAT(params[kParamLightRotationY]->u.ad.value) *
+        kDegreesToRadians;
     RenderLight& internal_light = lighting.lights[0];
     internal_light.type = RenderLightType::Directional;
     internal_light.direction = Normalize(RotatePoint(
@@ -1671,25 +1744,62 @@ PF_Err RenderSurface(PF_InData* in_data, PF_ParamDef* params[], PF_LayerDef* out
             kLightSourceAfterEffects) {
         ResolveAfterEffectsLights(
             in_data,
-            scale_x,
-            scale_y,
-            scale_z,
+            snapshot.scale_x,
+            snapshot.scale_y,
+            snapshot.scale_z,
             lighting);
     }
-    lighting.camera_position = camera.position;
-    const int legacy_tessellation = std::clamp(
-        static_cast<int>(params[kParamTessellation]->u.sd.value), 2, 32);
+    lighting.camera_position = snapshot.camera.position;
+    snapshot.legacy_tessellation = std::clamp(
+        static_cast<int>(params[kParamTessellation]->u.sd.value),
+        static_cast<int>(kMinimumDivisions),
+        static_cast<int>(kMaximumDivisions));
+    snapshot.scene =
+        ResolveSceneForFrame(in_data, params, input_width, input_height);
+    for (std::uint32_t index = 0;
+         index < snapshot.scene.surface_count;
+         ++index) {
+        const SurfaceData& surface = snapshot.scene.surfaces[index];
+        if (surface.enabled == 0) {
+            continue;
+        }
+        snapshot.source_slots[surface.source_slot] = true;
+        const std::uint32_t back_slot = surface.back_source_slot == 0
+                                            ? surface.source_slot
+                                            : surface.back_source_slot - 1;
+        snapshot.source_slots[back_slot] = true;
+    }
+    return snapshot;
+}
 
-    const SceneData scene =
-        ResolveSceneForFrame(in_data, params, input.width, input.height);
+template <typename Pixel>
+PF_Err RenderSurface(PF_InData* in_data, PF_ParamDef* params[], PF_LayerDef* output) {
+    const PF_LayerDef& input = params[kParamInput]->u.ld;
+    if (!IsUsableTextureWorld(input) ||
+        !output->data ||
+        output->width <= 0 ||
+        output->height <= 0 ||
+        output->rowbytes == 0) {
+        return PF_Err_BAD_CALLBACK_PARAM;
+    }
+
+    const RenderFrameSnapshot snapshot = BuildRenderFrameSnapshot(
+        in_data,
+        params,
+        input.width,
+        input.height,
+        static_cast<double>(in_data->output_origin_x),
+        static_cast<double>(in_data->output_origin_y));
 
     ClearWorld<Pixel>(*output);
     std::vector<float> depth_buffer(
         static_cast<size_t>(output->width) * static_cast<size_t>(output->height),
         -std::numeric_limits<float>::infinity());
 
-    for (std::uint32_t index = 0; index < scene.surface_count; ++index) {
-        const SurfaceData& surface = scene.surfaces[index];
+    for (std::uint32_t index = 0;
+         index < snapshot.scene.surface_count;
+         ++index) {
+        const SurfaceData& surface = snapshot.scene.surfaces[index];
         if (surface.enabled == 0) {
             continue;
         }
@@ -1732,13 +1842,13 @@ PF_Err RenderSurface(PF_InData* in_data, PF_ParamDef* params[], PF_LayerDef* out
             back_texture,
             *output,
             depth_buffer,
-            legacy_tessellation,
-            camera,
-            lighting,
-            scale_x,
-            scale_y,
-            scale_z,
-            wireframe);
+            snapshot.legacy_tessellation,
+            snapshot.camera,
+            snapshot.lighting,
+            snapshot.scale_x,
+            snapshot.scale_y,
+            snapshot.scale_z,
+            snapshot.wireframe);
 
         if (separate_back_checkout) {
             const PF_Err back_checkin_error = back_checkout.Checkin();
@@ -1762,4 +1872,429 @@ PF_Err Render(PF_InData* in_data, PF_ParamDef* params[], PF_LayerDef* output) {
         return RenderSurface<PF_Pixel16>(in_data, params, output);
     }
     return RenderSurface<PF_Pixel8>(in_data, params, output);
+}
+
+namespace {
+
+constexpr A_long kSmartInputCheckoutId = 0;
+constexpr A_long kSmartSourceCheckoutBase = 1;
+
+struct SmartParameterSet {
+    SmartParameterSet()
+        : definitions(static_cast<std::size_t>(kParamCount)),
+          pointers(static_cast<std::size_t>(kParamCount)),
+          checked(static_cast<std::size_t>(kParamCount), false) {
+        for (std::size_t index = 0; index < pointers.size(); ++index) {
+            pointers[index] = &definitions[index];
+        }
+    }
+
+    std::vector<PF_ParamDef> definitions;
+    std::vector<PF_ParamDef*> pointers;
+    std::vector<bool> checked;
+};
+
+PF_Err CheckoutSmartParameter(
+    PF_InData* in_data,
+    SmartParameterSet& parameters,
+    PF_ParamIndex index) {
+    const std::size_t offset = static_cast<std::size_t>(index);
+    if (offset >= parameters.definitions.size()) {
+        return PF_Err_BAD_CALLBACK_PARAM;
+    }
+    if (parameters.checked[offset]) {
+        return PF_Err_NONE;
+    }
+    const PF_Err error = PF_CHECKOUT_PARAM(
+        in_data,
+        index,
+        in_data->current_time,
+        in_data->time_step,
+        in_data->time_scale,
+        &parameters.definitions[offset]);
+    if (error == PF_Err_NONE) {
+        parameters.checked[offset] = true;
+    }
+    return error;
+}
+
+PF_Err CheckoutSmartRenderParameters(
+    PF_InData* in_data,
+    SmartParameterSet& parameters) {
+    constexpr std::array<PF_ParamIndex, 22> kFrameParameters = {
+        kParamTessellation,
+        kParamWireframe,
+        kParamPerspective,
+        kParamCameraDistance,
+        kParamSceneData,
+        kParamCameraSource,
+        kParamCameraOffsetX,
+        kParamCameraOffsetY,
+        kParamCameraOffsetZ,
+        kParamCameraRotationX,
+        kParamCameraRotationY,
+        kParamCameraRotationZ,
+        kParamLightSource,
+        kParamLightingEnabled,
+        kParamLightRotationX,
+        kParamLightRotationY,
+        kParamLightIntensity,
+        kParamAmbientLight,
+        kParamTextureFilter,
+        kParamBackfaceCulling,
+        kParamOutputBoundsMode,
+        kParamOutputPaddingX};
+    for (PF_ParamIndex index : kFrameParameters) {
+        const PF_Err error =
+            CheckoutSmartParameter(in_data, parameters, index);
+        if (error != PF_Err_NONE) {
+            return error;
+        }
+    }
+    PF_Err error = CheckoutSmartParameter(
+        in_data,
+        parameters,
+        kParamOutputPaddingY);
+    if (error != PF_Err_NONE) {
+        return error;
+    }
+
+    std::array<bool, kMaximumSurfaces> animation_banks{};
+    bool active_scene = false;
+    const PF_Handle scene_handle =
+        parameters.definitions[static_cast<std::size_t>(kParamSceneData)]
+            .u.arb_d.value;
+    if (scene_handle) {
+        const auto* scene =
+            static_cast<const SceneData*>(PF_LOCK_HANDLE(scene_handle));
+        if (scene) {
+            active_scene = IsValidScene(*scene) && scene->active != 0;
+            if (active_scene) {
+                for (std::uint32_t index = 0;
+                     index < scene->surface_count;
+                     ++index) {
+                    animation_banks[scene->surfaces[index].animation_bank] =
+                        true;
+                }
+            }
+            PF_UNLOCK_HANDLE(scene_handle);
+        }
+    }
+    if (!active_scene) {
+        animation_banks[0] = true;
+    }
+
+    for (std::uint32_t bank = 0;
+         bank < static_cast<std::uint32_t>(animation_banks.size());
+         ++bank) {
+        if (!animation_banks[bank]) {
+            continue;
+        }
+        for (std::size_t property = 0;
+             property < static_cast<std::size_t>(
+                            kSurfaceAnimationPropertyCount);
+             ++property) {
+            error = CheckoutSmartParameter(
+                in_data,
+                parameters,
+                AnimationBankParam(bank, property));
+            if (error != PF_Err_NONE) {
+                return error;
+            }
+        }
+    }
+    return PF_Err_NONE;
+}
+
+void DeleteSmartRenderSnapshot(void* data) {
+    delete static_cast<RenderFrameSnapshot*>(data);
+}
+
+PF_LRect FullTextureRequestRect() {
+    return {0, 0, PF_MAX_WORLD_WIDTH, PF_MAX_WORLD_HEIGHT};
+}
+
+PF_LRect IntersectRects(const PF_LRect& first, const PF_LRect& second) {
+    PF_LRect result{
+        std::max(first.left, second.left),
+        std::max(first.top, second.top),
+        std::min(first.right, second.right),
+        std::min(first.bottom, second.bottom)};
+    if (result.left >= result.right || result.top >= result.bottom) {
+        return {};
+    }
+    return result;
+}
+
+class CheckedOutSmartLayerPixels {
+  public:
+    CheckedOutSmartLayerPixels() = default;
+    CheckedOutSmartLayerPixels(const CheckedOutSmartLayerPixels&) = delete;
+    CheckedOutSmartLayerPixels& operator=(
+        const CheckedOutSmartLayerPixels&) = delete;
+
+    ~CheckedOutSmartLayerPixels() noexcept {
+        if (checked_out_ && callbacks_) {
+            callbacks_->checkin_layer_pixels(effect_ref_, checkout_id_);
+        }
+    }
+
+    PF_Err Checkout(
+        PF_InData* in_data,
+        PF_SmartRenderExtra* extra,
+        A_long checkout_id) {
+        effect_ref_ = in_data->effect_ref;
+        callbacks_ = extra->cb;
+        checkout_id_ = checkout_id;
+        const PF_Err error = callbacks_->checkout_layer_pixels(
+            effect_ref_,
+            checkout_id_,
+            &world_);
+        checked_out_ = error == PF_Err_NONE;
+        return error;
+    }
+
+    const PF_LayerDef* World() const {
+        return world_;
+    }
+
+  private:
+    PF_ProgPtr effect_ref_{};
+    PF_SmartRenderCallbacks* callbacks_{};
+    A_long checkout_id_{};
+    PF_EffectWorld* world_{};
+    bool checked_out_{};
+};
+
+template <typename Pixel>
+PF_Err RenderSmartFrame(
+    const RenderFrameSnapshot& snapshot,
+    const PF_LayerDef& input,
+    const std::array<const PF_LayerDef*, kMaximumSurfaces>& source_worlds,
+    PF_LayerDef& output) {
+    if (!IsUsableTextureWorld(input) ||
+        !output.data ||
+        output.width <= 0 ||
+        output.height <= 0 ||
+        output.rowbytes == 0) {
+        return PF_Err_BAD_CALLBACK_PARAM;
+    }
+
+    CameraState camera = snapshot.camera;
+    camera.output_offset_x = -static_cast<double>(output.origin_x);
+    camera.output_offset_y = -static_cast<double>(output.origin_y);
+    LightingState lighting = snapshot.lighting;
+    lighting.camera_position = camera.position;
+
+    ClearWorld<Pixel>(output);
+    std::vector<float> depth_buffer(
+        static_cast<std::size_t>(output.width) *
+            static_cast<std::size_t>(output.height),
+        -std::numeric_limits<float>::infinity());
+    for (std::uint32_t index = 0;
+         index < snapshot.scene.surface_count;
+         ++index) {
+        const SurfaceData& surface = snapshot.scene.surfaces[index];
+        if (surface.enabled == 0) {
+            continue;
+        }
+        const std::uint32_t back_slot = surface.back_source_slot == 0
+                                            ? surface.source_slot
+                                            : surface.back_source_slot - 1;
+        const PF_LayerDef* front_world = source_worlds[surface.source_slot];
+        const PF_LayerDef* back_world = source_worlds[back_slot];
+        const PF_LayerDef& front_texture =
+            front_world && IsUsableTextureWorld(*front_world)
+                ? *front_world
+                : input;
+        const PF_LayerDef& back_texture =
+            back_world && IsUsableTextureWorld(*back_world)
+                ? *back_world
+                : input;
+        RasterizeSurface<Pixel>(
+            surface,
+            front_texture,
+            back_texture,
+            output,
+            depth_buffer,
+            snapshot.legacy_tessellation,
+            camera,
+            lighting,
+            snapshot.scale_x,
+            snapshot.scale_y,
+            snapshot.scale_z,
+            snapshot.wireframe);
+    }
+    return PF_Err_NONE;
+}
+
+}  // namespace
+
+PF_Err SmartPreRender(
+    PF_InData* in_data,
+    PF_OutData*,
+    PF_PreRenderExtra* extra) {
+    if (!in_data || !extra || !extra->input || !extra->output || !extra->cb) {
+        return PF_Err_BAD_CALLBACK_PARAM;
+    }
+
+    PF_RenderRequest texture_request = extra->input->output_request;
+    texture_request.rect = FullTextureRequestRect();
+    PF_CheckoutResult input_result{};
+    PF_Err error = extra->cb->checkout_layer(
+        in_data->effect_ref,
+        kParamInput,
+        kSmartInputCheckoutId,
+        &texture_request,
+        in_data->current_time,
+        in_data->time_step,
+        in_data->time_scale,
+        &input_result);
+    if (error != PF_Err_NONE) {
+        return error;
+    }
+
+    const A_long input_width = std::max<A_long>(
+        1,
+        input_result.max_result_rect.right -
+            input_result.max_result_rect.left);
+    const A_long input_height = std::max<A_long>(
+        1,
+        input_result.max_result_rect.bottom -
+            input_result.max_result_rect.top);
+    SmartParameterSet parameters;
+    error = CheckoutSmartRenderParameters(in_data, parameters);
+    if (error != PF_Err_NONE) {
+        return error;
+    }
+
+    auto snapshot = std::make_unique<RenderFrameSnapshot>(
+        BuildRenderFrameSnapshot(
+            in_data,
+            parameters.pointers.data(),
+            input_width,
+            input_height,
+            0.0,
+            0.0));
+    for (std::uint32_t slot = 0;
+         slot < static_cast<std::uint32_t>(snapshot->source_slots.size());
+         ++slot) {
+        if (!snapshot->source_slots[slot]) {
+            continue;
+        }
+        PF_CheckoutResult source_result{};
+        error = extra->cb->checkout_layer(
+            in_data->effect_ref,
+            kParamSurfaceSourceLayer1 + static_cast<PF_ParamIndex>(slot),
+            kSmartSourceCheckoutBase + static_cast<A_long>(slot),
+            &texture_request,
+            in_data->current_time,
+            in_data->time_step,
+            in_data->time_scale,
+            &source_result);
+        if (error != PF_Err_NONE) {
+            return error;
+        }
+    }
+
+    const OutputBounds bounds = ComputeOutputBounds(
+        parameters.pointers.data(),
+        input_width,
+        input_height,
+        snapshot->scene,
+        snapshot->camera,
+        snapshot->scale_x,
+        snapshot->scale_y,
+        snapshot->scale_z);
+    const PF_LRect maximum_rect{
+        bounds.minimum_x,
+        bounds.minimum_y,
+        bounds.maximum_x,
+        bounds.maximum_y};
+    extra->output->max_result_rect = maximum_rect;
+    extra->output->result_rect = IntersectRects(
+        maximum_rect,
+        extra->input->output_request.rect);
+    extra->output->pre_render_data = snapshot.release();
+    extra->output->delete_pre_render_data_func = DeleteSmartRenderSnapshot;
+    return PF_Err_NONE;
+}
+
+PF_Err SmartRender(
+    PF_InData* in_data,
+    PF_OutData* out_data,
+    PF_SmartRenderExtra* extra) {
+    if (!in_data || !out_data || !extra || !extra->input ||
+        !extra->cb || !extra->input->pre_render_data) {
+        return PF_Err_BAD_CALLBACK_PARAM;
+    }
+    const auto& snapshot = *static_cast<const RenderFrameSnapshot*>(
+        extra->input->pre_render_data);
+
+    CheckedOutSmartLayerPixels input_checkout;
+    PF_Err error = input_checkout.Checkout(
+        in_data,
+        extra,
+        kSmartInputCheckoutId);
+    if (error != PF_Err_NONE || !input_checkout.World()) {
+        return error != PF_Err_NONE ? error : PF_Err_BAD_CALLBACK_PARAM;
+    }
+
+    std::array<CheckedOutSmartLayerPixels, kMaximumSurfaces>
+        source_checkouts;
+    std::array<const PF_LayerDef*, kMaximumSurfaces> source_worlds{};
+    for (std::uint32_t slot = 0;
+         slot < static_cast<std::uint32_t>(snapshot.source_slots.size());
+         ++slot) {
+        if (!snapshot.source_slots[slot]) {
+            continue;
+        }
+        error = source_checkouts[slot].Checkout(
+            in_data,
+            extra,
+            kSmartSourceCheckoutBase + static_cast<A_long>(slot));
+        if (error != PF_Err_NONE) {
+            return error;
+        }
+        source_worlds[slot] = source_checkouts[slot].World();
+    }
+
+    PF_EffectWorld* output = nullptr;
+    error = extra->cb->checkout_output(in_data->effect_ref, &output);
+    if (error != PF_Err_NONE || !output) {
+        return error != PF_Err_NONE ? error : PF_Err_BAD_CALLBACK_PARAM;
+    }
+
+    AEFX_SuiteScoper<PF_WorldSuite2> world_suite(
+        in_data,
+        kPFWorldSuite,
+        kPFWorldSuiteVersion2,
+        out_data);
+    PF_PixelFormat format = PF_PixelFormat_INVALID;
+    error = world_suite->PF_GetPixelFormat(output, &format);
+    if (error != PF_Err_NONE) {
+        return error;
+    }
+    switch (format) {
+        case PF_PixelFormat_ARGB128:
+            return RenderSmartFrame<PF_PixelFloat>(
+                snapshot,
+                *input_checkout.World(),
+                source_worlds,
+                *output);
+        case PF_PixelFormat_ARGB64:
+            return RenderSmartFrame<PF_Pixel16>(
+                snapshot,
+                *input_checkout.World(),
+                source_worlds,
+                *output);
+        case PF_PixelFormat_ARGB32:
+            return RenderSmartFrame<PF_Pixel8>(
+                snapshot,
+                *input_checkout.World(),
+                source_worlds,
+                *output);
+        default:
+            return PF_Err_BAD_CALLBACK_PARAM;
+    }
 }
