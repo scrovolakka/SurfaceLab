@@ -23,22 +23,36 @@ SurfaceLab.h            public plug-in surface (EffectMain, param enums) — min
       └ SurfaceLabGeometry.h  AE-free: inline vector ops, EvaluatePatch /
                               ApplySurfaceDeform declarations    (host-independent)
           └ SurfaceLabInternal.h  AE-coupled: GlobalData, A_long constants,
-                                  PF_ParamIndex tables, param helpers, render types
+                                  PF_ParamIndex tables, param helpers, render types,
+                                  ResolveSceneForFrame / arbitrary-glue declarations
+              ├ SurfaceLabRender.h  AE-coupled: SurfaceEvaluationState, projection /
+              │                     camera / evaluation shared with the gizmo,
+              │                     FrameSetup + Render entry points
+              └ SurfaceLabUI.h      AE-coupled: Capture* bridges shared with
+                                    ResolveSceneForFrame, ParamsSetup /
+                                    UserChangedParamV15 / UpdateParameterUi /
+                                    HandleSurfaceGizmoEvent entry points
 ```
 
-`SurfaceLab.cpp` includes only `SurfaceLabInternal.h`, which re-exports the rest.
 Cross-unit functions get a declaration in the appropriate header and one
 definition in one `.cpp`; small pure helpers are `inline` in a header; the
-`Pixel`-templated render functions must stay in one TU with their callers.
+`Pixel`-templated render functions live in one TU with their callers
+(`SurfaceLabRender.cpp`).
 
-## Done (verified here)
+## Done (verified on macOS with the AE SDK)
 
 | Unit | Files | Verification |
 |------|-------|--------------|
 | Scene model + V1–V13 migration + validation | `SurfaceLabModel.{h,cpp}` | `ctest` — every version has a migration test |
 | Geometry + bicubic deformation | `SurfaceLabGeometry.{h,cpp}` | `ctest` — endpoint interpolation, identity, finiteness |
+| Rendering core (projection, rasterizers, AE camera/lights, FrameSetup, Render) | `SurfaceLabRender.{h,cpp}` | plug-in build (macOS + SDK) |
+| Parameter UI + gizmo (Capture*/Load* bridges, ParamsSetup, param events, gizmo) | `SurfaceLabUI.{h,cpp}` | plug-in build (macOS + SDK) |
 
-`SurfaceLab.cpp` is down from 8837 to ~6900 lines.
+`SurfaceLab.cpp` is down from 8837 to ~560 lines: `EffectMain` dispatch,
+`About`/`GlobalSetup`/`GlobalSetdown`, the arbitrary-data callbacks
+(`CreateSceneHandle` / `CopySceneHandle` / `HandleArbitrary`), and
+`ResolveSceneForFrame`. All moves were verbatim; only linkage changed
+(exported entry points left the anonymous namespaces).
 
 ## Build & test
 
@@ -58,43 +72,7 @@ cmake --build work/build/tests
 ctest --test-dir work/build/tests --output-on-failure
 ```
 
-## Remaining — AE-coupled, do on a Mac with the SDK
-
-Extract in this order, rebuilding after each move:
-
-### 1. Rendering core → `SurfaceLabRender.{h,cpp}`
-
-Move `ProjectVertex`, `Edge`, `MapImageCoordinates`, `ResolveBorderCoordinate`,
-the `SampleTexture` / `ApplyLighting` / `ApplyOpacity` / `ClearWorld` /
-`RasterizeTriangle` / `DrawLine` / `RasterizeSurface` templates,
-`BuildSurfaceEvaluationState`, `BuildCameraState`, `ResolveCompTime`,
-`ResolveAfterEffectsCamera`, `ReadLayerStream`, `ResolveAfterEffectsLights`,
-`IncludeProjectedVertex`, `AccumulateSurfaceBounds`, `LimitExpandedAxis`,
-`FrameSetup`, and `RenderSurface`.
-
-Gotchas:
-- The pixel-templated functions are used only render-side; keep them together.
-- **Move the `Render()` dispatcher too** so the `RenderSurface<PF_Pixel8/16>`
-  instantiations live in this TU; `EffectMain` then calls the non-template
-  `Render` / `FrameSetup` via a header declaration.
-- `RenderSurface` reaches `ResolveSceneForFrame` (scene resolution from params /
-  arbitrary data). Either declare it in a shared header (it stays with the
-  arbitrary/scene glue in `SurfaceLab.cpp`) or move that glue first.
-
-### 2. Custom UI + gizmo → `SurfaceLabUI.{h,cpp}`
-
-Move the `Capture*` / `Load*` parameter bridges, `ApplySizeAndPositionUi`,
-`IsSurfaceEditorParam`, `ParamsSetup`, `AddSurfaceAnimationBankParams`,
-`UserChangedParamV15`, `UpdateParameterUi`, all gizmo `Project*` / `Drag*`
-helpers, `DrawSurfaceGizmo`, and `HandleSurfaceGizmoEvent`.
-
-### 3. Leave `SurfaceLab.cpp` thin
-
-`EffectMain` dispatch, the arbitrary-data callbacks
-(`CreateSceneHandle` / `CopySceneHandle` / `HandleArbitrary` / scene resolution),
-and `PluginDataEntryFunction2`.
-
-## Follow-on refactors (once the split lands)
+## Follow-on refactors (the split has landed)
 
 Verifiable against the model tests:
 - Replace `PrimaryAnimationParam`'s switch with a `constexpr` table.
