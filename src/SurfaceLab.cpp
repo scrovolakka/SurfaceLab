@@ -484,7 +484,10 @@ PF_Err GlobalSetup(PF_InData* in_data, PF_OutData* out_data) {
         PF_OutFlag_DEEP_COLOR_AWARE | PF_OutFlag_I_EXPAND_BUFFER |
         PF_OutFlag_SEND_UPDATE_PARAMS_UI | PF_OutFlag_CUSTOM_UI;
     out_data->out_flags2 =
-        PF_OutFlag2_I_USE_3D_CAMERA | PF_OutFlag2_I_USE_3D_LIGHTS;
+        PF_OutFlag2_I_USE_3D_CAMERA |
+        PF_OutFlag2_I_USE_3D_LIGHTS |
+        PF_OutFlag2_SUPPORTS_SMART_RENDER |
+        PF_OutFlag2_FLOAT_COLOR_AWARE;
     return PF_Err_NONE;
 }
 
@@ -536,6 +539,16 @@ PF_Err EffectMain(
                 return FrameSetup(in_data, out_data, params);
             case PF_Cmd_RENDER:
                 return Render(in_data, params, output);
+            case PF_Cmd_SMART_PRE_RENDER:
+                return SmartPreRender(
+                    in_data,
+                    out_data,
+                    static_cast<PF_PreRenderExtra*>(extra));
+            case PF_Cmd_SMART_RENDER:
+                return SmartRender(
+                    in_data,
+                    out_data,
+                    static_cast<PF_SmartRenderExtra*>(extra));
             case PF_Cmd_USER_CHANGED_PARAM:
                 return UserChangedParamV15(
                     in_data,
