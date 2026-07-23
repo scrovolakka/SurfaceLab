@@ -786,9 +786,14 @@ SurfaceEvaluationState BuildSurfaceEvaluationState(
     SurfaceEvaluationState state;
     state.control_points =
         ToControlPoints(surface, render_scale_x, render_scale_y, render_scale_z);
+    // The legacy (transform_mode == 0) pivot is the effect-input centre in
+    // effect coordinates. camera.center_x/y is the PROJECTION centre, which
+    // Composition World mode moves to the comp centre -- using it here would
+    // shift the legacy pivot (and with it the rotation origin) by the host
+    // layer offset, rotating the render around a point outside the cage.
     state.coordinate_transform = BuildSurfaceCoordinateTransform(
         surface,
-        {camera.center_x, camera.center_y, 0.0},
+        {camera.input_center_x, camera.input_center_y, 0.0},
         {render_scale_x, render_scale_y, render_scale_z});
     const SurfaceCoordinateTransform& transform = state.coordinate_transform;
     state.rotation_x = transform.rotation_radians.x;
@@ -1774,6 +1779,11 @@ CameraState BuildResolvedCameraState(
         kCoordinateSpaceCompWorld) {
         ApplyCompWorldOutputTransform(in_data, scale_x, scale_y, camera);
     }
+    // Preserve the true effect-input centre after any comp-world override of
+    // center_x/center_y; effect-space consumers (the legacy surface pivot)
+    // must use this, never the projection centre.
+    camera.input_center_x = center_x;
+    camera.input_center_y = center_y;
     camera.scene_transform = BuildSceneCoordinateTransform(
         params,
         center_x,

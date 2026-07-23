@@ -246,6 +246,15 @@ struct CameraState {
     double focal_distance{};
     double center_x{};
     double center_y{};
+    // The effect-input centre, in the same downsampled coordinates as
+    // center_x/center_y but NEVER overridden: in Composition World mode
+    // ApplyCompWorldOutputTransform moves center_x/center_y to the comp
+    // centre for projection, which must not leak into effect-space uses
+    // like the legacy (transform_mode == 0) surface pivot -- that leak
+    // displaced the legacy surface's rotation origin by the host layer
+    // offset and read as a rotation around a point outside the cage.
+    double input_center_x{};
+    double input_center_y{};
     double output_offset_x{};
     double output_offset_y{};
     Affine2D comp_to_output{};
