@@ -246,6 +246,22 @@
             "Math.max(0.001,hi-lo);";
     }
 
+    // The surface Root null IS the pivot. This binds the plug-in's Custom
+    // Origin percentage so the plug-in origin lands exactly on the Root, for
+    // any Root position. Derivation: plug-in origin = Position + (pct/100 -
+    // 0.5)*Size, Position = child-bounds center, and we want origin == Root, so
+    // pct = 50 - 100*(childLocalBoundsCenter)/(childLocalExtent). It reads only
+    // the point Nulls' LOCAL positions -- no reference to the effect's own
+    // streams -- so there is no expression cycle, and it stays correct whether
+    // the Root is at an edge, the centre, or anywhere the user drags it.
+    function originPercentExpression(childNames, axis) {
+        return "var ps=" + childPositionsArray(childNames) + ";\n" +
+            "var lo=ps[0][" + axis + "],hi=lo;\n" +
+            "for(var i=1;i<ps.length;i++){var v=ps[i][" + axis + "];" +
+            "if(v<lo)lo=v;if(v>hi)hi=v;}\n" +
+            "50-100*((lo+hi)/2)/Math.max(0.001,hi-lo);";
+    }
+
     function positionExpression(rootName, childNames, scenePivot) {
         return rootPositionSetup(rootName, scenePivot) +
             "var ps=" + childPositionsArray(childNames) + ";\n" +
@@ -386,6 +402,8 @@
         controlledProperties.push(sizeXProperty);
         controlledProperties.push(sizeYProperty);
         controlledProperties.push(positionProperty);
+        controlledProperties.push(originXProperty);
+        controlledProperties.push(originYProperty);
         ensureNoExistingAutomation(controlledProperties);
         if (!sceneRoot) {
             ensureNoExistingAutomation(
@@ -454,13 +472,15 @@
         // registration keep a camera layer in the comp.
         setSetupValue(cameraSourceProperty, 2);
         setSetupValue(coordinateSpaceProperty, 2);
-        // Origin Mode is left exactly as the user set it. The Root null is
-        // placed on the origin that mode implies (originPoint below), and
-        // because the point Nulls are laid out relative to that origin, the
-        // plug-in's origin (Position +/- Size/2 for an edge mode) stays on the
-        // Root through rotation and scale -- no need to force Custom or drive
-        // the origin percentages. Changing Origin Mode moves the origin, so
-        // re-run this script after a mode change to reseat the rig.
+        // Make the Root the single source of truth for the pivot: switch to
+        // Custom origin, seed the percentages for the mode the user picked (so
+        // the initial placement matches), then let the expressions below keep
+        // the origin glued to the Root. This is what stops the null position
+        // and the plug-in origin from ever drifting apart, regardless of what
+        // the Rotation Origin mode was or later becomes.
+        setSetupValue(originModeProperty, 6);
+        setSetupValue(originXProperty, originPercentX);
+        setSetupValue(originYProperty, originPercentY);
 
         if (!sceneRoot) {
             var sceneRootName = uniqueLayerName(
@@ -563,6 +583,12 @@
         }
         setExpression(sizeXProperty, boundsExpression(childNames, 0));
         setExpression(sizeYProperty, boundsExpression(childNames, 1));
+        setExpression(
+            originXProperty,
+            originPercentExpression(childNames, 0));
+        setExpression(
+            originYProperty,
+            originPercentExpression(childNames, 1));
         setExpression(
             positionProperty,
             positionExpression(rootName, childNames, scenePivot));
