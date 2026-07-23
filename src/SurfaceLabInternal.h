@@ -72,6 +72,14 @@ constexpr std::array<PF_ParamIndex, 4> kTwistFalloffParams = {
     kParamSurfaceTwist3Falloff,
     kParamSurfaceTwist4Falloff};
 
+// A surface's stored division count of 0 means "follow the legacy
+// tessellation parameter". Shared by the UI bridges and the renderer.
+inline std::uint32_t ResolveDivisions(
+    std::uint32_t divisions,
+    std::uint32_t legacy_tessellation) {
+    return divisions == 0 ? legacy_tessellation : divisions;
+}
+
 template <std::size_t Size>
 bool ContainsParam(
     PF_ParamIndex index,
@@ -282,3 +290,13 @@ enum class TextureFace {
     Front,
     Back
 };
+
+// Resolves the scene to render for the current frame: the active arbitrary
+// scene when valid, otherwise the legacy per-parameter surface. Defined in
+// SurfaceLab.cpp next to the arbitrary-data glue; also called from the
+// rendering core (FrameSetup / RenderSurface).
+SceneData ResolveSceneForFrame(
+    PF_InData* in_data,
+    PF_ParamDef* params[],
+    A_long input_width,
+    A_long input_height);

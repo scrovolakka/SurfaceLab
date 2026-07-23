@@ -29,10 +29,12 @@ add_library(SurfaceLab MODULE
     src/SurfaceLab.cpp
     src/SurfaceLabModel.cpp
     src/SurfaceLabGeometry.cpp
+    src/SurfaceLabRender.cpp
     src/SurfaceLab.h
     src/SurfaceLabModel.h
     src/SurfaceLabGeometry.h
     src/SurfaceLabInternal.h
+    src/SurfaceLabRender.h
     "${AE_EXAMPLES_ROOT}/Util/AEFX_SuiteHelper.c"
     "${AE_EXAMPLES_ROOT}/Util/AEGP_SuiteHandler.cpp"
     "${AE_EXAMPLES_ROOT}/Util/MissingSuiteError.cpp")
