@@ -73,12 +73,18 @@ PF_Err About(PF_OutData* out_data) {
     std::snprintf(
         out_data->return_msg,
         sizeof(out_data->return_msg),
-        "SurfaceLab v1\r3D interpolating control-point lattice");
+        "SurfaceLab %s\r3D interpolating control-point lattice",
+        kSurfaceLabVersionString);
     return PF_Err_NONE;
 }
 
 PF_Err GlobalSetup(PF_InData* in_data, PF_OutData* out_data) {
-    out_data->my_version = PF_VERSION(1, 2, 0, PF_Stage_DEVELOP, 1);
+    out_data->my_version = PF_VERSION(
+        kSurfaceLabVersionMajor,
+        kSurfaceLabVersionMinor,
+        kSurfaceLabVersionPatch,
+        PF_Stage_DEVELOP,
+        1);
     out_data->out_flags =
         PF_OutFlag_DEEP_COLOR_AWARE |
         PF_OutFlag_CUSTOM_UI |
@@ -148,7 +154,14 @@ PF_Err CreateLatticeHandle(
              static_cast<std::uint32_t>(in_data ? in_data->current_time : 0))
          << 32U) |
         (static_cast<std::uint64_t>(surface) + 1U);
-    InitializeLattice(*lattice, 3, 3, width, height, id);
+    // ParamsSetup can report 0x0 layer size; never seed a collapsed lattice.
+    InitializeLattice(
+        *lattice,
+        3,
+        3,
+        std::max(1.0, width),
+        std::max(1.0, height),
+        id);
     PF_UNLOCK_HANDLE(*destination);
     return PF_Err_NONE;
 }

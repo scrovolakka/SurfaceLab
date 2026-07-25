@@ -3,8 +3,9 @@
 SurfaceLab is an After Effects native effect for placing and deforming flat
 sources in 3D with an interpolating control-point lattice.
 
-Current version: **1.2.0** (v1 architecture).
+Current version: **1.2.1** (v1 architecture).
 Match name: `XPK SurfaceLab` · Effect menu: **SurfaceLab > SurfaceLab**.
+The installed build is shown in Effect Controls under **About → SurfaceLab Version**.
 
 v1 is a clean break from the 0.x prototype. Older projects are not migrated.
 

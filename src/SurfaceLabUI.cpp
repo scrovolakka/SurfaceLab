@@ -161,15 +161,21 @@ struct GizmoSelectionState {
     std::vector<LatticePointRef> points{};
     bool dragging{};
     bool drag_moved{};
+    bool has_snapshot{};
     bool marquee_active{};
     bool marquee_additive{};
     Point2 marquee_start{};
     Point2 marquee_end{};
     LatticePointRef primary{};
+    Point2 mouse_down{};
     Point2 last_mouse{};
     // Translate gizmo: axis drag moves the whole selection in lattice space.
     TranslateAxis axis_drag{TranslateAxis::None};
     Point3 selection_centroid{};
+    Point3 centroid_down{};
+    // Absolute drag base: every DRAG frame restores this then applies total
+    // delta from mouse_down so bad Jacobians cannot compound.
+    LatticeData drag_snapshot{};
 };
 
 GizmoSelectionState g_selection;
@@ -196,11 +202,14 @@ void ClearSelection() {
     g_selection.points.clear();
     g_selection.dragging = false;
     g_selection.drag_moved = false;
+    g_selection.has_snapshot = false;
     g_selection.marquee_active = false;
     g_selection.marquee_additive = false;
     g_selection.primary = {};
     g_selection.axis_drag = TranslateAxis::None;
     g_selection.selection_centroid = {};
+    g_selection.centroid_down = {};
+    g_selection.drag_snapshot = {};
 }
 
 // AE only sends PF_Event_DRAG after DO_CLICK if send_drag is set. Without
@@ -212,6 +221,41 @@ void BeginCompDrag(PF_EventExtra* event_extra) {
     g_selection.drag_moved = false;
 }
 
+bool CaptureDragSnapshot(
+    PF_InData* in_data,
+    PF_ParamDef* params[],
+    std::uint32_t surface,
+    Point2 mouse_down,
+    Point3 centroid_down) {
+    if (!in_data || !params || surface >= kSurfaceCount) {
+        g_selection.has_snapshot = false;
+        return false;
+    }
+    PF_Handle handle =
+        params[SurfaceLatticeParam(surface)]->u.arb_d.value;
+    if (!handle) {
+        g_selection.has_snapshot = false;
+        return false;
+    }
+    const auto* lattice =
+        static_cast<const LatticeData*>(PF_LOCK_HANDLE(handle));
+    if (!lattice || !IsValidLattice(*lattice)) {
+        if (lattice) {
+            PF_UNLOCK_HANDLE(handle);
+        }
+        g_selection.has_snapshot = false;
+        return false;
+    }
+    g_selection.drag_snapshot = *lattice;
+    PF_UNLOCK_HANDLE(handle);
+    g_selection.has_snapshot = true;
+    g_selection.mouse_down = mouse_down;
+    g_selection.last_mouse = mouse_down;
+    g_selection.centroid_down = centroid_down;
+    g_selection.selection_centroid = centroid_down;
+    return true;
+}
+
 void EndCompDragIfFinished(PF_EventExtra* event_extra) {
     if (!event_extra || !event_extra->u.do_click.last_time) {
         return;
@@ -219,6 +263,7 @@ void EndCompDragIfFinished(PF_EventExtra* event_extra) {
     event_extra->u.do_click.send_drag = FALSE;
     g_selection.dragging = false;
     g_selection.drag_moved = false;
+    g_selection.has_snapshot = false;
     g_selection.marquee_active = false;
     g_selection.axis_drag = TranslateAxis::None;
 }
@@ -1280,6 +1325,27 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
     AEFX_CLR_STRUCT(def);
     PF_END_TOPIC(kDiskRigBridgeEnd);
 
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_TOPIC("About", kDiskAboutStart);
+    AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_SUPERVISE;
+    {
+        char version_button[32]{};
+        std::snprintf(
+            version_button,
+            sizeof(version_button),
+            "v%s",
+            kSurfaceLabVersionString);
+        PF_ADD_BUTTON(
+            "SurfaceLab Version",
+            version_button,
+            0,
+            PF_ParamFlag_SUPERVISE,
+            kDiskAboutVersion);
+    }
+    AEFX_CLR_STRUCT(def);
+    PF_END_TOPIC(kDiskAboutEnd);
+
     PF_CustomUIInfo custom_ui;
     AEFX_CLR_STRUCT(custom_ui);
     custom_ui.events = PF_CustomEFlag_COMP;
@@ -1302,6 +1368,18 @@ PF_Err UserChangedParam(
     const PF_UserChangedParamExtra* extra) {
     if (!extra) {
         return PF_Err_BAD_CALLBACK_PARAM;
+    }
+    if (extra->param_index == kParamAboutVersion) {
+        if (out_data) {
+            std::snprintf(
+                out_data->return_msg,
+                sizeof(out_data->return_msg),
+                "SurfaceLab %s\n3D interpolating control-point lattice\n"
+                "Effect UI and Comp gizmo build identity.",
+                kSurfaceLabVersionString);
+            out_data->out_flags |= PF_OutFlag_DISPLAY_ERROR_MESSAGE;
+        }
+        return PF_Err_NONE;
     }
     if (extra->param_index == kParamRigSurface ||
         extra->param_index == kParamRigRow) {
@@ -1673,6 +1751,7 @@ PF_Err HandleSurfaceGizmoEvent(
              PF_Mod_CMD_CTRL_KEY) != 0;
         g_selection.dragging = false;
         g_selection.drag_moved = false;
+        g_selection.has_snapshot = false;
         g_selection.marquee_active = false;
         g_selection.axis_drag = TranslateAxis::None;
 
@@ -1711,10 +1790,18 @@ PF_Err HandleSurfaceGizmoEvent(
                 mouse);
             if (axis != TranslateAxis::None) {
                 g_selection.axis_drag = axis;
-                g_selection.selection_centroid = centroid;
                 g_selection.dragging = true;
-                g_selection.last_mouse = mouse;
-                BeginCompDrag(event_extra);
+                if (CaptureDragSnapshot(
+                        in_data,
+                        params,
+                        g_selection.points.front().surface,
+                        mouse,
+                        centroid)) {
+                    BeginCompDrag(event_extra);
+                } else {
+                    g_selection.dragging = false;
+                    g_selection.axis_drag = TranslateAxis::None;
+                }
                 event_extra->evt_out_flags =
                     static_cast<PF_EventOutFlags>(
                         PF_EO_HANDLED_EVENT | PF_EO_ALWAYS_UPDATE);
@@ -1784,9 +1871,17 @@ PF_Err HandleSurfaceGizmoEvent(
                 g_selection.primary = point_hit;
             }
             if (!g_selection.points.empty()) {
-                g_selection.dragging = true;
-                g_selection.last_mouse = mouse;
-                BeginCompDrag(event_extra);
+                Point3 point_centroid{};
+                ComputeSelectionCentroid(scene, point_centroid);
+                g_selection.dragging = CaptureDragSnapshot(
+                    in_data,
+                    params,
+                    g_selection.primary.surface,
+                    mouse,
+                    point_centroid);
+                if (g_selection.dragging) {
+                    BeginCompDrag(event_extra);
+                }
                 event_extra->evt_out_flags =
                     static_cast<PF_EventOutFlags>(
                         PF_EO_HANDLED_EVENT | PF_EO_ALWAYS_UPDATE);
@@ -1816,9 +1911,17 @@ PF_Err HandleSurfaceGizmoEvent(
                 } else {
                     SetSelectionPoints(line_points);
                 }
-                g_selection.dragging = true;
-                g_selection.last_mouse = mouse;
-                BeginCompDrag(event_extra);
+                Point3 line_centroid{};
+                ComputeSelectionCentroid(scene, line_centroid);
+                g_selection.dragging = CaptureDragSnapshot(
+                    in_data,
+                    params,
+                    g_selection.primary.surface,
+                    mouse,
+                    line_centroid);
+                if (g_selection.dragging) {
+                    BeginCompDrag(event_extra);
+                }
                 event_extra->evt_out_flags =
                     static_cast<PF_EventOutFlags>(
                         PF_EO_HANDLED_EVENT | PF_EO_ALWAYS_UPDATE);
@@ -1859,28 +1962,26 @@ PF_Err HandleSurfaceGizmoEvent(
     }
 
     if (!g_selection.dragging ||
+        !g_selection.has_snapshot ||
         g_selection.points.empty() ||
         g_selection.primary.surface >= scene.surface_count) {
         EndCompDragIfFinished(event_extra);
         return PF_Err_NONE;
     }
 
-    const double screen_x = mouse.x - g_selection.last_mouse.x;
-    const double screen_y = mouse.y - g_selection.last_mouse.y;
+    // Total motion from the original mouse-down, never cumulative per-frame.
+    const double screen_x = mouse.x - g_selection.mouse_down.x;
+    const double screen_y = mouse.y - g_selection.mouse_down.y;
     const double screen_distance = std::sqrt(
         screen_x * screen_x + screen_y * screen_y);
-    // Ignore sub-pixel noise and one-frame coordinate-space teleports that
-    // AE can emit on the first drag sample after DO_CLICK.
-    if (screen_distance < 0.75 || screen_distance > 120.0) {
-        if (screen_distance > 120.0) {
-            g_selection.last_mouse = mouse;
-        }
+    if (screen_distance < 0.75) {
         EndCompDragIfFinished(event_extra);
         event_extra->evt_out_flags = static_cast<PF_EventOutFlags>(
             PF_EO_HANDLED_EVENT | PF_EO_ALWAYS_UPDATE);
         return PF_Err_NONE;
     }
-    if (event_extra->u.do_click.last_time && !g_selection.drag_moved) {
+    if (event_extra->u.do_click.last_time && !g_selection.drag_moved &&
+        screen_distance < 2.0) {
         EndCompDragIfFinished(event_extra);
         return PF_Err_NONE;
     }
@@ -1889,6 +1990,14 @@ PF_Err HandleSurfaceGizmoEvent(
     float apply_x = 0.0F;
     float apply_y = 0.0F;
     float apply_z = 0.0F;
+
+    // Evaluate Jacobian against the pre-drag snapshot so the mapping is stable.
+    SurfaceData surface = scene.surfaces[g_selection.primary.surface];
+    surface.lattice = g_selection.drag_snapshot;
+    if (!IsValidLattice(surface.lattice)) {
+        EndCompDragIfFinished(event_extra);
+        return PF_Err_NONE;
+    }
 
     if (g_selection.axis_drag != TranslateAxis::None) {
         Point2 origin;
@@ -1899,7 +2008,7 @@ PF_Err HandleSurfaceGizmoEvent(
                 event_extra,
                 scene,
                 camera,
-                g_selection.selection_centroid,
+                g_selection.centroid_down,
                 g_selection.axis_drag,
                 origin,
                 tip,
@@ -1918,21 +2027,22 @@ PF_Err HandleSurfaceGizmoEvent(
             (dir_length * pixels_per_unit);
         const Point3 unit = AxisUnit(g_selection.axis_drag);
         apply_x = static_cast<float>(
-            std::clamp(unit.x * axis_delta, -80.0, 80.0));
+            std::clamp(unit.x * axis_delta, -4000.0, 4000.0));
         apply_y = static_cast<float>(
-            std::clamp(unit.y * axis_delta, -80.0, 80.0));
+            std::clamp(unit.y * axis_delta, -4000.0, 4000.0));
         apply_z = static_cast<float>(
-            std::clamp(unit.z * axis_delta, -80.0, 80.0));
-        g_selection.selection_centroid.x += apply_x;
-        g_selection.selection_centroid.y += apply_y;
-        g_selection.selection_centroid.z += apply_z;
+            std::clamp(unit.z * axis_delta, -4000.0, 4000.0));
+        g_selection.selection_centroid = {
+            g_selection.centroid_down.x + apply_x,
+            g_selection.centroid_down.y + apply_y,
+            g_selection.centroid_down.z + apply_z};
     } else {
-        SurfaceData surface = scene.surfaces[g_selection.primary.surface];
         const std::size_t primary_index = LatticePointIndex(
             surface.lattice.divisions_x,
             g_selection.primary.row,
             g_selection.primary.column);
-        if (null_overrides.IsControlled(
+        if (primary_index >= surface.lattice.point_count ||
+            null_overrides.IsControlled(
                 g_selection.primary.surface,
                 primary_index)) {
             ClearSelection();
@@ -2023,11 +2133,11 @@ PF_Err HandleSurfaceGizmoEvent(
                                    : (jxx * screen_y -
                                       jyx * screen_x) / determinant;
         apply_x = static_cast<float>(
-            std::clamp(delta_x, -80.0, 80.0));
+            std::clamp(delta_x, -4000.0, 4000.0));
         apply_y = static_cast<float>(
-            std::clamp(delta_y, -80.0, 80.0));
+            std::clamp(delta_y, -4000.0, 4000.0));
         apply_z = static_cast<float>(
-            std::clamp(delta_z, -80.0, 80.0));
+            std::clamp(delta_z, -4000.0, 4000.0));
     }
 
     PF_Handle handle =
@@ -2035,9 +2145,14 @@ PF_Err HandleSurfaceGizmoEvent(
             ->u.arb_d.value;
     auto* lattice =
         static_cast<LatticeData*>(PF_LOCK_HANDLE(handle));
-    if (!lattice) {
+    if (!lattice || !IsValidLattice(g_selection.drag_snapshot)) {
+        if (lattice) {
+            PF_UNLOCK_HANDLE(handle);
+        }
         return PF_Err_NONE;
     }
+    // Restore pre-drag lattice, then apply the total delta once.
+    *lattice = g_selection.drag_snapshot;
     for (const LatticePointRef& ref : g_selection.points) {
         if (ref.surface != g_selection.primary.surface) {
             continue;
@@ -2050,9 +2165,12 @@ PF_Err HandleSurfaceGizmoEvent(
             null_overrides.IsControlled(ref.surface, point_index)) {
             continue;
         }
-        lattice->points[point_index].x += apply_x;
-        lattice->points[point_index].y += apply_y;
-        lattice->points[point_index].z += apply_z;
+        lattice->points[point_index].x =
+            g_selection.drag_snapshot.points[point_index].x + apply_x;
+        lattice->points[point_index].y =
+            g_selection.drag_snapshot.points[point_index].y + apply_y;
+        lattice->points[point_index].z =
+            g_selection.drag_snapshot.points[point_index].z + apply_z;
     }
     PF_UNLOCK_HANDLE(handle);
     params[SurfaceLatticeParam(g_selection.primary.surface)]
