@@ -802,17 +802,21 @@ SurfaceEvaluationState BuildSurfaceEvaluationState(
                 state.root_pre_scene_transform);
     }
     const SurfaceCoordinateTransform& transform = state.coordinate_transform;
-    // Fixed reference cage centre = surface Position (scaled into the same
-    // space as the render-scaled lattice). Using the live point-cloud mean
-    // made a single large lattice write look like every control point was
-    // sucked into the pivot when the bounds recentred.
+    // Fixed reference cage centre = AE input/comp centre (scaled). Do not use
+    // Surface Position (that made point - Position + Position cancel Position
+    // motion) or the live point-cloud mean (that sucked points into the pivot
+    // after a large lattice write). Mapping places the fixed centre onto the
+    // surface pivot so Position still translates the mesh.
     const Point3 lattice_center{
-        transform.pivot.x * render_scale_x,
-        transform.pivot.y * render_scale_y,
-        transform.pivot.z * render_scale_z};
+        camera.input_center_x * render_scale_x,
+        camera.input_center_y * render_scale_y,
+        0.0};
     if (std::isfinite(lattice_center.x) &&
         std::isfinite(lattice_center.y) &&
-        std::isfinite(lattice_center.z)) {
+        std::isfinite(lattice_center.z) &&
+        std::isfinite(transform.pivot.x) &&
+        std::isfinite(transform.pivot.y) &&
+        std::isfinite(transform.pivot.z)) {
         for (std::size_t index = 0; index < state.lattice.point_count;
              ++index) {
             StoredPoint3& point = state.lattice.points[index];

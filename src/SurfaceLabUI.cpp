@@ -187,6 +187,8 @@ constexpr double kTranslateAxisPixels = 56.0;
 constexpr double kTranslateAxisHitPixels = 10.0;
 // Reject axes that project to nearly a point (depth-parallel / edge-on).
 constexpr double kMinAxisPixelsPerUnit = 0.25;
+// |det(J)| / (|col0|*|col1|) = |sin theta|; reject near-parallel cage axes.
+constexpr double kMinJacobianSinAngle = 0.08;
 // Ignore one-frame pointer teleports mid-drag (comp/frame space glitches).
 constexpr double kMaxDragStepPixels = 64.0;
 // Hard cap on total cage-space write from a single gesture.
@@ -2010,11 +2012,15 @@ PF_Err HandleSurfaceGizmoEvent(
         return PF_Err_NONE;
     }
 
-    // 2) Reject mid-drag teleports; keep last good sample.
+    // 2) Reject mid-drag teleports. last_mouse alone is not enough: absolute
+    // deltas use mouse_down, so the origin must jump by the same step or the
+    // next small move still looks like a multi-hundred-pixel drag.
     const double step_x = mouse.x - g_selection.last_mouse.x;
     const double step_y = mouse.y - g_selection.last_mouse.y;
     const double step = std::sqrt(step_x * step_x + step_y * step_y);
     if (step > kMaxDragStepPixels) {
+        g_selection.mouse_down.x += step_x;
+        g_selection.mouse_down.y += step_y;
         g_selection.last_mouse = mouse;
         event_extra->evt_out_flags = static_cast<PF_EventOutFlags>(
             PF_EO_HANDLED_EVENT | PF_EO_ALWAYS_UPDATE);
@@ -2148,17 +2154,24 @@ PF_Err HandleSurfaceGizmoEvent(
         const double jyx = projected_x.y - origin.y;
         const double jxy = projected_y.x - origin.x;
         const double jyy = projected_y.y - origin.y;
-        // Reject shallow screen Jacobians (near-zero projected cage axes).
         const double jx_len = std::sqrt(jxx * jxx + jyx * jyx);
         const double jy_len = std::sqrt(jxy * jxy + jyy * jyy);
+        const double determinant = jxx * jyy - jxy * jyx;
         const bool depth_drag =
             (event_extra->u.do_click.modifiers &
              PF_Mod_OPT_ALT_KEY) != 0;
-        if (!depth_drag &&
-            (jx_len < kMinAxisPixelsPerUnit ||
-             jy_len < kMinAxisPixelsPerUnit)) {
-            g_selection.last_mouse = mouse;
-            return PF_Err_NONE;
+        // Reject short columns and near-parallel columns. Column lengths alone
+        // miss the case where both axes project long but almost collinear;
+        // |det| / (|c0|*|c1|) = |sin theta| is the normalised area test.
+        if (!depth_drag) {
+            const double column_area = jx_len * jy_len;
+            if (jx_len < kMinAxisPixelsPerUnit ||
+                jy_len < kMinAxisPixelsPerUnit ||
+                column_area <= 1.0e-12 ||
+                std::abs(determinant) / column_area < kMinJacobianSinAngle) {
+                g_selection.last_mouse = mouse;
+                return PF_Err_NONE;
+            }
         }
         double delta_z = 0.0;
         if (depth_drag) {
@@ -2186,10 +2199,6 @@ PF_Err HandleSurfaceGizmoEvent(
                 delta_z = -screen_y;
             }
         }
-        const double determinant = jxx * jyy - jxy * jyx;
-        if (!depth_drag && std::abs(determinant) <= 1.0e-8) {
-            return PF_Err_NONE;
-        }
         const double delta_x = depth_drag
                                    ? 0.0
                                    : (screen_x * jyy -
@@ -2198,12 +2207,18 @@ PF_Err HandleSurfaceGizmoEvent(
                                    ? 0.0
                                    : (jxx * screen_y -
                                       jyx * screen_x) / determinant;
-        apply_x = static_cast<float>(
-            std::clamp(delta_x, -kMaxCageDelta, kMaxCageDelta));
-        apply_y = static_cast<float>(
-            std::clamp(delta_y, -kMaxCageDelta, kMaxCageDelta));
-        apply_z = static_cast<float>(
-            std::clamp(delta_z, -kMaxCageDelta, kMaxCageDelta));
+        // Ill-conditioned inverses still spike; refuse rather than clamp-write.
+        if (!std::isfinite(delta_x) || !std::isfinite(delta_y) ||
+            !std::isfinite(delta_z) ||
+            std::abs(delta_x) > kMaxCageDelta ||
+            std::abs(delta_y) > kMaxCageDelta ||
+            std::abs(delta_z) > kMaxCageDelta) {
+            g_selection.last_mouse = mouse;
+            return PF_Err_NONE;
+        }
+        apply_x = static_cast<float>(delta_x);
+        apply_y = static_cast<float>(delta_y);
+        apply_z = static_cast<float>(delta_z);
     }
 
     PF_Handle handle =
