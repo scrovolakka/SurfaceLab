@@ -3,7 +3,7 @@
 SurfaceLab is an After Effects native effect for placing and deforming flat
 sources in 3D with an interpolating control-point lattice.
 
-Current version: **1.3.0** (v1 architecture).
+Current version: **1.3.1** (v1 architecture).
 Match name: `XPK SurfaceLab` · Effect menu: **SurfaceLab > SurfaceLab**.
 The installed build is shown in Effect Controls under **About → SurfaceLab Version**.
 
@@ -56,7 +56,9 @@ to issue 3D Null point controllers for a surface.
   correct bilinear sampling, per-pixel depth, and **Render View** modes:
   Finish, Depth, UV, Normal.
 - Projection uses AE’s active camera layer, or AE’s implicit default camera
-  when none exists. Lighting reads composition lights (up to 8).
+  when none exists. Lighting reads composition lights (up to 8). A light with
+  **Casts Shadows** enabled produces hard self-shadows and shadows between
+  SurfaceLab surfaces; AE Shadow Darkness is respected.
 - Motion blur samples lattice parameters, marker-linked Nulls, camera, lights,
   and sources at AE shutter subframes (capped at 32 samples).
 - Output is always clipped to the 2D host layer rectangle.

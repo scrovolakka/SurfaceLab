@@ -76,6 +76,9 @@ struct RenderLight {
     double intensity{1.0};
     double cone_angle{90.0};
     double cone_feather{};
+    double shadow_darkness{1.0};
+    double shadow_diffusion{};
+    bool casts_shadows{};
 };
 
 struct LightingState {

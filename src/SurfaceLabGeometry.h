@@ -26,6 +26,25 @@ inline Point3 Normalize(Point3 vector) {
         vector.z / length};
 }
 
+// Host-independent intersection helpers used by the CPU shadow accelerator.
+bool RayIntersectsTriangle(
+    Point3 origin,
+    Point3 direction,
+    Point3 a,
+    Point3 b,
+    Point3 c,
+    double minimum_distance,
+    double maximum_distance,
+    double* hit_distance = nullptr);
+
+bool RayIntersectsBounds(
+    Point3 origin,
+    Point3 direction,
+    Point3 minimum,
+    Point3 maximum,
+    double minimum_distance,
+    double maximum_distance);
+
 struct Affine2D {
     double xx{1.0};
     double xy{};

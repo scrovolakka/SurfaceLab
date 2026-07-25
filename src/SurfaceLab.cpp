@@ -505,12 +505,14 @@ SceneData ResolveSceneForFrame(
         surface.divisions_x = surface.lattice.divisions_x;
         surface.divisions_y = surface.lattice.divisions_y;
         UpdateDerivedTransform(surface);
-        surface.position_x = static_cast<float>(
-            initialize_from_input ? input_width * 0.5 : position.x_value);
-        surface.position_y = static_cast<float>(
-            initialize_from_input ? input_height * 0.5 : position.y_value);
-        surface.position_z = static_cast<float>(
-            initialize_from_input ? 0.0 : position.z_value);
+        // AE has already resolved the Point3D default percentages into layer
+        // pixels by render time. Preserve that authored value even while the
+        // arbitrary lattice is receiving its one-time input-sized fallback;
+        // otherwise script-created effects lose their Position (especially Z)
+        // until UPDATE_PARAMS_UI happens to run.
+        surface.position_x = static_cast<float>(position.x_value);
+        surface.position_y = static_cast<float>(position.y_value);
+        surface.position_z = static_cast<float>(position.z_value);
     }
     return scene;
 }

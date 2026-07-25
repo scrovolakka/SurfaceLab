@@ -67,6 +67,54 @@ void TestMaterialValidation() {
     CHECK(!IsValidScene(scene));
 }
 
+void TestShadowRayIntersections() {
+    const Point3 triangle_a{-1.0, -1.0, 5.0};
+    const Point3 triangle_b{1.0, -1.0, 5.0};
+    const Point3 triangle_c{0.0, 1.0, 5.0};
+    double distance{};
+    CHECK(RayIntersectsTriangle(
+        {0.0, 0.0, 0.0},
+        {0.0, 0.0, 1.0},
+        triangle_a,
+        triangle_b,
+        triangle_c,
+        0.01,
+        10.0,
+        &distance));
+    CHECK(Near(distance, 5.0));
+    CHECK(!RayIntersectsTriangle(
+        {2.0, 0.0, 0.0},
+        {0.0, 0.0, 1.0},
+        triangle_a,
+        triangle_b,
+        triangle_c,
+        0.01,
+        10.0));
+    CHECK(!RayIntersectsTriangle(
+        {0.0, 0.0, 0.0},
+        {0.0, 0.0, 1.0},
+        triangle_a,
+        triangle_b,
+        triangle_c,
+        5.1,
+        10.0));
+
+    CHECK(RayIntersectsBounds(
+        {0.0, 0.0, 0.0},
+        {0.0, 0.0, 1.0},
+        {-1.0, -1.0, 4.0},
+        {1.0, 1.0, 6.0},
+        0.01,
+        10.0));
+    CHECK(!RayIntersectsBounds(
+        {2.0, 0.0, 0.0},
+        {0.0, 0.0, 1.0},
+        {-1.0, -1.0, 4.0},
+        {1.0, 1.0, 6.0},
+        0.01,
+        10.0));
+}
+
 void TestDeferredInputSizedInitialization() {
     LatticeData deferred{};
     InitializeLattice(deferred, 3, 3, 0.0, 0.0, 10);
@@ -558,6 +606,7 @@ void TestSurfaceRollIdentityAndCylinder() {
 int main() {
     TestInitialization();
     TestMaterialValidation();
+    TestShadowRayIntersections();
     TestDeferredInputSizedInitialization();
     TestFixedCageCenterUsesRenderSpaceOnce();
     TestEveryControlPointInterpolates();

@@ -235,6 +235,149 @@ Point3 DirectionToCameraSpace(
         camera.rotation_z));
 }
 
+struct ShadowBounds {
+    Point3 minimum{
+        std::numeric_limits<double>::infinity(),
+        std::numeric_limits<double>::infinity(),
+        std::numeric_limits<double>::infinity()};
+    Point3 maximum{
+        -std::numeric_limits<double>::infinity(),
+        -std::numeric_limits<double>::infinity(),
+        -std::numeric_limits<double>::infinity()};
+
+    void Expand(const Point3& point) {
+        minimum.x = std::min(minimum.x, point.x);
+        minimum.y = std::min(minimum.y, point.y);
+        minimum.z = std::min(minimum.z, point.z);
+        maximum.x = std::max(maximum.x, point.x);
+        maximum.y = std::max(maximum.y, point.y);
+        maximum.z = std::max(maximum.z, point.z);
+    }
+
+    void Expand(const ShadowBounds& bounds) {
+        Expand(bounds.minimum);
+        Expand(bounds.maximum);
+    }
+};
+
+struct ShadowTriangle {
+    Point3 a{};
+    Point3 b{};
+    Point3 c{};
+    Point3 centroid{};
+    ShadowBounds bounds{};
+};
+
+struct ShadowBvhNode {
+    ShadowBounds bounds{};
+    std::uint32_t first{};
+    std::uint32_t count{};
+    std::uint32_t left{};
+    std::uint32_t right{};
+};
+
+struct ShadowScene {
+    std::vector<ShadowTriangle> triangles;
+    std::vector<ShadowBvhNode> nodes;
+
+    bool Occluded(
+        const Point3& origin,
+        const Point3& direction,
+        double maximum_distance) const {
+        if (nodes.empty() ||
+            !IsFinitePoint3(origin) ||
+            !IsFinitePoint3(direction) ||
+            (!std::isfinite(maximum_distance) &&
+             maximum_distance !=
+                 std::numeric_limits<double>::infinity())) {
+            return false;
+        }
+        constexpr double kMinimumDistance = 1.0e-5;
+        std::array<std::uint32_t, 128> pending{};
+        std::size_t pending_count = 1;
+        pending[0] = 0;
+        while (pending_count != 0) {
+            const std::uint32_t node_index =
+                pending[--pending_count];
+            if (node_index >= nodes.size()) {
+                continue;
+            }
+            const ShadowBvhNode& node = nodes[node_index];
+            if (!RayIntersectsBounds(
+                    origin,
+                    direction,
+                    node.bounds.minimum,
+                    node.bounds.maximum,
+                    kMinimumDistance,
+                    maximum_distance)) {
+                continue;
+            }
+            if (node.count != 0) {
+                const std::uint32_t end =
+                    std::min<std::uint32_t>(
+                        node.first + node.count,
+                        static_cast<std::uint32_t>(triangles.size()));
+                for (std::uint32_t index = node.first;
+                     index < end;
+                     ++index) {
+                    const ShadowTriangle& triangle = triangles[index];
+                    if (RayIntersectsTriangle(
+                            origin,
+                            direction,
+                            triangle.a,
+                            triangle.b,
+                            triangle.c,
+                            kMinimumDistance,
+                            maximum_distance)) {
+                        return true;
+                    }
+                }
+            } else {
+                if (pending_count + 2 <= pending.size()) {
+                    pending[pending_count++] = node.left;
+                    pending[pending_count++] = node.right;
+                }
+            }
+        }
+        return false;
+    }
+};
+
+double ShadowVisibility(
+    const RenderLight& light,
+    const Point3& normal,
+    const Point3& world_position,
+    const Point3& light_direction,
+    double light_distance,
+    const ShadowScene* shadow_scene) {
+    if (!light.casts_shadows ||
+        !shadow_scene ||
+        shadow_scene->nodes.empty()) {
+        return 1.0;
+    }
+    const double normal_alignment =
+        std::clamp(Dot(normal, light_direction), 0.0, 1.0);
+    const double bias = 0.35 + (1.0 - normal_alignment) * 0.65;
+    const Point3 origin{
+        world_position.x + normal.x * bias +
+            light_direction.x * 1.0e-4,
+        world_position.y + normal.y * bias +
+            light_direction.y * 1.0e-4,
+        world_position.z + normal.z * bias +
+            light_direction.z * 1.0e-4};
+    const double maximum_distance =
+        std::isfinite(light_distance)
+            ? std::max(1.0e-5, light_distance - bias)
+            : std::numeric_limits<double>::infinity();
+    if (!shadow_scene->Occluded(
+            origin,
+            light_direction,
+            maximum_distance)) {
+        return 1.0;
+    }
+    return 1.0 - std::clamp(light.shadow_darkness, 0.0, 1.0);
+}
+
 template <typename Pixel>
 Pixel ApplyOpacity(Pixel pixel, float opacity_percent) {
     const double multiplier = std::clamp(
@@ -262,7 +405,8 @@ Pixel ApplyLighting(
     const SurfaceData& surface,
     Point3 normal,
     Point3 world_position,
-    const LightingState& lighting) {
+    const LightingState& lighting,
+    const ShadowScene* shadow_scene) {
     if (!lighting.enabled) {
         return pixel;
     }
@@ -276,12 +420,16 @@ Pixel ApplyLighting(
     for (std::size_t index = 0; index < lighting.light_count; ++index) {
         const RenderLight& light = lighting.lights[index];
         Point3 light_direction = light.direction;
+        double light_distance =
+            std::numeric_limits<double>::infinity();
         double spot_factor = 1.0;
         if (light.type != RenderLightType::Directional) {
-            light_direction = Normalize({
+            const Point3 to_light{
                 light.position.x - world_position.x,
                 light.position.y - world_position.y,
-                light.position.z - world_position.z});
+                light.position.z - world_position.z};
+            light_distance = std::sqrt(Dot(to_light, to_light));
+            light_direction = Normalize(to_light);
             if (light.type == RenderLightType::Spot) {
                 const Point3 from_light{-light_direction.x,
                                         -light_direction.y,
@@ -317,6 +465,16 @@ Pixel ApplyLighting(
         if (diffuse_term <= 0.0) {
             continue;
         }
+        const double shadow_visibility = ShadowVisibility(
+            light,
+            normal,
+            world_position,
+            light_direction,
+            light_distance,
+            shadow_scene);
+        if (shadow_visibility <= 0.0) {
+            continue;
+        }
         const Point3 half_vector = Normalize({
             light_direction.x + view_direction.x,
             light_direction.y + view_direction.y,
@@ -326,8 +484,10 @@ Pixel ApplyLighting(
                 std::max(0.0, Dot(normal, half_vector)),
                 std::max(1.0, static_cast<double>(surface.shininess))) *
             spot_factor;
-        const double diffuse_strength = light.intensity * diffuse_term;
-        const double specular_strength = light.intensity * specular_term;
+        const double diffuse_strength =
+            light.intensity * diffuse_term * shadow_visibility;
+        const double specular_strength =
+            light.intensity * specular_term * shadow_visibility;
         diffuse_light.x += light.color.x * diffuse_strength;
         diffuse_light.y += light.color.y * diffuse_strength;
         diffuse_light.z += light.color.z * diffuse_strength;
@@ -501,6 +661,7 @@ void RasterizeTriangle(
     bool perspective,
     const CameraState& camera,
     const LightingState& lighting,
+    const ShadowScene* shadow_scene,
     A_long render_view,
     TextureFace texture_face) {
     if (!a.visible || !b.visible || !c.visible ||
@@ -654,7 +815,8 @@ void RasterizeTriangle(
                     surface,
                     shading_normal,
                     world_position,
-                    lighting);
+                    lighting,
+                    shadow_scene);
                 depth_buffer[depth_index] = static_cast<float>(inverse_depth);
                 output_row[x] = sampled;
             }
@@ -910,6 +1072,194 @@ Point3 EvaluateSurfaceNormal(
          point_v1.z - point_v0.z}));
 }
 
+void AddShadowTriangle(
+    ShadowScene& scene,
+    const Point3& a,
+    const Point3& b,
+    const Point3& c) {
+    if (!IsFinitePoint3(a) ||
+        !IsFinitePoint3(b) ||
+        !IsFinitePoint3(c)) {
+        return;
+    }
+    const Point3 edge_ab{b.x - a.x, b.y - a.y, b.z - a.z};
+    const Point3 edge_ac{c.x - a.x, c.y - a.y, c.z - a.z};
+    const Point3 area = Cross(edge_ab, edge_ac);
+    if (Dot(area, area) <= 1.0e-12) {
+        return;
+    }
+    ShadowTriangle triangle;
+    triangle.a = a;
+    triangle.b = b;
+    triangle.c = c;
+    triangle.centroid = {
+        (a.x + b.x + c.x) / 3.0,
+        (a.y + b.y + c.y) / 3.0,
+        (a.z + b.z + c.z) / 3.0};
+    triangle.bounds.Expand(a);
+    triangle.bounds.Expand(b);
+    triangle.bounds.Expand(c);
+    scene.triangles.push_back(triangle);
+}
+
+std::uint32_t BuildShadowBvhNode(
+    ShadowScene& scene,
+    std::uint32_t first,
+    std::uint32_t count) {
+    const std::uint32_t node_index =
+        static_cast<std::uint32_t>(scene.nodes.size());
+    scene.nodes.emplace_back();
+
+    ShadowBounds bounds;
+    ShadowBounds centroid_bounds;
+    for (std::uint32_t offset = 0; offset < count; ++offset) {
+        const ShadowTriangle& triangle =
+            scene.triangles[first + offset];
+        bounds.Expand(triangle.bounds);
+        centroid_bounds.Expand(triangle.centroid);
+    }
+    scene.nodes[node_index].bounds = bounds;
+    if (count <= 6) {
+        scene.nodes[node_index].first = first;
+        scene.nodes[node_index].count = count;
+        return node_index;
+    }
+
+    const Point3 centroid_extent{
+        centroid_bounds.maximum.x - centroid_bounds.minimum.x,
+        centroid_bounds.maximum.y - centroid_bounds.minimum.y,
+        centroid_bounds.maximum.z - centroid_bounds.minimum.z};
+    int axis = 0;
+    if (centroid_extent.y > centroid_extent.x) {
+        axis = 1;
+    }
+    if ((axis == 0 ? centroid_extent.x : centroid_extent.y) <
+        centroid_extent.z) {
+        axis = 2;
+    }
+    const auto coordinate = [axis](const ShadowTriangle& triangle) {
+        return axis == 0
+                   ? triangle.centroid.x
+                   : (axis == 1
+                          ? triangle.centroid.y
+                          : triangle.centroid.z);
+    };
+    const std::uint32_t left_count = count / 2;
+    auto begin = scene.triangles.begin() + first;
+    auto middle = begin + left_count;
+    auto end = begin + count;
+    std::nth_element(
+        begin,
+        middle,
+        end,
+        [&](const ShadowTriangle& left,
+            const ShadowTriangle& right) {
+            return coordinate(left) < coordinate(right);
+        });
+
+    const std::uint32_t left =
+        BuildShadowBvhNode(scene, first, left_count);
+    const std::uint32_t right = BuildShadowBvhNode(
+        scene,
+        first + left_count,
+        count - left_count);
+    scene.nodes[node_index].left = left;
+    scene.nodes[node_index].right = right;
+    return node_index;
+}
+
+ShadowScene BuildShadowScene(
+    const SceneData& scene_data,
+    const CameraState& camera,
+    double scale_x,
+    double scale_y,
+    double scale_z) {
+    ShadowScene shadow_scene;
+    constexpr int kMaximumShadowMeshQuality = 2;
+    for (std::uint32_t surface_index = 0;
+         surface_index < scene_data.surface_count;
+         ++surface_index) {
+        const SurfaceData& surface =
+            scene_data.surfaces[surface_index];
+        if (surface.enabled == 0) {
+            continue;
+        }
+        const SurfaceEvaluationState evaluation =
+            BuildSurfaceEvaluationState(
+                surface,
+                camera,
+                scale_x,
+                scale_y,
+                scale_z);
+        const int quality = std::clamp<int>(
+            surface.mesh_quality,
+            kMinimumMeshQuality,
+            kMaximumShadowMeshQuality);
+        const int divisions_x =
+            std::max<int>(1, surface.lattice.divisions_x * quality);
+        const int divisions_y =
+            std::max<int>(1, surface.lattice.divisions_y * quality);
+        const int stride = divisions_x + 1;
+        std::vector<Point3> vertices(
+            static_cast<std::size_t>(divisions_x + 1) *
+            static_cast<std::size_t>(divisions_y + 1));
+        for (int row = 0; row <= divisions_y; ++row) {
+            const double v =
+                static_cast<double>(row) / divisions_y;
+            for (int column = 0; column <= divisions_x; ++column) {
+                const double u =
+                    static_cast<double>(column) / divisions_x;
+                const Point3 point = EvaluateTransformedPoint(
+                    surface,
+                    evaluation,
+                    u,
+                    v);
+                vertices[static_cast<std::size_t>(
+                    row * stride + column)] =
+                    ApplyScenePointTransform(
+                        point,
+                        camera.scene_transform);
+            }
+        }
+        for (int row = 0; row < divisions_y; ++row) {
+            for (int column = 0; column < divisions_x; ++column) {
+                const Point3& top_left =
+                    vertices[static_cast<std::size_t>(
+                        row * stride + column)];
+                const Point3& top_right =
+                    vertices[static_cast<std::size_t>(
+                        row * stride + column + 1)];
+                const Point3& bottom_left =
+                    vertices[static_cast<std::size_t>(
+                        (row + 1) * stride + column)];
+                const Point3& bottom_right =
+                    vertices[static_cast<std::size_t>(
+                        (row + 1) * stride + column + 1)];
+                AddShadowTriangle(
+                    shadow_scene,
+                    top_left,
+                    top_right,
+                    bottom_right);
+                AddShadowTriangle(
+                    shadow_scene,
+                    top_left,
+                    bottom_right,
+                    bottom_left);
+            }
+        }
+    }
+    if (!shadow_scene.triangles.empty()) {
+        shadow_scene.nodes.reserve(
+            shadow_scene.triangles.size() * 2);
+        BuildShadowBvhNode(
+            shadow_scene,
+            0,
+            static_cast<std::uint32_t>(
+                shadow_scene.triangles.size()));
+    }
+    return shadow_scene;
+}
+
 template <typename Pixel>
 void RasterizeSurface(
     const SurfaceData& surface,
@@ -920,6 +1270,7 @@ void RasterizeSurface(
     int legacy_tessellation,
     const CameraState& camera,
     const LightingState& lighting,
+    const ShadowScene* shadow_scene,
     double scale_x,
     double scale_y,
     double scale_z,
@@ -1002,6 +1353,7 @@ void RasterizeSurface(
             camera.perspective,
             camera,
             lighting,
+            shadow_scene,
             render_view,
             texture_face);
         RasterizeTriangle<Pixel>(
@@ -1016,6 +1368,7 @@ void RasterizeSurface(
             camera.perspective,
             camera,
             lighting,
+            shadow_scene,
             render_view,
             texture_face);
     };
@@ -1501,6 +1854,37 @@ bool ResolveAfterEffectsLights(
             -light.forward.z};
         light.color = color;
         light.intensity = intensity;
+        AEGP_StreamVal casts_shadows{};
+        AEGP_StreamVal shadow_darkness{};
+        AEGP_StreamVal shadow_diffusion{};
+        light.casts_shadows =
+            ReadLayerStream(
+                suites,
+                layer,
+                AEGP_LayerStream_CASTS_SHADOWS,
+                comp_time,
+                casts_shadows) &&
+            casts_shadows.one_d != 0.0;
+        if (ReadLayerStream(
+                suites,
+                layer,
+                AEGP_LayerStream_SHADOW_DARKNESS,
+                comp_time,
+                shadow_darkness)) {
+            light.shadow_darkness = std::clamp(
+                shadow_darkness.one_d / 100.0,
+                0.0,
+                1.0);
+        }
+        if (ReadLayerStream(
+                suites,
+                layer,
+                AEGP_LayerStream_SHADOW_DIFFUSION,
+                comp_time,
+                shadow_diffusion)) {
+            light.shadow_diffusion =
+                std::max(0.0, shadow_diffusion.one_d);
+        }
         if (light_type == AEGP_LightType_POINT) {
             light.type = RenderLightType::Point;
         } else if (light_type == AEGP_LightType_SPOT) {
@@ -2578,6 +2962,8 @@ struct RenderFrameSnapshot {
     A_long render_view{kRenderViewFinish};
     std::array<bool, kMaximumSurfaces> source_slots{};
     std::array<bool, kMaximumSurfaces> back_source_slots{};
+    ShadowScene shadow_scene{};
+    bool shadows_enabled{};
 };
 
 RenderFrameSnapshot BuildRenderFrameSnapshot(
@@ -2641,6 +3027,24 @@ RenderFrameSnapshot BuildRenderFrameSnapshot(
         snapshot.scale_x,
         snapshot.scale_y,
         snapshot.scale_z);
+    snapshot.shadows_enabled =
+        snapshot.render_view == kRenderViewFinish &&
+        std::any_of(
+            snapshot.lighting.lights.begin(),
+            snapshot.lighting.lights.begin() +
+                snapshot.lighting.light_count,
+            [](const RenderLight& light) {
+                return light.casts_shadows &&
+                       light.shadow_darkness > 0.0;
+            });
+    if (snapshot.shadows_enabled) {
+        snapshot.shadow_scene = BuildShadowScene(
+            snapshot.scene,
+            snapshot.camera,
+            snapshot.scale_x,
+            snapshot.scale_y,
+            snapshot.scale_z);
+    }
     if (snapshot.render_view == kRenderViewFinish) {
         for (std::uint32_t index = 0;
              index < snapshot.scene.surface_count;
@@ -2727,6 +3131,9 @@ PF_Err RenderSurface(PF_InData* in_data, PF_ParamDef* params[], PF_LayerDef* out
             snapshot.legacy_tessellation,
             snapshot.camera,
             snapshot.lighting,
+            snapshot.shadows_enabled
+                ? &snapshot.shadow_scene
+                : nullptr,
             snapshot.scale_x,
             snapshot.scale_y,
             snapshot.scale_z,
@@ -2998,6 +3405,9 @@ PF_Err RenderSmartFrame(
             snapshot.legacy_tessellation,
             camera,
             lighting,
+            snapshot.shadows_enabled
+                ? &snapshot.shadow_scene
+                : nullptr,
             snapshot.scale_x,
             snapshot.scale_y,
             snapshot.scale_z,
@@ -3230,6 +3640,9 @@ std::vector<double> BuildExternalStateDigest(
         digest.push_back(light.intensity);
         digest.push_back(light.cone_angle);
         digest.push_back(light.cone_feather);
+        digest.push_back(light.casts_shadows ? 1.0 : 0.0);
+        digest.push_back(light.shadow_darkness);
+        digest.push_back(light.shadow_diffusion);
     }
     digest.push_back(static_cast<double>(scene.surface_count));
     for (std::uint32_t surface_index = 0;

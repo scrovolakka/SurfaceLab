@@ -4,6 +4,106 @@
 #include <cmath>
 #include <limits>
 
+bool RayIntersectsTriangle(
+    Point3 origin,
+    Point3 direction,
+    Point3 a,
+    Point3 b,
+    Point3 c,
+    double minimum_distance,
+    double maximum_distance,
+    double* hit_distance) {
+    constexpr double kParallelEpsilon = 1.0e-10;
+    const Point3 edge_ab{b.x - a.x, b.y - a.y, b.z - a.z};
+    const Point3 edge_ac{c.x - a.x, c.y - a.y, c.z - a.z};
+    const Point3 cross_direction = Cross(direction, edge_ac);
+    const double determinant = Dot(edge_ab, cross_direction);
+    if (!std::isfinite(determinant) ||
+        std::abs(determinant) <= kParallelEpsilon) {
+        return false;
+    }
+    const double inverse_determinant = 1.0 / determinant;
+    const Point3 from_a{
+        origin.x - a.x,
+        origin.y - a.y,
+        origin.z - a.z};
+    const double u = Dot(from_a, cross_direction) * inverse_determinant;
+    if (u < 0.0 || u > 1.0) {
+        return false;
+    }
+    const Point3 cross_from_a = Cross(from_a, edge_ab);
+    const double v = Dot(direction, cross_from_a) * inverse_determinant;
+    if (v < 0.0 || u + v > 1.0) {
+        return false;
+    }
+    const double distance =
+        Dot(edge_ac, cross_from_a) * inverse_determinant;
+    if (!std::isfinite(distance) ||
+        distance < minimum_distance ||
+        distance > maximum_distance) {
+        return false;
+    }
+    if (hit_distance) {
+        *hit_distance = distance;
+    }
+    return true;
+}
+
+bool RayIntersectsBounds(
+    Point3 origin,
+    Point3 direction,
+    Point3 minimum,
+    Point3 maximum,
+    double minimum_distance,
+    double maximum_distance) {
+    constexpr double kParallelEpsilon = 1.0e-12;
+    const auto axis = [&](double ray_origin,
+                          double ray_direction,
+                          double axis_minimum,
+                          double axis_maximum,
+                          double& near_distance,
+                          double& far_distance) {
+        if (std::abs(ray_direction) <= kParallelEpsilon) {
+            return ray_origin >= axis_minimum &&
+                   ray_origin <= axis_maximum;
+        }
+        double first =
+            (axis_minimum - ray_origin) / ray_direction;
+        double second =
+            (axis_maximum - ray_origin) / ray_direction;
+        if (first > second) {
+            std::swap(first, second);
+        }
+        near_distance = std::max(near_distance, first);
+        far_distance = std::min(far_distance, second);
+        return near_distance <= far_distance;
+    };
+
+    double near_distance = minimum_distance;
+    double far_distance = maximum_distance;
+    return axis(
+               origin.x,
+               direction.x,
+               minimum.x,
+               maximum.x,
+               near_distance,
+               far_distance) &&
+           axis(
+               origin.y,
+               direction.y,
+               minimum.y,
+               maximum.y,
+               near_distance,
+               far_distance) &&
+           axis(
+               origin.z,
+               direction.z,
+               minimum.z,
+               maximum.z,
+               near_distance,
+               far_distance);
+}
+
 Point2 ApplyAffine2D(const Affine2D& transform, Point2 point) {
     return {
         transform.xx * point.x +
