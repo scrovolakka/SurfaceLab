@@ -802,17 +802,17 @@ SurfaceEvaluationState BuildSurfaceEvaluationState(
                 state.root_pre_scene_transform);
     }
     const SurfaceCoordinateTransform& transform = state.coordinate_transform;
-    // Map the cage so its axis-aligned centre sits on the surface Position
-    // pivot. Use the current bounds centre (not a running interaction state)
-    // so render/gizmo stay aligned. Point dragging uses a pre-drag lattice
-    // snapshot so this re-centre cannot accumulate edit errors.
-    if (std::isfinite(minimum_x) && std::isfinite(maximum_x) &&
-        std::isfinite(minimum_y) && std::isfinite(maximum_y) &&
-        std::isfinite(minimum_z) && std::isfinite(maximum_z)) {
-        const Point3 lattice_center{
-            (minimum_x + maximum_x) * 0.5,
-            (minimum_y + maximum_y) * 0.5,
-            (minimum_z + maximum_z) * 0.5};
+    // Fixed reference cage centre = surface Position (scaled into the same
+    // space as the render-scaled lattice). Using the live point-cloud mean
+    // made a single large lattice write look like every control point was
+    // sucked into the pivot when the bounds recentred.
+    const Point3 lattice_center{
+        transform.pivot.x * render_scale_x,
+        transform.pivot.y * render_scale_y,
+        transform.pivot.z * render_scale_z};
+    if (std::isfinite(lattice_center.x) &&
+        std::isfinite(lattice_center.y) &&
+        std::isfinite(lattice_center.z)) {
         for (std::size_t index = 0; index < state.lattice.point_count;
              ++index) {
             StoredPoint3& point = state.lattice.points[index];

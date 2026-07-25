@@ -162,6 +162,9 @@ struct GizmoSelectionState {
     bool dragging{};
     bool drag_moved{};
     bool has_snapshot{};
+    // First DRAG sample after DO_CLICK only seeds the origin; AE can emit a
+    // large coordinate jump between those two events.
+    bool drag_origin_seeded{};
     bool marquee_active{};
     bool marquee_additive{};
     Point2 marquee_start{};
@@ -182,6 +185,12 @@ GizmoSelectionState g_selection;
 
 constexpr double kTranslateAxisPixels = 56.0;
 constexpr double kTranslateAxisHitPixels = 10.0;
+// Reject axes that project to nearly a point (depth-parallel / edge-on).
+constexpr double kMinAxisPixelsPerUnit = 0.25;
+// Ignore one-frame pointer teleports mid-drag (comp/frame space glitches).
+constexpr double kMaxDragStepPixels = 64.0;
+// Hard cap on total cage-space write from a single gesture.
+constexpr double kMaxCageDelta = 500.0;
 
 bool SameLatticePoint(const LatticePointRef& a, const LatticePointRef& b) {
     return a.surface == b.surface &&
@@ -203,6 +212,7 @@ void ClearSelection() {
     g_selection.dragging = false;
     g_selection.drag_moved = false;
     g_selection.has_snapshot = false;
+    g_selection.drag_origin_seeded = false;
     g_selection.marquee_active = false;
     g_selection.marquee_additive = false;
     g_selection.primary = {};
@@ -219,6 +229,7 @@ void BeginCompDrag(PF_EventExtra* event_extra) {
         event_extra->u.do_click.send_drag = TRUE;
     }
     g_selection.drag_moved = false;
+    g_selection.drag_origin_seeded = false;
 }
 
 bool CaptureDragSnapshot(
@@ -249,6 +260,8 @@ bool CaptureDragSnapshot(
     g_selection.drag_snapshot = *lattice;
     PF_UNLOCK_HANDLE(handle);
     g_selection.has_snapshot = true;
+    g_selection.drag_origin_seeded = false;
+    // Provisional origin; first DRAG sample re-seeds after AE's click→drag jump.
     g_selection.mouse_down = mouse_down;
     g_selection.last_mouse = mouse_down;
     g_selection.centroid_down = centroid_down;
@@ -264,6 +277,7 @@ void EndCompDragIfFinished(PF_EventExtra* event_extra) {
     g_selection.dragging = false;
     g_selection.drag_moved = false;
     g_selection.has_snapshot = false;
+    g_selection.drag_origin_seeded = false;
     g_selection.marquee_active = false;
     g_selection.axis_drag = TranslateAxis::None;
 }
@@ -444,6 +458,10 @@ bool BuildTranslateAxisScreen(
         return false;
     }
     pixels_per_unit = length / kProbe;
+    // Edge-on / depth-parallel axes make cage deltas explode (1/pixels_per_unit).
+    if (pixels_per_unit < kMinAxisPixelsPerUnit) {
+        return false;
+    }
     const double scale = kTranslateAxisPixels / length;
     tip = {origin.x + dx * scale, origin.y + dy * scale};
     return true;
@@ -1761,6 +1779,7 @@ PF_Err HandleSurfaceGizmoEvent(
         g_selection.dragging = false;
         g_selection.drag_moved = false;
         g_selection.has_snapshot = false;
+        g_selection.drag_origin_seeded = false;
         g_selection.marquee_active = false;
         g_selection.axis_drag = TranslateAxis::None;
 
@@ -1978,12 +1997,38 @@ PF_Err HandleSurfaceGizmoEvent(
         return PF_Err_NONE;
     }
 
-    // Total motion from the original mouse-down, never cumulative per-frame.
+    // 1) Seed origin on the first DRAG sample. DO_CLICK and the first DRAG
+    // often disagree by hundreds of pixels in AE; treating that as motion
+    // wrote multi-thousand cage deltas and looked like a total collapse.
+    if (!g_selection.drag_origin_seeded) {
+        g_selection.mouse_down = mouse;
+        g_selection.last_mouse = mouse;
+        g_selection.drag_origin_seeded = true;
+        event_extra->evt_out_flags = static_cast<PF_EventOutFlags>(
+            PF_EO_HANDLED_EVENT | PF_EO_ALWAYS_UPDATE);
+        EndCompDragIfFinished(event_extra);
+        return PF_Err_NONE;
+    }
+
+    // 2) Reject mid-drag teleports; keep last good sample.
+    const double step_x = mouse.x - g_selection.last_mouse.x;
+    const double step_y = mouse.y - g_selection.last_mouse.y;
+    const double step = std::sqrt(step_x * step_x + step_y * step_y);
+    if (step > kMaxDragStepPixels) {
+        g_selection.last_mouse = mouse;
+        event_extra->evt_out_flags = static_cast<PF_EventOutFlags>(
+            PF_EO_HANDLED_EVENT | PF_EO_ALWAYS_UPDATE);
+        EndCompDragIfFinished(event_extra);
+        return PF_Err_NONE;
+    }
+
+    // Total motion from the seeded origin (absolute, not cumulative).
     const double screen_x = mouse.x - g_selection.mouse_down.x;
     const double screen_y = mouse.y - g_selection.mouse_down.y;
     const double screen_distance = std::sqrt(
         screen_x * screen_x + screen_y * screen_y);
     if (screen_distance < 0.75) {
+        g_selection.last_mouse = mouse;
         EndCompDragIfFinished(event_extra);
         event_extra->evt_out_flags = static_cast<PF_EventOutFlags>(
             PF_EO_HANDLED_EVENT | PF_EO_ALWAYS_UPDATE);
@@ -2022,7 +2067,8 @@ PF_Err HandleSurfaceGizmoEvent(
                 origin,
                 tip,
                 pixels_per_unit) ||
-            pixels_per_unit <= 1.0e-8) {
+            pixels_per_unit < kMinAxisPixelsPerUnit) {
+            g_selection.last_mouse = mouse;
             return PF_Err_NONE;
         }
         const double dir_x = tip.x - origin.x;
@@ -2036,11 +2082,11 @@ PF_Err HandleSurfaceGizmoEvent(
             (dir_length * pixels_per_unit);
         const Point3 unit = AxisUnit(g_selection.axis_drag);
         apply_x = static_cast<float>(
-            std::clamp(unit.x * axis_delta, -4000.0, 4000.0));
+            std::clamp(unit.x * axis_delta, -kMaxCageDelta, kMaxCageDelta));
         apply_y = static_cast<float>(
-            std::clamp(unit.y * axis_delta, -4000.0, 4000.0));
+            std::clamp(unit.y * axis_delta, -kMaxCageDelta, kMaxCageDelta));
         apply_z = static_cast<float>(
-            std::clamp(unit.z * axis_delta, -4000.0, 4000.0));
+            std::clamp(unit.z * axis_delta, -kMaxCageDelta, kMaxCageDelta));
         g_selection.selection_centroid = {
             g_selection.centroid_down.x + apply_x,
             g_selection.centroid_down.y + apply_y,
@@ -2102,9 +2148,18 @@ PF_Err HandleSurfaceGizmoEvent(
         const double jyx = projected_x.y - origin.y;
         const double jxy = projected_y.x - origin.x;
         const double jyy = projected_y.y - origin.y;
+        // Reject shallow screen Jacobians (near-zero projected cage axes).
+        const double jx_len = std::sqrt(jxx * jxx + jyx * jyx);
+        const double jy_len = std::sqrt(jxy * jxy + jyy * jyy);
         const bool depth_drag =
             (event_extra->u.do_click.modifiers &
              PF_Mod_OPT_ALT_KEY) != 0;
+        if (!depth_drag &&
+            (jx_len < kMinAxisPixelsPerUnit ||
+             jy_len < kMinAxisPixelsPerUnit)) {
+            g_selection.last_mouse = mouse;
+            return PF_Err_NONE;
+        }
         double delta_z = 0.0;
         if (depth_drag) {
             SurfaceData probe_z = surface;
@@ -2121,10 +2176,12 @@ PF_Err HandleSurfaceGizmoEvent(
                 const double jzx = projected_z.x - origin.x;
                 const double jzy = projected_z.y - origin.y;
                 const double length_squared = jzx * jzx + jzy * jzy;
-                delta_z = length_squared > 1.0e-8
-                              ? (screen_x * jzx + screen_y * jzy) /
-                                    length_squared
-                              : -screen_y;
+                if (length_squared <
+                    kMinAxisPixelsPerUnit * kMinAxisPixelsPerUnit) {
+                    g_selection.last_mouse = mouse;
+                    return PF_Err_NONE;
+                }
+                delta_z = (screen_x * jzx + screen_y * jzy) / length_squared;
             } else {
                 delta_z = -screen_y;
             }
@@ -2142,11 +2199,11 @@ PF_Err HandleSurfaceGizmoEvent(
                                    : (jxx * screen_y -
                                       jyx * screen_x) / determinant;
         apply_x = static_cast<float>(
-            std::clamp(delta_x, -4000.0, 4000.0));
+            std::clamp(delta_x, -kMaxCageDelta, kMaxCageDelta));
         apply_y = static_cast<float>(
-            std::clamp(delta_y, -4000.0, 4000.0));
+            std::clamp(delta_y, -kMaxCageDelta, kMaxCageDelta));
         apply_z = static_cast<float>(
-            std::clamp(delta_z, -4000.0, 4000.0));
+            std::clamp(delta_z, -kMaxCageDelta, kMaxCageDelta));
     }
 
     PF_Handle handle =
