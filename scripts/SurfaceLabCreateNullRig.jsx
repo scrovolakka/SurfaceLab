@@ -11,7 +11,7 @@
 (function surfaceLabCreateNullRig() {
     var EFFECT_MATCH_NAME = "XPK SurfaceLab";
     var SURFACE_COUNT = 8;
-    var SURFACE_STRIDE = 14;
+    var SURFACE_STRIDE = 18;
     var SURFACE_PARAMETERS_START = 11;
     var SCENE_POSITION = 2;
     var SCENE_ROTATION_X = 3;
@@ -27,12 +27,14 @@
     var SURFACE_SCALE_X_OFFSET = 6;
     var SURFACE_SCALE_Y_OFFSET = 7;
     var SURFACE_SCALE_Z_OFFSET = 8;
-    var RIG_SURFACE = 126;
-    var RIG_ROW = 127;
-    var RIG_SURFACE_ID_0 = 128;
-    var RIG_DIVISIONS_X = 132;
-    var RIG_DIVISIONS_Y = 133;
-    var RIG_POINTS_START = 134;
+    // 1-based effect property indices (PF param index + 1). Keep in sync with
+    // SurfaceLab.h after any Surface parameter-stride change.
+    var RIG_SURFACE = 158;
+    var RIG_ROW = 159;
+    var RIG_SURFACE_ID_0 = 160;
+    var RIG_DIVISIONS_X = 164;
+    var RIG_DIVISIONS_Y = 165;
+    var RIG_POINTS_START = 166;
 
     function surfacePropertyIndex(surfaceIndex, offset) {
         return SURFACE_PARAMETERS_START +

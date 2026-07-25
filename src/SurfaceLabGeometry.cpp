@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 Point2 ApplyAffine2D(const Affine2D& transform, Point2 point) {
     return {
@@ -228,6 +229,16 @@ Point3 ApplySceneNormalTransform(
         transform.rotation_radians.z));
 }
 
+Point3 RecenterCagePoint(
+    Point3 point,
+    Point3 fixed_reference_center,
+    Point3 target_center) {
+    return {
+        point.x - fixed_reference_center.x + target_center.x,
+        point.y - fixed_reference_center.y + target_center.y,
+        point.z - fixed_reference_center.z + target_center.z};
+}
+
 bool TryInverseScenePointTransform(
     Point3 point,
     const SceneCoordinateTransform& transform,
@@ -297,15 +308,15 @@ bool BuildPreSceneRootTransform(
 SurfaceCoordinateTransform BuildSurfaceCoordinateTransform(
     const SurfaceData& surface,
     Point3 legacy_pivot,
-    Point3) {
+    Point3 render_scale) {
     constexpr double kDegreesToRadians =
         3.14159265358979323846 / 180.0;
     SurfaceCoordinateTransform transform;
     transform.pivot = surface.transform_mode != 0
                           ? Point3{
-                                surface.position_x,
-                                surface.position_y,
-                                surface.position_z}
+                                surface.position_x * render_scale.x,
+                                surface.position_y * render_scale.y,
+                                surface.position_z * render_scale.z}
                           : legacy_pivot;
     transform.rotation_origin = transform.pivot;
     transform.scale = {
@@ -477,4 +488,130 @@ Point3 EvaluateLatticeNormal(
     return Normalize(Cross(
         {u1.x - u0.x, u1.y - u0.y, u1.z - u0.z},
         {v1.x - v0.x, v1.y - v0.y, v1.z - v0.z}));
+}
+
+bool LatticeCageBounds(
+    const LatticeData& lattice,
+    Point3& minimum,
+    Point3& maximum) {
+    if (!IsValidLattice(lattice) || lattice.point_count == 0) {
+        return false;
+    }
+    minimum = {
+        lattice.points[0].x,
+        lattice.points[0].y,
+        lattice.points[0].z};
+    maximum = minimum;
+    for (std::uint16_t index = 1; index < lattice.point_count; ++index) {
+        const StoredPoint3& point = lattice.points[index];
+        minimum.x = std::min(minimum.x, static_cast<double>(point.x));
+        minimum.y = std::min(minimum.y, static_cast<double>(point.y));
+        minimum.z = std::min(minimum.z, static_cast<double>(point.z));
+        maximum.x = std::max(maximum.x, static_cast<double>(point.x));
+        maximum.y = std::max(maximum.y, static_cast<double>(point.y));
+        maximum.z = std::max(maximum.z, static_cast<double>(point.z));
+    }
+    return true;
+}
+
+double RollOriginXForLattice(
+    const LatticeData& lattice,
+    double tilt_degrees) {
+    Point3 minimum{};
+    Point3 maximum{};
+    if (!LatticeCageBounds(lattice, minimum, maximum)) {
+        return 0.0;
+    }
+    const double tilt = tilt_degrees * 0.017453292519943295;
+    const double cosine = std::cos(-tilt);
+    const double sine = std::sin(-tilt);
+    double origin = std::numeric_limits<double>::infinity();
+    const Point3 corners[4] = {
+        {minimum.x, minimum.y, 0.0},
+        {maximum.x, minimum.y, 0.0},
+        {minimum.x, maximum.y, 0.0},
+        {maximum.x, maximum.y, 0.0}};
+    for (const Point3& corner : corners) {
+        const double tilted_x = corner.x * cosine - corner.y * sine;
+        origin = std::min(origin, tilted_x);
+    }
+    return std::isfinite(origin) ? origin : 0.0;
+}
+
+Point3 ApplySurfaceRoll(
+    Point3 cage_point,
+    const SurfaceRollParams& roll) {
+    if (!std::isfinite(roll.angle_degrees) ||
+        !std::isfinite(roll.tilt_degrees) ||
+        !std::isfinite(roll.radius) ||
+        !std::isfinite(roll.expand_per_turn) ||
+        !std::isfinite(roll.origin_x) ||
+        std::abs(roll.angle_degrees) <= 1.0e-8 ||
+        roll.radius <= 1.0e-8) {
+        return cage_point;
+    }
+
+    constexpr double kPi = 3.14159265358979323846;
+    constexpr double kTwoPi = 2.0 * kPi;
+    const double tilt = roll.tilt_degrees * (kPi / 180.0);
+    const double cosine = std::cos(-tilt);
+    const double sine = std::sin(-tilt);
+    // Tilted frame: roll advances along +X, axis is +Y, wrap lifts +Z.
+    const double local_x =
+        cage_point.x * cosine - cage_point.y * sine;
+    const double local_y =
+        cage_point.x * sine + cage_point.y * cosine;
+    const double local_z = cage_point.z;
+
+    const double arc = local_x - roll.origin_x;
+    const double angle_rad = roll.angle_degrees * (kPi / 180.0);
+    const double abs_angle = std::abs(angle_rad);
+    const double sign = angle_rad >= 0.0 ? 1.0 : -1.0;
+    const double expand = std::max(0.0, roll.expand_per_turn);
+    // Arc length of a spiral r(theta) = radius + expand * theta / 2pi:
+    // L(Theta) = radius*Theta + expand*Theta^2 / (4pi)
+    const double rolled_length =
+        roll.radius * abs_angle +
+        expand * abs_angle * abs_angle / (2.0 * kTwoPi);
+
+    auto radius_at = [&](double abs_theta) {
+        return roll.radius + expand * (abs_theta / kTwoPi);
+    };
+
+    double rolled_x = local_x;
+    double rolled_z = local_z;
+    if (arc <= 0.0 || rolled_length <= 1.0e-12) {
+        rolled_x = local_x;
+        rolled_z = local_z;
+    } else {
+        double abs_theta = 0.0;
+        double remaining = 0.0;
+        if (arc >= rolled_length) {
+            abs_theta = abs_angle;
+            remaining = arc - rolled_length;
+        } else if (expand <= 1.0e-12) {
+            abs_theta = arc / roll.radius;
+        } else {
+            // Solve a*theta^2 + b*theta - arc = 0 with a = expand/(4pi).
+            const double a = expand / (2.0 * kTwoPi);
+            const double discriminant =
+                roll.radius * roll.radius + 4.0 * a * arc;
+            abs_theta =
+                (-roll.radius + std::sqrt(std::max(0.0, discriminant))) /
+                (2.0 * a);
+        }
+        abs_theta = std::clamp(abs_theta, 0.0, abs_angle);
+        const double theta = sign * abs_theta;
+        const double radius = radius_at(abs_theta);
+        const double sin_t = std::sin(theta);
+        const double cos_t = std::cos(theta);
+        // Flat remainder continues along the end tangent.
+        rolled_x = roll.origin_x + radius * sin_t + remaining * cos_t;
+        rolled_z = local_z + radius * (1.0 - cos_t) + remaining * sin_t;
+    }
+
+    // Un-tilt back to cage space.
+    const double out_x = rolled_x * cosine + local_y * sine;
+    const double out_y = -rolled_x * sine + local_y * cosine;
+    return {out_x, out_y, rolled_z};
 }

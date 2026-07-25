@@ -802,18 +802,34 @@ SurfaceEvaluationState BuildSurfaceEvaluationState(
                 state.root_pre_scene_transform);
     }
     const SurfaceCoordinateTransform& transform = state.coordinate_transform;
+    // Fixed reference cage centre = AE input/comp centre in render space.
+    // camera.input_center is already downsampled; multiplying it by the render
+    // scale again shifts the mesh off camera at Half/Quarter resolution. Do not use
+    // Surface Position (that made point - Position + Position cancel Position
+    // motion) or the live point-cloud mean (that sucked points into the pivot
+    // after a large lattice write). Mapping places the fixed centre onto the
+    // surface pivot so Position still translates the mesh.
     const Point3 lattice_center{
-        (minimum_x + maximum_x) * 0.5,
-        (minimum_y + maximum_y) * 0.5,
-        (minimum_z + maximum_z) * 0.5};
-    for (std::size_t index = 0; index < state.lattice.point_count; ++index) {
-        StoredPoint3& point = state.lattice.points[index];
-        point.x = static_cast<float>(
-            point.x - lattice_center.x + transform.pivot.x);
-        point.y = static_cast<float>(
-            point.y - lattice_center.y + transform.pivot.y);
-        point.z = static_cast<float>(
-            point.z - lattice_center.z + transform.pivot.z);
+        camera.input_center_x,
+        camera.input_center_y,
+        0.0};
+    if (std::isfinite(lattice_center.x) &&
+        std::isfinite(lattice_center.y) &&
+        std::isfinite(lattice_center.z) &&
+        std::isfinite(transform.pivot.x) &&
+        std::isfinite(transform.pivot.y) &&
+        std::isfinite(transform.pivot.z)) {
+        for (std::size_t index = 0; index < state.lattice.point_count;
+             ++index) {
+            StoredPoint3& point = state.lattice.points[index];
+            const Point3 recentered = RecenterCagePoint(
+                {point.x, point.y, point.z},
+                lattice_center,
+                transform.pivot);
+            point.x = static_cast<float>(recentered.x);
+            point.y = static_cast<float>(recentered.y);
+            point.z = static_cast<float>(recentered.z);
+        }
     }
     state.rotation_x = transform.rotation_radians.x;
     state.rotation_y = transform.rotation_radians.y;
@@ -836,6 +852,21 @@ SurfaceEvaluationState BuildSurfaceEvaluationState(
     state.deform_extent_x = std::max(1.0e-6, maximum_x - minimum_x);
     state.deform_extent_y = std::max(1.0e-6, maximum_y - minimum_y);
     state.half_thickness = 0.0;
+    // Roll is a cage-local evaluation layer applied after lattice sampling and
+    // before surface scale/rotate. Origin is measured on the already-centered
+    // evaluation lattice so gizmo and render share one frame.
+    state.roll.angle_degrees = surface.roll_angle;
+    state.roll.tilt_degrees = surface.roll_tilt;
+    state.roll.radius = std::max(
+        1.0e-6,
+        static_cast<double>(surface.roll_radius) *
+            std::max(1.0e-6, render_scale_x));
+    state.roll.expand_per_turn =
+        static_cast<double>(surface.roll_expand) *
+        std::max(1.0e-6, render_scale_x);
+    state.roll.origin_x = RollOriginXForLattice(
+        state.lattice,
+        surface.roll_tilt);
     return state;
 }
 
@@ -845,6 +876,7 @@ Point3 EvaluateTransformedPoint(
     double u,
     double v) {
     Point3 point = EvaluateLattice(state.lattice, u, v);
+    point = ApplySurfaceRoll(point, state.roll);
     point = ScaleSurfaceCagePoint(point, state.coordinate_transform);
     point = RotateSurfaceWorldPoint(point, state.coordinate_transform);
     if (state.root_transform_enabled) {
@@ -1188,6 +1220,7 @@ SceneCoordinateTransform BuildSceneCoordinateTransform(
     PF_ParamDef* params[],
     double center_x,
     double center_y,
+    bool initialize_from_input,
     double scale_x,
     double scale_y,
     double scale_z) {
@@ -1206,9 +1239,15 @@ SceneCoordinateTransform BuildSceneCoordinateTransform(
     SceneCoordinateTransform transform;
     transform.pivot = {center_x, center_y, 0.0};
     transform.position = {
-        position.x_value,
-        position.y_value,
-        position.z_value};
+        initialize_from_input
+            ? center_x
+            : position.x_value * scale_x,
+        initialize_from_input
+            ? center_y
+            : position.y_value * scale_y,
+        initialize_from_input
+            ? 0.0
+            : position.z_value * scale_z};
     transform.rotation_radians = {
         FIX_2_FLOAT(params[kParamSceneRotationX]->u.ad.value) *
             kDegreesToRadians,
@@ -2398,10 +2437,29 @@ CameraState BuildResolvedCameraState(
     // into the projection shifts the comp-world surface a second time.
     camera.input_center_x = center_x;
     camera.input_center_y = center_y;
+    bool initialize_from_input = false;
+    for (std::uint32_t surface = 0; surface < kSurfaceCount; ++surface) {
+        const PF_Handle handle =
+            params[SurfaceLatticeParam(surface)]->u.arb_d.value;
+        if (!handle) {
+            continue;
+        }
+        const auto* lattice =
+            static_cast<const LatticeData*>(PF_LOCK_HANDLE(handle));
+        if (lattice) {
+            initialize_from_input =
+                NeedsInputSizedInitialization(*lattice);
+            PF_UNLOCK_HANDLE(handle);
+        }
+        if (initialize_from_input) {
+            break;
+        }
+    }
     camera.scene_transform = BuildSceneCoordinateTransform(
         params,
         center_x,
         center_y,
+        initialize_from_input,
         scale_x,
         scale_y,
         scale_z);

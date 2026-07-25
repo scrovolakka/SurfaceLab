@@ -73,12 +73,18 @@ PF_Err About(PF_OutData* out_data) {
     std::snprintf(
         out_data->return_msg,
         sizeof(out_data->return_msg),
-        "SurfaceLab v1\r3D interpolating control-point lattice");
+        "SurfaceLab %s\r3D interpolating control-point lattice",
+        kSurfaceLabVersionString);
     return PF_Err_NONE;
 }
 
 PF_Err GlobalSetup(PF_InData* in_data, PF_OutData* out_data) {
-    out_data->my_version = PF_VERSION(1, 1, 6, PF_Stage_DEVELOP, 1);
+    out_data->my_version = PF_VERSION(
+        kSurfaceLabVersionMajor,
+        kSurfaceLabVersionMinor,
+        kSurfaceLabVersionPatch,
+        PF_Stage_DEVELOP,
+        1);
     out_data->out_flags =
         PF_OutFlag_DEEP_COLOR_AWARE |
         PF_OutFlag_CUSTOM_UI |
@@ -132,6 +138,8 @@ PF_Err CreateLatticeHandle(
     double width,
     double height,
     std::uint32_t surface) {
+    (void)width;
+    (void)height;
     PF_Err error = AllocateLattice(in_data, destination);
     if (error != PF_Err_NONE) {
         return error;
@@ -148,7 +156,17 @@ PF_Err CreateLatticeHandle(
              static_cast<std::uint32_t>(in_data ? in_data->current_time : 0))
          << 32U) |
         (static_cast<std::uint64_t>(surface) + 1U);
-    InitializeLattice(*lattice, 3, 3, width, height, id);
+    // ParamsSetup does not expose the input layer dimensions reliably. Mark
+    // every newly-created lattice for one-time initialization once AE supplies
+    // a real input frame.
+    InitializeLattice(
+        *lattice,
+        3,
+        3,
+        0.0,
+        0.0,
+        id);
+    lattice->reserved |= kLatticeFlagNeedsInputSize;
     PF_UNLOCK_HANDLE(*destination);
     return PF_Err_NONE;
 }
@@ -417,6 +435,20 @@ SceneData ResolveSceneForFrame(
                     ->u.sd.value,
                 kMinimumMeshQuality,
                 kMaximumMeshQuality));
+        surface.roll_angle = static_cast<float>(FIX_2_FLOAT(
+            params[SurfaceParam(index, kSurfaceRollAngleOffset)]
+                ->u.ad.value));
+        surface.roll_tilt = static_cast<float>(FIX_2_FLOAT(
+            params[SurfaceParam(index, kSurfaceRollTiltOffset)]
+                ->u.ad.value));
+        surface.roll_radius = static_cast<float>(std::max(
+            1.0,
+            params[SurfaceParam(index, kSurfaceRollRadiusOffset)]
+                ->u.fs_d.value));
+        surface.roll_expand = static_cast<float>(std::max(
+            0.0,
+            params[SurfaceParam(index, kSurfaceRollExpandOffset)]
+                ->u.fs_d.value));
         const PF_Handle handle =
             params[SurfaceLatticeParam(index)]->u.arb_d.value;
         if (handle) {
@@ -429,29 +461,9 @@ SceneData ResolveSceneForFrame(
                 PF_UNLOCK_HANDLE(handle);
             }
         }
-        const auto lattice_bounds = [&surface]() {
-            StoredPoint3 minimum = surface.lattice.points[0];
-            StoredPoint3 maximum = minimum;
-            for (std::size_t point_index = 1;
-                 point_index < surface.lattice.point_count;
-                 ++point_index) {
-                const StoredPoint3& point =
-                    surface.lattice.points[point_index];
-                minimum.x = std::min(minimum.x, point.x);
-                minimum.y = std::min(minimum.y, point.y);
-                minimum.z = std::min(minimum.z, point.z);
-                maximum.x = std::max(maximum.x, point.x);
-                maximum.y = std::max(maximum.y, point.y);
-                maximum.z = std::max(maximum.z, point.z);
-            }
-            return std::array<float, 3>{
-                maximum.x - minimum.x,
-                maximum.y - minimum.y,
-                maximum.z - minimum.z};
-        }();
-        if (lattice_bounds[0] <= 1.0e-4F &&
-            lattice_bounds[1] <= 1.0e-4F &&
-            lattice_bounds[2] <= 1.0e-4F) {
+        const bool initialize_from_input =
+            NeedsInputSizedInitialization(surface.lattice);
+        if (initialize_from_input) {
             const std::uint64_t surface_id = surface.lattice.surface_id;
             InitializeLattice(
                 surface.lattice,
@@ -468,9 +480,12 @@ SceneData ResolveSceneForFrame(
         surface.divisions_x = surface.lattice.divisions_x;
         surface.divisions_y = surface.lattice.divisions_y;
         UpdateDerivedTransform(surface);
-        surface.position_x = static_cast<float>(position.x_value);
-        surface.position_y = static_cast<float>(position.y_value);
-        surface.position_z = static_cast<float>(position.z_value);
+        surface.position_x = static_cast<float>(
+            initialize_from_input ? input_width * 0.5 : position.x_value);
+        surface.position_y = static_cast<float>(
+            initialize_from_input ? input_height * 0.5 : position.y_value);
+        surface.position_z = static_cast<float>(
+            initialize_from_input ? 0.0 : position.z_value);
     }
     return scene;
 }

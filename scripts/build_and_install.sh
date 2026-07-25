@@ -59,5 +59,20 @@ if ! rm -rf "$install_dir/SurfaceLab.plugin" 2>/dev/null || \
     sudo cp -R "$bundle" "$install_dir/"
 fi
 
+# AE refuses to load when the same match-name exists in both the system and
+# user MediaCore folders. Keep only the chosen install target.
+system_mc="/Library/Application Support/Adobe/Common/Plug-ins/7.0/MediaCore"
+user_mc="${HOME}/Library/Application Support/Adobe/Common/Plug-ins/7.0/MediaCore"
+for other in "$system_mc" "$user_mc"; do
+    if [[ "$other" == "$install_dir" ]]; then
+        continue
+    fi
+    if [[ -e "$other/SurfaceLab.plugin" ]]; then
+        echo "==> Removing duplicate: $other/SurfaceLab.plugin"
+        rm -rf "$other/SurfaceLab.plugin" 2>/dev/null || \
+            sudo rm -rf "$other/SurfaceLab.plugin"
+    fi
+done
+
 echo "==> Installed: $install_dir/SurfaceLab.plugin"
 echo "    Start After Effects and apply Effect > SurfaceLab > SurfaceLab."

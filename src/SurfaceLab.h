@@ -11,8 +11,14 @@
 #include <cstddef>
 #include <cstdint>
 
+// Keep these in lockstep with CMake project VERSION and SurfaceLabPiPL.r.
+constexpr A_short kSurfaceLabVersionMajor = 1;
+constexpr A_short kSurfaceLabVersionMinor = 2;
+constexpr A_short kSurfaceLabVersionPatch = 8;
+constexpr const char* kSurfaceLabVersionString = "1.2.8";
+
 constexpr std::uint32_t kSurfaceCount = 8;
-constexpr PF_ParamIndex kSurfaceParameterStride = 14;
+constexpr PF_ParamIndex kSurfaceParameterStride = 18;
 constexpr PF_ParamIndex kRigBridgeCoordinateCount = 17 * 3;
 
 enum SurfaceParamOffset : PF_ParamIndex {
@@ -28,6 +34,10 @@ enum SurfaceParamOffset : PF_ParamIndex {
     kSurfaceDivisionsXOffset,
     kSurfaceDivisionsYOffset,
     kSurfaceMeshQualityOffset,
+    kSurfaceRollAngleOffset,
+    kSurfaceRollTiltOffset,
+    kSurfaceRollRadiusOffset,
+    kSurfaceRollExpandOffset,
     kSurfaceLatticeOffset,
     kSurfaceTopicEndOffset
 };
@@ -63,6 +73,9 @@ enum ParamIndex : PF_ParamIndex {
         kParamRigPointsStart +
         kRigBridgeCoordinateCount,
     kParamRigBridgeEnd = kParamRigPointsEnd,
+    kParamAboutStart,
+    kParamAboutVersion,
+    kParamAboutEnd,
     kParamCount
 };
 
@@ -117,7 +130,10 @@ enum ParamDiskId : A_long {
     kDiskRigDivisionsX,
     kDiskRigDivisionsY,
     kDiskRigPointsStart = 720,
-    kDiskRigBridgeEnd = 799
+    kDiskRigBridgeEnd = 799,
+    kDiskAboutStart = 800,
+    kDiskAboutVersion,
+    kDiskAboutEnd = 809
 };
 
 constexpr A_long SurfaceDiskId(
