@@ -343,6 +343,33 @@ struct ShadowScene {
     }
 };
 
+bool ShadowRayOccluded(
+    const Point3& normal,
+    const Point3& world_position,
+    const Point3& light_direction,
+    double light_distance,
+    Point3 origin_offset,
+    const ShadowScene& shadow_scene) {
+    const double normal_alignment =
+        std::clamp(Dot(normal, light_direction), 0.0, 1.0);
+    const double bias = 0.35 + (1.0 - normal_alignment) * 0.65;
+    const Point3 origin{
+        world_position.x + normal.x * bias +
+            light_direction.x * 1.0e-4 + origin_offset.x,
+        world_position.y + normal.y * bias +
+            light_direction.y * 1.0e-4 + origin_offset.y,
+        world_position.z + normal.z * bias +
+            light_direction.z * 1.0e-4 + origin_offset.z};
+    const double maximum_distance =
+        std::isfinite(light_distance)
+            ? std::max(1.0e-5, light_distance - bias)
+            : std::numeric_limits<double>::infinity();
+    return shadow_scene.Occluded(
+        origin,
+        light_direction,
+        maximum_distance);
+}
+
 double ShadowVisibility(
     const RenderLight& light,
     const Point3& normal,
@@ -355,27 +382,73 @@ double ShadowVisibility(
         shadow_scene->nodes.empty()) {
         return 1.0;
     }
-    const double normal_alignment =
-        std::clamp(Dot(normal, light_direction), 0.0, 1.0);
-    const double bias = 0.35 + (1.0 - normal_alignment) * 0.65;
-    const Point3 origin{
-        world_position.x + normal.x * bias +
-            light_direction.x * 1.0e-4,
-        world_position.y + normal.y * bias +
-            light_direction.y * 1.0e-4,
-        world_position.z + normal.z * bias +
-            light_direction.z * 1.0e-4};
-    const double maximum_distance =
-        std::isfinite(light_distance)
-            ? std::max(1.0e-5, light_distance - bias)
-            : std::numeric_limits<double>::infinity();
-    if (!shadow_scene->Occluded(
-            origin,
-            light_direction,
-            maximum_distance)) {
-        return 1.0;
+
+    const double diffusion = std::clamp(
+        light.shadow_diffusion,
+        0.0,
+        1000.0);
+    constexpr std::size_t kSoftShadowSampleCount = 25U;
+    constexpr double kGoldenAngle = 2.39996322972865332;
+    const std::size_t sample_count =
+        diffusion > 1.0e-3 ? kSoftShadowSampleCount : 1U;
+    const Point3 reference =
+        std::abs(light_direction.z) < 0.95
+            ? Point3{0.0, 0.0, 1.0}
+            : Point3{0.0, 1.0, 0.0};
+    const Point3 tangent = Normalize(Cross(reference, light_direction));
+    const Point3 bitangent = Normalize(Cross(light_direction, tangent));
+    std::size_t occluded_count{};
+
+    for (std::size_t sample = 0; sample < sample_count; ++sample) {
+        Point2 disk{};
+        if (sample > 0U) {
+            const double radius = std::sqrt(
+                (static_cast<double>(sample) - 0.5) /
+                static_cast<double>(kSoftShadowSampleCount - 1U));
+            const double angle =
+                static_cast<double>(sample) * kGoldenAngle;
+            disk = {
+                std::cos(angle) * radius,
+                std::sin(angle) * radius};
+        }
+        const Point3 disk_offset{
+            (tangent.x * disk.x + bitangent.x * disk.y) * diffusion,
+            (tangent.y * disk.x + bitangent.y * disk.y) * diffusion,
+            (tangent.z * disk.x + bitangent.z * disk.y) * diffusion};
+
+        Point3 sampled_direction = light_direction;
+        double sampled_distance = light_distance;
+        Point3 origin_offset{};
+        if (light.type == RenderLightType::Directional) {
+            // A directional light has no finite emitter position. Sampling a
+            // receiver-space disk gives AE's diffusion control a stable,
+            // distance-independent blur radius.
+            origin_offset = disk_offset;
+        } else {
+            const Point3 sampled_to_light{
+                light.position.x + disk_offset.x - world_position.x,
+                light.position.y + disk_offset.y - world_position.y,
+                light.position.z + disk_offset.z - world_position.z};
+            sampled_distance = std::sqrt(
+                Dot(sampled_to_light, sampled_to_light));
+            sampled_direction = Normalize(sampled_to_light);
+        }
+        if (ShadowRayOccluded(
+                normal,
+                world_position,
+                sampled_direction,
+                sampled_distance,
+                origin_offset,
+                *shadow_scene)) {
+            ++occluded_count;
+        }
     }
-    return 1.0 - std::clamp(light.shadow_darkness, 0.0, 1.0);
+
+    const double occlusion =
+        static_cast<double>(occluded_count) /
+        static_cast<double>(sample_count);
+    return 1.0 -
+           std::clamp(light.shadow_darkness, 0.0, 1.0) * occlusion;
 }
 
 template <typename Pixel>

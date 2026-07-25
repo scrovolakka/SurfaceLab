@@ -114,7 +114,7 @@ Make the lattice feel editable like a real tool.
 3. Optional thickness (front/back first; sides next)
 4. Specular + roughness controls — done
 5. AE-light hard shadows (self + cross-surface) — done
-6. Shadow diffusion / soft sampling — later
+6. Shadow diffusion / soft sampling — done
 
 ### Phase D — Surface operations
 
