@@ -1028,13 +1028,18 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
     PF_ParamDef def;
     AEFX_CLR_STRUCT(def);
 
+    const double default_center_x =
+        in_data && in_data->width > 0 ? in_data->width * 0.5 : 960.0;
+    const double default_center_y =
+        in_data && in_data->height > 0 ? in_data->height * 0.5 : 540.0;
+
     PF_ADD_TOPIC("Scene", kDiskSceneStart);
     PF_Err error = AddPoint3D(
         in_data,
         def,
         "Position",
-        50.0,
-        50.0,
+        default_center_x,
+        default_center_y,
         0.0,
         kDiskScenePosition);
     if (error != PF_Err_NONE) {
@@ -1091,8 +1096,8 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
             in_data,
             def,
             "Position",
-            50.0,
-            50.0,
+            default_center_x,
+            default_center_y,
             0.0,
             SurfaceDiskId(surface, kSurfacePositionOffset));
         if (error != PF_Err_NONE) {
@@ -1358,6 +1363,10 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
     }
 
     out_data->num_params = kParamCount;
+    // Catch layout drift early: last registered index must be kParamCount - 1.
+    static_assert(
+        kParamAboutEnd + 1 == kParamCount,
+        "About block must terminate immediately before kParamCount");
     return PF_Err_NONE;
 }
 

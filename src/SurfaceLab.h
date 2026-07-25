@@ -14,8 +14,8 @@
 // Keep these in lockstep with CMake project VERSION and SurfaceLabPiPL.r.
 constexpr A_short kSurfaceLabVersionMajor = 1;
 constexpr A_short kSurfaceLabVersionMinor = 2;
-constexpr A_short kSurfaceLabVersionPatch = 1;
-constexpr const char* kSurfaceLabVersionString = "1.2.1";
+constexpr A_short kSurfaceLabVersionPatch = 2;
+constexpr const char* kSurfaceLabVersionString = "1.2.2";
 
 constexpr std::uint32_t kSurfaceCount = 8;
 constexpr PF_ParamIndex kSurfaceParameterStride = 18;
@@ -75,7 +75,7 @@ enum ParamIndex : PF_ParamIndex {
     kParamRigBridgeEnd = kParamRigPointsEnd,
     kParamAboutStart,
     kParamAboutVersion,
-    kParamAboutEnd = kParamAboutVersion,
+    kParamAboutEnd,
     kParamCount
 };
 
