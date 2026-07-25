@@ -131,17 +131,32 @@ CameraState BuildGizmoCamera(
 }
 
 // Process-local Comp selection. Not persisted; matches the existing gizmo
-// drag memory model. A1 keeps selection on a single surface so multi-drag
-// can share one screen→local Jacobian without cross-surface ambiguity.
+// drag memory model. Selection stays on one surface so multi-drag can share
+// one screen→local Jacobian without cross-surface ambiguity.
 struct LatticePointRef {
     std::uint32_t surface{};
     std::uint16_t row{};
     std::uint16_t column{};
 };
 
+enum class LatticeLineKind {
+    Row,
+    Column
+};
+
+struct LatticeLineRef {
+    std::uint32_t surface{};
+    LatticeLineKind kind{LatticeLineKind::Row};
+    std::uint16_t index{};
+};
+
 struct GizmoSelectionState {
     std::vector<LatticePointRef> points{};
     bool dragging{};
+    bool marquee_active{};
+    bool marquee_additive{};
+    Point2 marquee_start{};
+    Point2 marquee_end{};
     LatticePointRef primary{};
     Point2 last_mouse{};
 };
@@ -166,19 +181,37 @@ bool SelectionContains(const LatticePointRef& point) {
 void ClearSelection() {
     g_selection.points.clear();
     g_selection.dragging = false;
+    g_selection.marquee_active = false;
+    g_selection.marquee_additive = false;
     g_selection.primary = {};
 }
 
+void SetSelectionPoints(const std::vector<LatticePointRef>& points) {
+    g_selection.points = points;
+    g_selection.primary =
+        points.empty() ? LatticePointRef{} : points.front();
+    g_selection.dragging = false;
+}
+
 void SetSelection(const LatticePointRef& point) {
-    g_selection.points.clear();
-    g_selection.points.push_back(point);
+    SetSelectionPoints({point});
+}
+
+void AddPointToSelection(const LatticePointRef& point) {
+    if (!g_selection.points.empty() &&
+        g_selection.points.front().surface != point.surface) {
+        SetSelection(point);
+        return;
+    }
+    if (!SelectionContains(point)) {
+        g_selection.points.push_back(point);
+    }
     g_selection.primary = point;
 }
 
 void ToggleSelection(const LatticePointRef& point) {
     if (!g_selection.points.empty() &&
         g_selection.points.front().surface != point.surface) {
-        // Cross-surface multi-select lands in a later slice.
         SetSelection(point);
         return;
     }
@@ -199,6 +232,288 @@ void ToggleSelection(const LatticePointRef& point) {
     }
     g_selection.points.push_back(point);
     g_selection.primary = point;
+}
+
+void MergePointsIntoSelection(const std::vector<LatticePointRef>& points) {
+    for (const LatticePointRef& point : points) {
+        AddPointToSelection(point);
+    }
+}
+
+double PointSegmentDistanceSquared(
+    Point2 point,
+    Point2 a,
+    Point2 b) {
+    const double abx = b.x - a.x;
+    const double aby = b.y - a.y;
+    const double apx = point.x - a.x;
+    const double apy = point.y - a.y;
+    const double ab_length_squared = abx * abx + aby * aby;
+    if (ab_length_squared <= 1.0e-12) {
+        return apx * apx + apy * apy;
+    }
+    const double t = std::clamp(
+        (apx * abx + apy * aby) / ab_length_squared,
+        0.0,
+        1.0);
+    const double dx = point.x - (a.x + abx * t);
+    const double dy = point.y - (a.y + aby * t);
+    return dx * dx + dy * dy;
+}
+
+std::vector<LatticePointRef> CollectFreeLinePoints(
+    const SceneData& scene,
+    const NullPointOverrideState& null_overrides,
+    const LatticeLineRef& line) {
+    std::vector<LatticePointRef> points;
+    if (line.surface >= scene.surface_count) {
+        return points;
+    }
+    const SurfaceData& surface = scene.surfaces[line.surface];
+    if (surface.enabled == 0 || !IsValidLattice(surface.lattice)) {
+        return points;
+    }
+    if (line.kind == LatticeLineKind::Row) {
+        if (line.index > surface.lattice.divisions_y) {
+            return points;
+        }
+        for (std::uint16_t column = 0;
+             column <= surface.lattice.divisions_x;
+             ++column) {
+            const std::size_t point_index = LatticePointIndex(
+                surface.lattice.divisions_x,
+                line.index,
+                column);
+            if (null_overrides.IsControlled(line.surface, point_index)) {
+                continue;
+            }
+            points.push_back({line.surface, line.index, column});
+        }
+        return points;
+    }
+    if (line.index > surface.lattice.divisions_x) {
+        return points;
+    }
+    for (std::uint16_t row = 0;
+         row <= surface.lattice.divisions_y;
+         ++row) {
+        const std::size_t point_index = LatticePointIndex(
+            surface.lattice.divisions_x,
+            row,
+            line.index);
+        if (null_overrides.IsControlled(line.surface, point_index)) {
+            continue;
+        }
+        points.push_back({line.surface, row, line.index});
+    }
+    return points;
+}
+
+bool HitTestLatticeLine(
+    PF_InData* in_data,
+    PF_EventExtra* event_extra,
+    const SceneData& scene,
+    const CameraState& camera,
+    Point2 mouse,
+    double max_distance_squared,
+    LatticeLineRef& hit) {
+    constexpr int kCurveSamples = 24;
+    double closest = max_distance_squared;
+    bool found = false;
+    for (std::uint32_t surface_index = 0;
+         surface_index < scene.surface_count;
+         ++surface_index) {
+        const SurfaceData& surface = scene.surfaces[surface_index];
+        if (surface.enabled == 0 || !IsValidLattice(surface.lattice)) {
+            continue;
+        }
+        for (std::uint16_t row = 0;
+             row <= surface.lattice.divisions_y;
+             ++row) {
+            Point2 previous{};
+            bool have_previous = false;
+            for (int sample = 0; sample <= kCurveSamples; ++sample) {
+                Point2 projected;
+                if (!ProjectSurfacePointToFrame(
+                        in_data,
+                        event_extra,
+                        surface,
+                        camera,
+                        static_cast<double>(sample) / kCurveSamples,
+                        static_cast<double>(row) /
+                            surface.lattice.divisions_y,
+                        projected)) {
+                    have_previous = false;
+                    continue;
+                }
+                if (have_previous) {
+                    const double distance = PointSegmentDistanceSquared(
+                        mouse,
+                        previous,
+                        projected);
+                    if (distance <= closest) {
+                        closest = distance;
+                        hit = {
+                            surface_index,
+                            LatticeLineKind::Row,
+                            row};
+                        found = true;
+                    }
+                }
+                previous = projected;
+                have_previous = true;
+            }
+        }
+        for (std::uint16_t column = 0;
+             column <= surface.lattice.divisions_x;
+             ++column) {
+            Point2 previous{};
+            bool have_previous = false;
+            for (int sample = 0; sample <= kCurveSamples; ++sample) {
+                Point2 projected;
+                if (!ProjectSurfacePointToFrame(
+                        in_data,
+                        event_extra,
+                        surface,
+                        camera,
+                        static_cast<double>(column) /
+                            surface.lattice.divisions_x,
+                        static_cast<double>(sample) / kCurveSamples,
+                        projected)) {
+                    have_previous = false;
+                    continue;
+                }
+                if (have_previous) {
+                    const double distance = PointSegmentDistanceSquared(
+                        mouse,
+                        previous,
+                        projected);
+                    if (distance <= closest) {
+                        closest = distance;
+                        hit = {
+                            surface_index,
+                            LatticeLineKind::Column,
+                            column};
+                        found = true;
+                    }
+                }
+                previous = projected;
+                have_previous = true;
+            }
+        }
+    }
+    return found;
+}
+
+std::vector<LatticePointRef> CollectFreePointsInMarquee(
+    PF_InData* in_data,
+    PF_EventExtra* event_extra,
+    const SceneData& scene,
+    const CameraState& camera,
+    const NullPointOverrideState& null_overrides,
+    Point2 corner_a,
+    Point2 corner_b) {
+    const double min_x = std::min(corner_a.x, corner_b.x);
+    const double max_x = std::max(corner_a.x, corner_b.x);
+    const double min_y = std::min(corner_a.y, corner_b.y);
+    const double max_y = std::max(corner_a.y, corner_b.y);
+    std::array<std::vector<LatticePointRef>, kMaximumSurfaces> by_surface{};
+    std::array<std::size_t, kMaximumSurfaces> counts{};
+    for (std::uint32_t surface_index = 0;
+         surface_index < scene.surface_count;
+         ++surface_index) {
+        const SurfaceData& surface = scene.surfaces[surface_index];
+        if (surface.enabled == 0 || !IsValidLattice(surface.lattice)) {
+            continue;
+        }
+        for (std::uint16_t row = 0;
+             row <= surface.lattice.divisions_y;
+             ++row) {
+            for (std::uint16_t column = 0;
+                 column <= surface.lattice.divisions_x;
+                 ++column) {
+                const std::size_t point_index = LatticePointIndex(
+                    surface.lattice.divisions_x,
+                    row,
+                    column);
+                if (null_overrides.IsControlled(
+                        surface_index,
+                        point_index)) {
+                    continue;
+                }
+                Point2 projected;
+                if (!ProjectSurfacePointToFrame(
+                        in_data,
+                        event_extra,
+                        surface,
+                        camera,
+                        static_cast<double>(column) /
+                            surface.lattice.divisions_x,
+                        static_cast<double>(row) /
+                            surface.lattice.divisions_y,
+                        projected)) {
+                    continue;
+                }
+                if (projected.x < min_x || projected.x > max_x ||
+                    projected.y < min_y || projected.y > max_y) {
+                    continue;
+                }
+                by_surface[surface_index].push_back(
+                    {surface_index, row, column});
+                ++counts[surface_index];
+            }
+        }
+    }
+    std::uint32_t best_surface = 0;
+    std::size_t best_count = 0;
+    for (std::uint32_t surface_index = 0;
+         surface_index < scene.surface_count;
+         ++surface_index) {
+        if (counts[surface_index] > best_count) {
+            best_count = counts[surface_index];
+            best_surface = surface_index;
+        }
+    }
+    if (best_count == 0) {
+        return {};
+    }
+    return by_surface[best_surface];
+}
+
+void ApplyMarqueeSelection(
+    PF_InData* in_data,
+    PF_EventExtra* event_extra,
+    const SceneData& scene,
+    const CameraState& camera,
+    const NullPointOverrideState& null_overrides) {
+    std::vector<LatticePointRef> boxed = CollectFreePointsInMarquee(
+        in_data,
+        event_extra,
+        scene,
+        camera,
+        null_overrides,
+        g_selection.marquee_start,
+        g_selection.marquee_end);
+    if (g_selection.marquee_additive && !g_selection.points.empty() &&
+        !boxed.empty() &&
+        g_selection.points.front().surface == boxed.front().surface) {
+        MergePointsIntoSelection(boxed);
+        return;
+    }
+    if (g_selection.marquee_additive && !boxed.empty() &&
+        !g_selection.points.empty() &&
+        g_selection.points.front().surface != boxed.front().surface) {
+        // Keep same-surface rule: replace rather than mix surfaces.
+        SetSelectionPoints(boxed);
+        return;
+    }
+    if (g_selection.marquee_additive && g_selection.points.empty()) {
+        SetSelectionPoints(boxed);
+        return;
+    }
+    if (!g_selection.marquee_additive) {
+        SetSelectionPoints(boxed);
+    }
 }
 
 bool ConfirmLatticeReduction(
@@ -975,6 +1290,37 @@ PF_Err HandleSurfaceGizmoEvent(
                 }
             }
         }
+
+        if (g_selection.marquee_active) {
+            const DRAWBOT_ColorRGBA marquee_color{
+                1.0F, 0.92F, 0.35F, 0.95F};
+            DRAWBOT_PathP marquee(
+                drawbot.supplier_suiteP,
+                supplier);
+            const float x0 = static_cast<float>(
+                g_selection.marquee_start.x);
+            const float y0 = static_cast<float>(
+                g_selection.marquee_start.y);
+            const float x1 = static_cast<float>(
+                g_selection.marquee_end.x);
+            const float y1 = static_cast<float>(
+                g_selection.marquee_end.y);
+            drawbot.path_suiteP->MoveTo(marquee, x0, y0);
+            drawbot.path_suiteP->LineTo(marquee, x1, y0);
+            drawbot.path_suiteP->LineTo(marquee, x1, y1);
+            drawbot.path_suiteP->LineTo(marquee, x0, y1);
+            drawbot.path_suiteP->LineTo(marquee, x0, y0);
+            DRAWBOT_PenP marquee_pen(
+                drawbot.supplier_suiteP,
+                supplier,
+                &marquee_color,
+                1.0F);
+            drawbot.surface_suiteP->StrokePath(
+                drawing_surface,
+                marquee_pen,
+                marquee);
+        }
+
         AEFX_ReleaseDrawbotSuites(in_data, out_data);
         event_extra->evt_out_flags = PF_EO_HANDLED_EVENT;
         return PF_Err_NONE;
@@ -986,10 +1332,41 @@ PF_Err HandleSurfaceGizmoEvent(
         static_cast<double>(
             event_extra->u.do_click.screen_point.v)};
     if (event_extra->e_type == PF_Event_DO_CLICK) {
-        constexpr double kHitRadiusSquared = 100.0;
-        double closest = kHitRadiusSquared;
-        LatticePointRef hit{};
-        bool found = false;
+        const bool shift =
+            (event_extra->u.do_click.modifiers & PF_Mod_SHIFT_KEY) != 0;
+        const bool command =
+            (event_extra->u.do_click.modifiers &
+             PF_Mod_CMD_CTRL_KEY) != 0;
+        g_selection.dragging = false;
+        g_selection.marquee_active = false;
+
+        // Cmd/Ctrl-drag starts a same-surface marquee (Foldspace-style).
+        if (command) {
+            g_selection.marquee_active = true;
+            g_selection.marquee_additive = shift;
+            g_selection.marquee_start = mouse;
+            g_selection.marquee_end = mouse;
+            if (!shift) {
+                g_selection.points.clear();
+                g_selection.primary = {};
+            }
+            ApplyMarqueeSelection(
+                in_data,
+                event_extra,
+                scene,
+                camera,
+                null_overrides);
+            event_extra->evt_out_flags =
+                static_cast<PF_EventOutFlags>(
+                    PF_EO_HANDLED_EVENT | PF_EO_ALWAYS_UPDATE);
+            return PF_Err_NONE;
+        }
+
+        constexpr double kPointHitRadiusSquared = 100.0;
+        constexpr double kLineHitRadiusSquared = 64.0;
+        double closest = kPointHitRadiusSquared;
+        LatticePointRef point_hit{};
+        bool found_point = false;
         for (std::uint32_t surface_index = 0;
              surface_index < scene.surface_count;
              ++surface_index) {
@@ -1031,43 +1408,83 @@ PF_Err HandleSurfaceGizmoEvent(
                     const double distance = dx * dx + dy * dy;
                     if (distance <= closest) {
                         closest = distance;
-                        hit = {surface_index, row, column};
-                        found = true;
+                        point_hit = {surface_index, row, column};
+                        found_point = true;
                     }
                 }
             }
         }
 
-        const bool shift =
-            (event_extra->u.do_click.modifiers & PF_Mod_SHIFT_KEY) != 0;
-        g_selection.dragging = false;
-        if (!found) {
-            if (!shift && !g_selection.points.empty()) {
-                ClearSelection();
+        if (found_point) {
+            if (shift) {
+                ToggleSelection(point_hit);
+            } else if (!SelectionContains(point_hit)) {
+                SetSelection(point_hit);
+            } else {
+                g_selection.primary = point_hit;
+            }
+            if (!g_selection.points.empty()) {
+                g_selection.dragging = true;
+                g_selection.last_mouse = mouse;
                 event_extra->evt_out_flags =
                     static_cast<PF_EventOutFlags>(
                         PF_EO_HANDLED_EVENT | PF_EO_ALWAYS_UPDATE);
+            } else {
+                event_extra->evt_out_flags = PF_EO_HANDLED_EVENT;
             }
             return PF_Err_NONE;
         }
 
-        if (shift) {
-            ToggleSelection(hit);
-        } else if (!SelectionContains(hit)) {
-            SetSelection(hit);
-        } else {
-            g_selection.primary = hit;
+        LatticeLineRef line_hit{};
+        if (HitTestLatticeLine(
+                in_data,
+                event_extra,
+                scene,
+                camera,
+                mouse,
+                kLineHitRadiusSquared,
+                line_hit)) {
+            const std::vector<LatticePointRef> line_points =
+                CollectFreeLinePoints(
+                    scene,
+                    null_overrides,
+                    line_hit);
+            if (!line_points.empty()) {
+                if (shift) {
+                    MergePointsIntoSelection(line_points);
+                } else {
+                    SetSelectionPoints(line_points);
+                }
+                g_selection.dragging = true;
+                g_selection.last_mouse = mouse;
+                event_extra->evt_out_flags =
+                    static_cast<PF_EventOutFlags>(
+                        PF_EO_HANDLED_EVENT | PF_EO_ALWAYS_UPDATE);
+                return PF_Err_NONE;
+            }
         }
 
-        if (!g_selection.points.empty()) {
-            g_selection.dragging = true;
-            g_selection.last_mouse = mouse;
+        if (!shift && !g_selection.points.empty()) {
+            ClearSelection();
             event_extra->evt_out_flags =
                 static_cast<PF_EventOutFlags>(
                     PF_EO_HANDLED_EVENT | PF_EO_ALWAYS_UPDATE);
-        } else {
-            event_extra->evt_out_flags = PF_EO_HANDLED_EVENT;
         }
+        return PF_Err_NONE;
+    }
+
+    if (g_selection.marquee_active) {
+        g_selection.marquee_end = mouse;
+        ApplyMarqueeSelection(
+            in_data,
+            event_extra,
+            scene,
+            camera,
+            null_overrides);
+        event_extra->evt_out_flags = static_cast<PF_EventOutFlags>(
+            PF_EO_HANDLED_EVENT |
+            PF_EO_ALWAYS_UPDATE |
+            PF_EO_UPDATE_NOW);
         return PF_Err_NONE;
     }
 

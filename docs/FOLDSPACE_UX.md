@@ -37,9 +37,9 @@ Priority key:
 | Multiple surfaces in one effect | Dynamic create/delete | Fixed 8 groups | Nice | D |
 | Comp point edit (X/Y) | Yes | Yes | Have | — |
 | Comp depth edit | Free 3D | Option/Alt-drag Z | Partial | A |
-| Multi-select points | Shift / box | Single hit only | **Must** | **A** |
-| Box select | Cmd/Ctrl drag | No | **Must** | A |
-| Line selection mode | Yes | No | **Must** | A |
+| Multi-select points | Shift / box | Shift + multi-drag | **Must** | A (done) |
+| Box select | Cmd/Ctrl drag | Cmd/Ctrl marquee | **Must** | A (done) |
+| Line selection mode | Explicit mode | Click lattice line | **Must** | A (done) |
 | Object/surface selection mode | Yes | No | Nice | A |
 | PRS transform gizmos | Pos/Rot/Scale | No | **Must** | A |
 | Gizmo local / world space | Yes | No | Nice | A |
@@ -79,11 +79,11 @@ These scenes define “close enough”:
 
 Make the lattice feel editable like a real tool.
 
-1. Multi-select points (Shift toggle; clear on empty click)
-2. Box select (Cmd/Ctrl-drag marquee)
-3. Line mode (click grid line → select row or column)
-4. Multi-point drag (same local delta; Option/Alt still depth)
-5. Selection drawing (selected / Null-controlled / idle)
+1. Multi-select points (Shift toggle; clear on empty click) — **done (A1)**
+2. Box select (Cmd/Ctrl-drag marquee) — **done (A2)**
+3. Line hit (click grid line → select free row/column) — **done (A2)**
+4. Multi-point drag (same local delta; Option/Alt still depth) — **done (A1)**
+5. Selection drawing (selected / Null-controlled / idle / marquee) — **done (A2)**
 6. Later A: PRS gizmo for selection centroid; local/world
 7. Later A: active surface highlight + optional param focus
 
@@ -91,6 +91,7 @@ Make the lattice feel editable like a real tool.
 
 - Select a vertical line of points and move them together in Comp.
 - Shift-select corners and Option-drag depth as a group.
+- Cmd/Ctrl-drag a marquee over free points and move the boxed set.
 
 ### Phase B — Attach semantics + Roll
 
@@ -126,8 +127,8 @@ Make the lattice feel editable like a real tool.
 
 | PR | Scope | Risk |
 |---|---|---|
-| **A1** | Docs + multi-select / multi-drag / selection draw | Low–med |
-| **A2** | Box select + line mode | Med |
+| **A1** | Docs + multi-select / multi-drag / selection draw | Done |
+| **A2** | Box select + line hit | Done |
 | **A3** | PRS gizmo (translate first, then rotate/scale) | Med–high |
 | **B1** | Attach relative offsets in render/gizmo | High |
 | **B2** | Roll model + tests | Med |
