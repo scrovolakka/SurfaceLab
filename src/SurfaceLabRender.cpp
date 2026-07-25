@@ -802,19 +802,11 @@ SurfaceEvaluationState BuildSurfaceEvaluationState(
                 state.root_pre_scene_transform);
     }
     const SurfaceCoordinateTransform& transform = state.coordinate_transform;
-    const Point3 lattice_center{
-        (minimum_x + maximum_x) * 0.5,
-        (minimum_y + maximum_y) * 0.5,
-        (minimum_z + maximum_z) * 0.5};
-    for (std::size_t index = 0; index < state.lattice.point_count; ++index) {
-        StoredPoint3& point = state.lattice.points[index];
-        point.x = static_cast<float>(
-            point.x - lattice_center.x + transform.pivot.x);
-        point.y = static_cast<float>(
-            point.y - lattice_center.y + transform.pivot.y);
-        point.z = static_cast<float>(
-            point.z - lattice_center.z + transform.pivot.z);
-    }
+    // Keep lattice points in absolute cage coordinates. Re-centering every
+    // evaluation on the live point mean made single-point edits drag every
+    // other control point the opposite way (and a large first drag looked
+    // like the whole lattice collapsing to the pivot). Scale/rotate still
+    // orbit transform.pivot / rotation_origin.
     state.rotation_x = transform.rotation_radians.x;
     state.rotation_y = transform.rotation_radians.y;
     state.rotation_z = transform.rotation_radians.z;

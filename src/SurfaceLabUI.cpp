@@ -160,6 +160,7 @@ enum class TranslateAxis {
 struct GizmoSelectionState {
     std::vector<LatticePointRef> points{};
     bool dragging{};
+    bool drag_moved{};
     bool marquee_active{};
     bool marquee_additive{};
     Point2 marquee_start{};
@@ -194,6 +195,7 @@ bool SelectionContains(const LatticePointRef& point) {
 void ClearSelection() {
     g_selection.points.clear();
     g_selection.dragging = false;
+    g_selection.drag_moved = false;
     g_selection.marquee_active = false;
     g_selection.marquee_additive = false;
     g_selection.primary = {};
@@ -207,6 +209,7 @@ void BeginCompDrag(PF_EventExtra* event_extra) {
     if (event_extra) {
         event_extra->u.do_click.send_drag = TRUE;
     }
+    g_selection.drag_moved = false;
 }
 
 void EndCompDragIfFinished(PF_EventExtra* event_extra) {
@@ -215,6 +218,7 @@ void EndCompDragIfFinished(PF_EventExtra* event_extra) {
     }
     event_extra->u.do_click.send_drag = FALSE;
     g_selection.dragging = false;
+    g_selection.drag_moved = false;
     g_selection.marquee_active = false;
     g_selection.axis_drag = TranslateAxis::None;
 }
@@ -1668,6 +1672,7 @@ PF_Err HandleSurfaceGizmoEvent(
             (event_extra->u.do_click.modifiers &
              PF_Mod_CMD_CTRL_KEY) != 0;
         g_selection.dragging = false;
+        g_selection.drag_moved = false;
         g_selection.marquee_active = false;
         g_selection.axis_drag = TranslateAxis::None;
 
@@ -1830,11 +1835,12 @@ PF_Err HandleSurfaceGizmoEvent(
         return PF_Err_NONE;
     }
 
-    if (event_extra->e_type == PF_Event_DRAG &&
-        event_extra->u.do_click.send_drag) {
-        // Keep the drag stream alive until AE marks last_time.
-        event_extra->u.do_click.send_drag = TRUE;
+    // Lattice mutation is DRAG-only. DO_CLICK arms selection + send_drag;
+    // a zero-length click (last_time without motion) must not write the lattice.
+    if (event_extra->e_type != PF_Event_DRAG) {
+        return PF_Err_NONE;
     }
+    event_extra->u.do_click.send_drag = TRUE;
 
     if (g_selection.marquee_active) {
         g_selection.marquee_end = mouse;
@@ -1861,6 +1867,25 @@ PF_Err HandleSurfaceGizmoEvent(
 
     const double screen_x = mouse.x - g_selection.last_mouse.x;
     const double screen_y = mouse.y - g_selection.last_mouse.y;
+    const double screen_distance = std::sqrt(
+        screen_x * screen_x + screen_y * screen_y);
+    // Ignore sub-pixel noise and one-frame coordinate-space teleports that
+    // AE can emit on the first drag sample after DO_CLICK.
+    if (screen_distance < 0.75 || screen_distance > 120.0) {
+        if (screen_distance > 120.0) {
+            g_selection.last_mouse = mouse;
+        }
+        EndCompDragIfFinished(event_extra);
+        event_extra->evt_out_flags = static_cast<PF_EventOutFlags>(
+            PF_EO_HANDLED_EVENT | PF_EO_ALWAYS_UPDATE);
+        return PF_Err_NONE;
+    }
+    if (event_extra->u.do_click.last_time && !g_selection.drag_moved) {
+        EndCompDragIfFinished(event_extra);
+        return PF_Err_NONE;
+    }
+    g_selection.drag_moved = true;
+
     float apply_x = 0.0F;
     float apply_y = 0.0F;
     float apply_z = 0.0F;
@@ -1893,11 +1918,11 @@ PF_Err HandleSurfaceGizmoEvent(
             (dir_length * pixels_per_unit);
         const Point3 unit = AxisUnit(g_selection.axis_drag);
         apply_x = static_cast<float>(
-            std::clamp(unit.x * axis_delta, -2000.0, 2000.0));
+            std::clamp(unit.x * axis_delta, -80.0, 80.0));
         apply_y = static_cast<float>(
-            std::clamp(unit.y * axis_delta, -2000.0, 2000.0));
+            std::clamp(unit.y * axis_delta, -80.0, 80.0));
         apply_z = static_cast<float>(
-            std::clamp(unit.z * axis_delta, -2000.0, 2000.0));
+            std::clamp(unit.z * axis_delta, -80.0, 80.0));
         g_selection.selection_centroid.x += apply_x;
         g_selection.selection_centroid.y += apply_y;
         g_selection.selection_centroid.z += apply_z;
@@ -1998,11 +2023,11 @@ PF_Err HandleSurfaceGizmoEvent(
                                    : (jxx * screen_y -
                                       jyx * screen_x) / determinant;
         apply_x = static_cast<float>(
-            std::clamp(delta_x, -2000.0, 2000.0));
+            std::clamp(delta_x, -80.0, 80.0));
         apply_y = static_cast<float>(
-            std::clamp(delta_y, -2000.0, 2000.0));
+            std::clamp(delta_y, -80.0, 80.0));
         apply_z = static_cast<float>(
-            std::clamp(delta_z, -2000.0, 2000.0));
+            std::clamp(delta_z, -80.0, 80.0));
     }
 
     PF_Handle handle =
