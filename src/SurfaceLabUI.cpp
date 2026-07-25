@@ -1301,6 +1301,46 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
             LatticeRefcon(surface));
 
         AEFX_CLR_STRUCT(def);
+        PF_ADD_LAYER(
+            "Back Source",
+            PF_LayerDefault_NONE,
+            SurfaceDiskId(surface, kSurfaceBackSourceOffset));
+
+        AEFX_CLR_STRUCT(def);
+        PF_ADD_POPUP(
+            "Image Size",
+            3,
+            kImageSizeStretch,
+            "Stretch|Fill|Fit",
+            SurfaceDiskId(surface, kSurfaceImageSizeOffset));
+
+        AEFX_CLR_STRUCT(def);
+        PF_ADD_FLOAT_SLIDERX(
+            "Specular",
+            0.0,
+            100.0,
+            0.0,
+            100.0,
+            0.0,
+            PF_Precision_TENTHS,
+            PF_ValueDisplayFlag_PERCENT,
+            PF_ParamFlag_NONE,
+            SurfaceDiskId(surface, kSurfaceSpecularOffset));
+
+        AEFX_CLR_STRUCT(def);
+        PF_ADD_FLOAT_SLIDERX(
+            "Roughness",
+            0.0,
+            100.0,
+            0.0,
+            100.0,
+            50.0,
+            PF_Precision_TENTHS,
+            PF_ValueDisplayFlag_PERCENT,
+            PF_ParamFlag_NONE,
+            SurfaceDiskId(surface, kSurfaceRoughnessOffset));
+
+        AEFX_CLR_STRUCT(def);
         PF_END_TOPIC(
             SurfaceDiskId(surface, kSurfaceTopicEndOffset));
     }

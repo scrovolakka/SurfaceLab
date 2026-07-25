@@ -397,12 +397,37 @@ SceneData ResolveSceneForFrame(
             surface.enabled = 1;
         }
         surface.source_slot = index;
-        surface.image_size_mode = kImageSizeStretch;
-        surface.image_border_mode = kImageBorderClamp;
+        surface.back_source_slot =
+            params[SurfaceBackSourceParam(index)]->u.ld.data
+                ? index + 1U
+                : 0U;
+        surface.image_size_mode = static_cast<std::uint32_t>(
+            std::clamp<A_long>(
+                params[SurfaceParam(index, kSurfaceImageSizeOffset)]
+                    ->u.pd.value,
+                kImageSizeStretch,
+                kImageSizeFit));
+        surface.image_border_mode =
+            surface.image_size_mode == kImageSizeFit
+                ? kImageBorderTransparent
+                : kImageBorderClamp;
         surface.opacity = 100.0F;
         surface.diffuse = 100.0F;
-        surface.specular = 0.0F;
-        surface.shininess = 32.0F;
+        surface.specular = static_cast<float>(std::clamp(
+            params[SurfaceParam(index, kSurfaceSpecularOffset)]
+                ->u.fs_d.value,
+            0.0,
+            100.0));
+        const double roughness = std::clamp(
+            params[SurfaceParam(index, kSurfaceRoughnessOffset)]
+                ->u.fs_d.value,
+            0.0,
+            100.0) /
+            100.0;
+        // A perceptual roughness control mapped to the existing
+        // Blinn-Phong exponent. Roughness 50 preserves the v1.2 look.
+        surface.shininess = static_cast<float>(
+            1.0 + std::pow(1.0 - roughness, 3.0) * 248.0);
         surface.thickness = 0.0F;
         surface.transform_mode = 1;
         const PF_Point3DDef& position =

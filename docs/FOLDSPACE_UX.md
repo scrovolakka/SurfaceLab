@@ -44,7 +44,7 @@ Priority key:
 | PRS transform gizmos | Pos/Rot/Scale | Translate axes (local) | **Must** | A (partial) |
 | Gizmo local / world space | Yes | No | Nice | A |
 | Active-surface-driven UI | Selected surface params | All 8 always visible | Nice | A |
-| Point → Null attach (relative) | Parent-like attach | World override markers | **Must** | A/B |
+| Point → Null attach (relative) | Parent-like attach | Root-relative marker rig | **Must** | B (done) |
 | Multi-point → one Null | Line attach | Script row/col issue | Partial | A |
 | Surface Root rigid motion | Surface attach | Surface Root bind v4 | Partial | — |
 | Attach time offset | Yes | No | Nice | B |
@@ -109,9 +109,10 @@ Make the lattice feel editable like a real tool.
 
 ### Phase C — Materials / presentation
 
-1. Back source (layer or color)
-2. Image size modes + UV/image transform
+1. Back source (layer; use an AE Solid for color) — done
+2. Image size modes — done; UV/image transform remains
 3. Optional thickness (front/back first; sides next)
+4. Specular + roughness controls — done
 
 ### Phase D — Surface operations
 
@@ -131,10 +132,10 @@ Make the lattice feel editable like a real tool.
 | **A1** | Docs + multi-select / multi-drag / selection draw | Done |
 | **A2** | Box select + line hit | Done |
 | **A3** | Translate gizmo at selection centroid | Done (rotate/scale later) |
-| **B1** | Attach relative offsets in render/gizmo | Pending |
+| **B1** | Attach relative offsets in render/gizmo | Done |
 | **B2** | Roll model + tests | Done |
 | **B3** | Roll UI params (control Null later) | Done (params) |
-| **C1** | Back material + image modes | Med |
+| **C1** | Back material + image modes + surface response | Done |
 
 Do not land B/C on top of half-finished A gizmos without golden-scene smoke.
 
@@ -166,4 +167,7 @@ Persisted selection is not required.
 - `ctest` model suite remains green after any Model/Geometry change
 - AE 2026 manual: multi-select move, Option depth group move, Null point still
   locked
+- AE 2026 manual: move/rotate Surface Root, then issue another Point Null; it
+  appears on the current mesh with its tangent orientation and remains rigidly
+  attached when the Root moves again
 - After B2: scripted unroll smoke in `work/`

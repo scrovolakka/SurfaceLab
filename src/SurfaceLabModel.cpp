@@ -431,7 +431,23 @@ bool IsValidScene(const SceneData& scene) {
             !IsFiniteTransform(surface) ||
             surface.mesh_quality < kMinimumMeshQuality ||
             surface.mesh_quality > kMaximumMeshQuality ||
-            surface.source_slot >= kMaximumSurfaces) {
+            surface.source_slot >= kMaximumSurfaces ||
+            surface.back_source_slot > kMaximumSurfaces ||
+            surface.image_size_mode < kImageSizeStretch ||
+            surface.image_size_mode > kImageSizeFit ||
+            surface.image_border_mode < kImageBorderClamp ||
+            surface.image_border_mode > kImageBorderTransparent ||
+            !std::isfinite(surface.opacity) ||
+            !std::isfinite(surface.diffuse) ||
+            !std::isfinite(surface.specular) ||
+            !std::isfinite(surface.shininess) ||
+            surface.opacity < 0.0F ||
+            surface.opacity > 100.0F ||
+            surface.diffuse < 0.0F ||
+            surface.diffuse > 100.0F ||
+            surface.specular < 0.0F ||
+            surface.specular > 100.0F ||
+            surface.shininess < 1.0F) {
             return false;
         }
     }

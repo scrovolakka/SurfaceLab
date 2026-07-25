@@ -13,12 +13,12 @@
 
 // Keep these in lockstep with CMake project VERSION and SurfaceLabPiPL.r.
 constexpr A_short kSurfaceLabVersionMajor = 1;
-constexpr A_short kSurfaceLabVersionMinor = 2;
-constexpr A_short kSurfaceLabVersionPatch = 8;
-constexpr const char* kSurfaceLabVersionString = "1.2.8";
+constexpr A_short kSurfaceLabVersionMinor = 3;
+constexpr A_short kSurfaceLabVersionPatch = 0;
+constexpr const char* kSurfaceLabVersionString = "1.3.0";
 
 constexpr std::uint32_t kSurfaceCount = 8;
-constexpr PF_ParamIndex kSurfaceParameterStride = 18;
+constexpr PF_ParamIndex kSurfaceParameterStride = 22;
 constexpr PF_ParamIndex kRigBridgeCoordinateCount = 17 * 3;
 
 enum SurfaceParamOffset : PF_ParamIndex {
@@ -39,6 +39,10 @@ enum SurfaceParamOffset : PF_ParamIndex {
     kSurfaceRollRadiusOffset,
     kSurfaceRollExpandOffset,
     kSurfaceLatticeOffset,
+    kSurfaceBackSourceOffset,
+    kSurfaceImageSizeOffset,
+    kSurfaceSpecularOffset,
+    kSurfaceRoughnessOffset,
     kSurfaceTopicEndOffset
 };
 
@@ -91,6 +95,10 @@ constexpr PF_ParamIndex SurfaceSourceParam(std::uint32_t surface) {
     return SurfaceParam(surface, kSurfaceSourceOffset);
 }
 
+constexpr PF_ParamIndex SurfaceBackSourceParam(std::uint32_t surface) {
+    return SurfaceParam(surface, kSurfaceBackSourceOffset);
+}
+
 constexpr PF_ParamIndex SurfaceLatticeParam(std::uint32_t surface) {
     return SurfaceParam(surface, kSurfaceLatticeOffset);
 }
@@ -139,10 +147,21 @@ enum ParamDiskId : A_long {
 constexpr A_long SurfaceDiskId(
     std::uint32_t surface,
     SurfaceParamOffset offset) {
+    // v1.2.x ended each surface topic at offset 17. Keep that persisted ID
+    // stable and allocate the v1.3 material controls after it.
+    const A_long persisted_offset =
+        offset == kSurfaceTopicEndOffset
+            ? 17
+            : (offset >= kSurfaceBackSourceOffset
+                   ? 18 + static_cast<A_long>(
+                              offset - kSurfaceBackSourceOffset)
+                   : static_cast<A_long>(offset));
     return kDiskSurfaceParametersStart +
            static_cast<A_long>(surface) * 32 +
-           static_cast<A_long>(offset);
+           persisted_offset;
 }
+
+static_assert(kParamCount <= 255, "After Effects supports at most 255 params");
 
 extern "C" {
 

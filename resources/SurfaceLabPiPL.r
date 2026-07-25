@@ -22,8 +22,8 @@ resource 'PiPL' (16000) {
 #endif
         AE_PiPL_Version { 2, 0 },
         AE_Effect_Spec_Version { PF_PLUG_IN_VERSION, PF_PLUG_IN_SUBVERS },
-        /* PF_VERSION(1, 2, 8, PF_Stage_DEVELOP, 1) */
-        AE_Effect_Version { 606209 },
+        /* PF_VERSION(1, 3, 0, PF_Stage_DEVELOP, 1) */
+        AE_Effect_Version { 622593 },
         AE_Effect_Info_Flags { 0 },
         AE_Effect_Global_OutFlags { 0x06088442 },
         AE_Effect_Global_OutFlags_2 { 0x08201406 },

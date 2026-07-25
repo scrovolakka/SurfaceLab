@@ -2577,6 +2577,7 @@ struct RenderFrameSnapshot {
     bool wireframe{};
     A_long render_view{kRenderViewFinish};
     std::array<bool, kMaximumSurfaces> source_slots{};
+    std::array<bool, kMaximumSurfaces> back_source_slots{};
 };
 
 RenderFrameSnapshot BuildRenderFrameSnapshot(
@@ -2649,10 +2650,9 @@ RenderFrameSnapshot BuildRenderFrameSnapshot(
                 continue;
             }
             snapshot.source_slots[surface.source_slot] = true;
-            const std::uint32_t back_slot = surface.back_source_slot == 0
-                                                ? surface.source_slot
-                                                : surface.back_source_slot - 1;
-            snapshot.source_slots[back_slot] = true;
+            if (surface.back_source_slot != 0) {
+                snapshot.back_source_slots[index] = true;
+            }
         }
     }
     return snapshot;
@@ -2697,14 +2697,12 @@ PF_Err RenderSurface(PF_InData* in_data, PF_ParamDef* params[], PF_LayerDef* out
             return front_checkout_error;
         }
 
-        const std::uint32_t back_slot = surface.back_source_slot == 0
-                                            ? surface.source_slot
-                                            : surface.back_source_slot - 1;
-        const bool separate_back_checkout = back_slot != surface.source_slot;
+        const bool separate_back_checkout =
+            surface.back_source_slot != 0;
         CheckedOutLayerParam back_checkout(in_data);
         if (separate_back_checkout) {
             const PF_Err back_checkout_error = back_checkout.Checkout(
-                SurfaceSourceParam(back_slot));
+                SurfaceBackSourceParam(index));
             if (back_checkout_error != PF_Err_NONE) {
                 return back_checkout_error;
             }
@@ -2765,7 +2763,7 @@ PF_Err Render(PF_InData* in_data, PF_ParamDef* params[], PF_LayerDef* output) {
 namespace {
 
 constexpr A_long kSmartCheckoutStride =
-    1 + static_cast<A_long>(kMaximumSurfaces);
+    1 + 2 * static_cast<A_long>(kMaximumSurfaces);
 
 A_long SmartInputCheckoutId(std::size_t sample) {
     return static_cast<A_long>(sample) * kSmartCheckoutStride;
@@ -2776,6 +2774,14 @@ A_long SmartSourceCheckoutId(
     std::uint32_t source) {
     return SmartInputCheckoutId(sample) + 1 +
            static_cast<A_long>(source);
+}
+
+A_long SmartBackSourceCheckoutId(
+    std::size_t sample,
+    std::uint32_t surface) {
+    return SmartInputCheckoutId(sample) + 1 +
+           static_cast<A_long>(kMaximumSurfaces) +
+           static_cast<A_long>(surface);
 }
 
 struct SmartParameterSet {
@@ -2854,9 +2860,9 @@ PF_Err CheckoutSmartRenderParameters(
     }
     for (std::uint32_t surface = 0;
          surface < kSurfaceCount;
-         ++surface) {
+        ++surface) {
         for (PF_ParamIndex offset = kSurfaceSourceOffset;
-             offset <= kSurfaceLatticeOffset;
+             offset <= kSurfaceRoughnessOffset;
              ++offset) {
             const PF_Err error = CheckoutSmartParameter(
                 in_data,
@@ -2941,6 +2947,8 @@ PF_Err RenderSmartFrame(
     const RenderFrameSnapshot& snapshot,
     const PF_LayerDef& input,
     const std::array<const PF_LayerDef*, kMaximumSurfaces>& source_worlds,
+    const std::array<const PF_LayerDef*, kMaximumSurfaces>&
+        back_source_worlds,
     PF_LayerDef& output) {
     if (!IsUsableTextureWorld(input) ||
         !output.data ||
@@ -2968,11 +2976,11 @@ PF_Err RenderSmartFrame(
         if (surface.enabled == 0) {
             continue;
         }
-        const std::uint32_t back_slot = surface.back_source_slot == 0
-                                            ? surface.source_slot
-                                            : surface.back_source_slot - 1;
         const PF_LayerDef* front_world = source_worlds[surface.source_slot];
-        const PF_LayerDef* back_world = source_worlds[back_slot];
+        const PF_LayerDef* back_world =
+            surface.back_source_slot != 0
+                ? back_source_worlds[index]
+                : front_world;
         const PF_LayerDef& front_texture =
             front_world && IsUsableTextureWorld(*front_world)
                 ? *front_world
@@ -3009,11 +3017,15 @@ PF_Err RenderMotionSamples(
     const std::vector<
         std::array<const PF_LayerDef*, kMaximumSurfaces>>&
         source_worlds,
+    const std::vector<
+        std::array<const PF_LayerDef*, kMaximumSurfaces>>&
+        back_source_worlds,
     PF_LayerDef& output) {
     const std::size_t sample_count = render_snapshot.samples.size();
     if (sample_count == 0 ||
         inputs.size() != sample_count ||
-        source_worlds.size() != sample_count) {
+        source_worlds.size() != sample_count ||
+        back_source_worlds.size() != sample_count) {
         return PF_Err_BAD_CALLBACK_PARAM;
     }
     if (sample_count == 1) {
@@ -3021,6 +3033,7 @@ PF_Err RenderMotionSamples(
             render_snapshot.samples[0],
             *inputs[0],
             source_worlds[0],
+            back_source_worlds[0],
             output);
     }
 
@@ -3043,6 +3056,7 @@ PF_Err RenderMotionSamples(
             render_snapshot.samples[sample],
             *inputs[sample],
             source_worlds[sample],
+            back_source_worlds[sample],
             sample_world);
         if (error != PF_Err_NONE) {
             return error;
@@ -3228,6 +3242,14 @@ std::vector<double> BuildExternalStateDigest(
         digest.push_back(static_cast<double>(lattice.divisions_y));
         digest.push_back(static_cast<double>(lattice.point_count));
         const SurfaceData& surface = scene.surfaces[surface_index];
+        digest.push_back(static_cast<double>(surface.source_slot));
+        digest.push_back(static_cast<double>(surface.back_source_slot));
+        digest.push_back(static_cast<double>(surface.image_size_mode));
+        digest.push_back(static_cast<double>(surface.image_border_mode));
+        digest.push_back(surface.opacity);
+        digest.push_back(surface.diffuse);
+        digest.push_back(surface.specular);
+        digest.push_back(surface.shininess);
         digest.push_back(
             surface.root_transform_enabled != 0 ? 1.0 : 0.0);
         const Affine3D& root = surface.root_world_transform;
@@ -3348,6 +3370,28 @@ PF_Err SmartPreRender(
                 return error;
             }
         }
+        for (std::uint32_t surface = 0;
+             surface <
+                 static_cast<std::uint32_t>(
+                     frame.back_source_slots.size());
+             ++surface) {
+            if (!frame.back_source_slots[surface]) {
+                continue;
+            }
+            PF_CheckoutResult source_result{};
+            error = extra->cb->checkout_layer(
+                in_data->effect_ref,
+                SurfaceBackSourceParam(surface),
+                SmartBackSourceCheckoutId(sample, surface),
+                &texture_request,
+                sample_in.current_time,
+                sample_in.time_step,
+                sample_in.time_scale,
+                &source_result);
+            if (error != PF_Err_NONE) {
+                return error;
+            }
+        }
 
         const OutputBounds bounds = ComputeOutputBounds(
             parameters.pointers.data(),
@@ -3416,10 +3460,18 @@ PF_Err SmartRender(
             std::unique_ptr<CheckedOutSmartLayerPixels>,
             kMaximumSurfaces>>
         source_checkouts(snapshot.samples.size());
+    std::vector<
+        std::array<
+            std::unique_ptr<CheckedOutSmartLayerPixels>,
+            kMaximumSurfaces>>
+        back_source_checkouts(snapshot.samples.size());
     std::vector<const PF_LayerDef*> input_worlds;
     std::vector<
         std::array<const PF_LayerDef*, kMaximumSurfaces>>
         source_worlds(snapshot.samples.size());
+    std::vector<
+        std::array<const PF_LayerDef*, kMaximumSurfaces>>
+        back_source_worlds(snapshot.samples.size());
     input_checkouts.reserve(snapshot.samples.size());
     input_worlds.reserve(snapshot.samples.size());
     for (std::size_t sample = 0;
@@ -3459,6 +3511,29 @@ PF_Err SmartRender(
             source_worlds[sample][slot] =
                 source_checkouts[sample][slot]->World();
         }
+        for (std::uint32_t surface = 0;
+             surface <
+                 static_cast<std::uint32_t>(
+                     snapshot.samples[sample]
+                         .back_source_slots.size());
+             ++surface) {
+            if (!snapshot.samples[sample]
+                     .back_source_slots[surface]) {
+                continue;
+            }
+            back_source_checkouts[sample][surface] =
+                std::make_unique<CheckedOutSmartLayerPixels>();
+            error =
+                back_source_checkouts[sample][surface]->Checkout(
+                    in_data,
+                    extra,
+                    SmartBackSourceCheckoutId(sample, surface));
+            if (error != PF_Err_NONE) {
+                return error;
+            }
+            back_source_worlds[sample][surface] =
+                back_source_checkouts[sample][surface]->World();
+        }
     }
 
     PF_EffectWorld* output = nullptr;
@@ -3484,18 +3559,21 @@ PF_Err SmartRender(
                 snapshot,
                 input_worlds,
                 source_worlds,
+                back_source_worlds,
                 *output);
         case PF_PixelFormat_ARGB64:
             return RenderMotionSamples<PF_Pixel16>(
                 snapshot,
                 input_worlds,
                 source_worlds,
+                back_source_worlds,
                 *output);
         case PF_PixelFormat_ARGB32:
             return RenderMotionSamples<PF_Pixel8>(
                 snapshot,
                 input_worlds,
                 source_worlds,
+                back_source_worlds,
                 *output);
         default:
             return PF_Err_BAD_CALLBACK_PARAM;

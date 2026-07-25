@@ -46,6 +46,27 @@ void TestInitialization() {
     CHECK(Near(scene.surfaces[0].position_y, 540.0));
 }
 
+void TestMaterialValidation() {
+    SceneData scene{};
+    InitializeScene(scene, 1920.0, 1080.0);
+    SurfaceData& surface = scene.surfaces[0];
+    surface.back_source_slot = 1;
+    surface.image_size_mode = kImageSizeFit;
+    surface.image_border_mode = kImageBorderTransparent;
+    surface.specular = 75.0F;
+    surface.shininess = 32.0F;
+    CHECK(IsValidScene(scene));
+
+    surface.back_source_slot = kMaximumSurfaces + 1;
+    CHECK(!IsValidScene(scene));
+    surface.back_source_slot = 0;
+    surface.image_size_mode = kImageSizeFit + 1;
+    CHECK(!IsValidScene(scene));
+    surface.image_size_mode = kImageSizeStretch;
+    surface.specular = std::numeric_limits<float>::quiet_NaN();
+    CHECK(!IsValidScene(scene));
+}
+
 void TestDeferredInputSizedInitialization() {
     LatticeData deferred{};
     InitializeLattice(deferred, 3, 3, 0.0, 0.0, 10);
@@ -350,6 +371,66 @@ void TestAffine3DRootTransforms() {
     CHECK(Near(moved.z, bound_point.z + 18.0));
 }
 
+void TestPointAttachAfterRootMotion() {
+    const Affine3D bind_root{
+        0.0, 1.0, 0.0,
+        -1.0, 0.0, 0.0,
+        0.0, 0.0, 1.0,
+        960.0, 540.0, 25.0};
+    const Affine3D current_root{
+        -1.0, 0.0, 0.0,
+        0.0, -1.0, 0.0,
+        0.0, 0.0, 1.0,
+        1120.0, 470.0, 60.0};
+    Affine3D root_delta{};
+    CHECK(BuildAffineDeltaTransform(
+        bind_root,
+        current_root,
+        root_delta));
+
+    Affine3D inverse_bind{};
+    CHECK(TryInvertAffine3D(bind_root, inverse_bind));
+    const Point3 unrooted_point{820.0, 610.0, 40.0};
+    const Point3 child_local =
+        ApplyAffine3D(inverse_bind, unrooted_point);
+    const Point3 issued_world =
+        ApplyAffine3D(current_root, child_local);
+    const Point3 rendered_world =
+        ApplyAffine3D(root_delta, unrooted_point);
+    CHECK(Near(issued_world.x, rendered_world.x));
+    CHECK(Near(issued_world.y, rendered_world.y));
+    CHECK(Near(issued_world.z, rendered_world.z));
+
+    Affine3D inverse_delta{};
+    CHECK(TryInvertAffine3D(root_delta, inverse_delta));
+    const Point3 resolved_controller =
+        ApplyAffine3D(inverse_delta, issued_world);
+    CHECK(Near(resolved_controller.x, unrooted_point.x));
+    CHECK(Near(resolved_controller.y, unrooted_point.y));
+    CHECK(Near(resolved_controller.z, unrooted_point.z));
+
+    // The bind-to-current mapping also carries the tangent frame, so a new
+    // point Null faces the rooted polygon instead of using world orientation.
+    const Point3 unrooted_x{
+        unrooted_point.x + 1.0,
+        unrooted_point.y,
+        unrooted_point.z};
+    const Point3 issued_x = ApplyAffine3D(
+        current_root,
+        ApplyAffine3D(inverse_bind, unrooted_x));
+    const Point3 rendered_x =
+        ApplyAffine3D(root_delta, unrooted_x);
+    CHECK(Near(
+        issued_x.x - issued_world.x,
+        rendered_x.x - rendered_world.x));
+    CHECK(Near(
+        issued_x.y - issued_world.y,
+        rendered_x.y - rendered_world.y));
+    CHECK(Near(
+        issued_x.z - issued_world.z,
+        rendered_x.z - rendered_world.z));
+}
+
 void TestRootTransformConjugatesThroughScene() {
     SceneCoordinateTransform scene;
     scene.pivot = {960.0, 540.0, 0.0};
@@ -476,6 +557,7 @@ void TestSurfaceRollIdentityAndCylinder() {
 
 int main() {
     TestInitialization();
+    TestMaterialValidation();
     TestDeferredInputSizedInitialization();
     TestFixedCageCenterUsesRenderSpaceOnce();
     TestEveryControlPointInterpolates();
@@ -488,6 +570,7 @@ int main() {
     TestSceneTransformRoundTrip();
     TestAffineRoundTrip();
     TestAffine3DRootTransforms();
+    TestPointAttachAfterRootMotion();
     TestRootTransformConjugatesThroughScene();
     TestSurfacePositionUsesRenderScaleOnce();
     TestSubframeSampleTimes();

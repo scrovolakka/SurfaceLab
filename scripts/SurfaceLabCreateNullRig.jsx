@@ -11,7 +11,7 @@
 (function surfaceLabCreateNullRig() {
     var EFFECT_MATCH_NAME = "XPK SurfaceLab";
     var SURFACE_COUNT = 8;
-    var SURFACE_STRIDE = 18;
+    var SURFACE_STRIDE = 22;
     var SURFACE_PARAMETERS_START = 11;
     var SCENE_POSITION = 2;
     var SCENE_ROTATION_X = 3;
@@ -29,12 +29,12 @@
     var SURFACE_SCALE_Z_OFFSET = 8;
     // 1-based effect property indices (PF param index + 1). Keep in sync with
     // SurfaceLab.h after any Surface parameter-stride change.
-    var RIG_SURFACE = 158;
-    var RIG_ROW = 159;
-    var RIG_SURFACE_ID_0 = 160;
-    var RIG_DIVISIONS_X = 164;
-    var RIG_DIVISIONS_Y = 165;
-    var RIG_POINTS_START = 166;
+    var RIG_SURFACE = 190;
+    var RIG_ROW = 191;
+    var RIG_SURFACE_ID_0 = 192;
+    var RIG_DIVISIONS_X = 196;
+    var RIG_DIVISIONS_Y = 197;
+    var RIG_POINTS_START = 198;
 
     function surfacePropertyIndex(surfaceIndex, offset) {
         return SURFACE_PARAMETERS_START +
@@ -565,6 +565,112 @@
         };
     }
 
+    function markerNumber(comment, key, divisor) {
+        var token = "|" + key + "=";
+        var start = comment.indexOf(token);
+        if (start < 0) {
+            throw new Error(
+                "Surface Root marker is missing " + key + ".");
+        }
+        start += token.length;
+        var end = comment.indexOf("|", start);
+        if (end < 0) {
+            end = comment.length;
+        }
+        var value = Number(comment.substring(start, end));
+        if (!isFinite(value)) {
+            throw new Error(
+                "Surface Root marker has an invalid " + key + ".");
+        }
+        return value / divisor;
+    }
+
+    function rootBindTransform(root) {
+        var comment = markerComment(root);
+        if (comment.indexOf("|rootv=4|") < 0) {
+            throw new Error(
+                "Surface Root must be upgraded before issuing Point Nulls.");
+        }
+        return {
+            world: [
+                markerNumber(comment, "bindx", 1000.0),
+                markerNumber(comment, "bindy", 1000.0),
+                markerNumber(comment, "bindz", 1000.0)
+            ],
+            frame: {
+                x: [
+                    markerNumber(comment, "bxx", 1000000.0),
+                    markerNumber(comment, "bxy", 1000000.0),
+                    markerNumber(comment, "bxz", 1000000.0)
+                ],
+                y: [
+                    markerNumber(comment, "byx", 1000000.0),
+                    markerNumber(comment, "byy", 1000000.0),
+                    markerNumber(comment, "byz", 1000000.0)
+                ],
+                z: [
+                    markerNumber(comment, "bzx", 1000000.0),
+                    markerNumber(comment, "bzy", 1000000.0),
+                    markerNumber(comment, "bzz", 1000000.0)
+                ]
+            }
+        };
+    }
+
+    function coordinatesInFrame(vector, frame) {
+        var yCrossZ = cross(frame.y, frame.z);
+        var determinant = dot(frame.x, yCrossZ);
+        if (!isFinite(determinant) ||
+            Math.abs(determinant) < 0.000000001) {
+            throw new Error(
+                "Surface Root bind frame cannot be inverted.");
+        }
+        return [
+            dot(vector, yCrossZ) / determinant,
+            dot(frame.x, cross(vector, frame.z)) / determinant,
+            dot(frame.x, cross(frame.y, vector)) / determinant
+        ];
+    }
+
+    function pointFromFrame(coordinates, transform) {
+        return [
+            transform.world[0] +
+                transform.frame.x[0] * coordinates[0] +
+                transform.frame.y[0] * coordinates[1] +
+                transform.frame.z[0] * coordinates[2],
+            transform.world[1] +
+                transform.frame.x[1] * coordinates[0] +
+                transform.frame.y[1] * coordinates[1] +
+                transform.frame.z[1] * coordinates[2],
+            transform.world[2] +
+                transform.frame.x[2] * coordinates[0] +
+                transform.frame.y[2] * coordinates[1] +
+                transform.frame.z[2] * coordinates[2]
+        ];
+    }
+
+    function mapPointBetweenRootFrames(point, bind, current) {
+        return pointFromFrame(
+            coordinatesInFrame(
+                subtract(point, bind.world),
+                bind.frame),
+            current);
+    }
+
+    function mapPointsThroughRoot(points, root) {
+        var bind = rootBindTransform(root);
+        var current = sampleLayerWorldTransform(root);
+        var mapped = [];
+        var index;
+        for (index = 0; index < points.length; index += 1) {
+            mapped.push(mapPointBetweenRootFrames(
+                points[index],
+                bind,
+                current));
+        }
+        return mapped;
+    }
+
     function getOrCreateRoot(
         comp,
         identityComment,
@@ -782,6 +888,18 @@
                  detachedIndex += 1) {
                 detachedPointNulls[detachedIndex].parent = surfaceRoot;
             }
+            // buildWorldPoints describes the unrooted surface. If an existing
+            // Surface Root has already moved, issue new Point Nulls on the
+            // current rooted surface, not at its stale bind pose. Rebuilding
+            // tangent frames from the mapped points also gives every new Null
+            // the direction currently visible in the Comp panel.
+            worldPoints = mapPointsThroughRoot(
+                worldPoints,
+                surfaceRoot);
+            pointFrames = buildPointFrames(
+                worldPoints,
+                lattice.divisionsX,
+                lattice.divisionsY);
         }
         var issued = [];
         var index;

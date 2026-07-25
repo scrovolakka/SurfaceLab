@@ -51,11 +51,25 @@ fi
 
 echo "==> Installing to $install_dir"
 mkdir -p "$install_dir" 2>/dev/null || true
-if ! rm -rf "$install_dir/SurfaceLab.plugin" 2>/dev/null || \
-   ! cp -R "$bundle" "$install_dir/" 2>/dev/null; then
+destination="$install_dir/SurfaceLab.plugin"
+installed_without_sudo=false
+# A system MediaCore directory can be root-owned while an existing development
+# bundle is user-owned. In that common case, replace only the bundle contents;
+# removing and recreating the top-level directory would unnecessarily require
+# administrator access.
+if [[ -d "$destination" && -w "$destination" ]]; then
+    if rm -rf "$destination/Contents" 2>/dev/null && \
+       cp -R "$bundle/Contents" "$destination/" 2>/dev/null; then
+        installed_without_sudo=true
+    fi
+elif rm -rf "$destination" 2>/dev/null && \
+     cp -R "$bundle" "$install_dir/" 2>/dev/null; then
+    installed_without_sudo=true
+fi
+if [[ "$installed_without_sudo" != true ]]; then
     echo "    (retrying with sudo)"
     sudo mkdir -p "$install_dir"
-    sudo rm -rf "$install_dir/SurfaceLab.plugin"
+    sudo rm -rf "$destination"
     sudo cp -R "$bundle" "$install_dir/"
 fi
 
