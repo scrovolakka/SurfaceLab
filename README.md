@@ -55,8 +55,11 @@ to issue 3D Null point controllers for a surface.
   and sources at AE shutter subframes (capped at 32 samples).
 - Output is always clipped to the 2D host layer rectangle.
 - The Composition panel draws the lattice. Drag a point for local X/Y;
-  Option/Alt-drag for Z. Null-controlled points appear orange and are
-  read-only in the gizmo.
+  Option/Alt-drag for Z. **Shift-click** adds or removes points from the
+  selection so multiple free points move together. Null-controlled points
+  appear orange and are read-only in the gizmo.
+- Foldspace-oriented interaction work is tracked in
+  [docs/FOLDSPACE_UX.md](docs/FOLDSPACE_UX.md).
 
 Removed from 0.x: internal camera/light, surface list, material/thickness,
 bend/roll/curl/twist, image fit/border modes, rotation-origin modes,

@@ -9,6 +9,8 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <cstdint>
+#include <vector>
 
 #if defined(__APPLE__)
 #include <CoreFoundation/CoreFoundation.h>
@@ -128,15 +130,76 @@ CameraState BuildGizmoCamera(
         1.0);
 }
 
-struct GizmoDragState {
-    bool active{};
+// Process-local Comp selection. Not persisted; matches the existing gizmo
+// drag memory model. A1 keeps selection on a single surface so multi-drag
+// can share one screen→local Jacobian without cross-surface ambiguity.
+struct LatticePointRef {
     std::uint32_t surface{};
     std::uint16_t row{};
     std::uint16_t column{};
+};
+
+struct GizmoSelectionState {
+    std::vector<LatticePointRef> points{};
+    bool dragging{};
+    LatticePointRef primary{};
     Point2 last_mouse{};
 };
 
-GizmoDragState g_drag;
+GizmoSelectionState g_selection;
+
+bool SameLatticePoint(const LatticePointRef& a, const LatticePointRef& b) {
+    return a.surface == b.surface &&
+           a.row == b.row &&
+           a.column == b.column;
+}
+
+bool SelectionContains(const LatticePointRef& point) {
+    return std::any_of(
+        g_selection.points.begin(),
+        g_selection.points.end(),
+        [&](const LatticePointRef& candidate) {
+            return SameLatticePoint(candidate, point);
+        });
+}
+
+void ClearSelection() {
+    g_selection.points.clear();
+    g_selection.dragging = false;
+    g_selection.primary = {};
+}
+
+void SetSelection(const LatticePointRef& point) {
+    g_selection.points.clear();
+    g_selection.points.push_back(point);
+    g_selection.primary = point;
+}
+
+void ToggleSelection(const LatticePointRef& point) {
+    if (!g_selection.points.empty() &&
+        g_selection.points.front().surface != point.surface) {
+        // Cross-surface multi-select lands in a later slice.
+        SetSelection(point);
+        return;
+    }
+    const auto existing = std::find_if(
+        g_selection.points.begin(),
+        g_selection.points.end(),
+        [&](const LatticePointRef& candidate) {
+            return SameLatticePoint(candidate, point);
+        });
+    if (existing != g_selection.points.end()) {
+        g_selection.points.erase(existing);
+        if (SameLatticePoint(g_selection.primary, point)) {
+            g_selection.primary =
+                g_selection.points.empty() ? LatticePointRef{}
+                                           : g_selection.points.front();
+        }
+        return;
+    }
+    g_selection.points.push_back(point);
+    g_selection.primary = point;
+}
 
 bool ConfirmLatticeReduction(
     std::uint16_t old_x,
@@ -768,6 +831,8 @@ PF_Err HandleSurfaceGizmoEvent(
             0.12F, 0.78F, 1.0F, 0.82F};
         const DRAWBOT_ColorRGBA point_color{
             0.93F, 0.98F, 1.0F, 1.0F};
+        const DRAWBOT_ColorRGBA selected_point_color{
+            1.0F, 0.86F, 0.20F, 1.0F};
         const DRAWBOT_ColorRGBA controlled_point_color{
             1.0F, 0.63F, 0.12F, 1.0F};
         for (std::uint32_t surface_index = 0;
@@ -886,18 +951,26 @@ PF_Err HandleSurfaceGizmoEvent(
                             point)) {
                         continue;
                     }
+                    const LatticePointRef ref{
+                        surface_index,
+                        row,
+                        column};
+                    const bool controlled = null_overrides.IsControlled(
+                        surface_index,
+                        point_index);
+                    const bool selected =
+                        !controlled && SelectionContains(ref);
+                    const float half = selected ? 5.0F : 3.5F;
                     DRAWBOT_RectF32 rect{
-                        static_cast<float>(point.x - 3.5),
-                        static_cast<float>(point.y - 3.5),
-                        7.0F,
-                        7.0F};
+                        static_cast<float>(point.x - half),
+                        static_cast<float>(point.y - half),
+                        half * 2.0F,
+                        half * 2.0F};
                     suites.SurfaceSuiteCurrent()->PaintRect(
                         drawing_surface,
-                        null_overrides.IsControlled(
-                            surface_index,
-                            point_index)
-                            ? &controlled_point_color
-                            : &point_color,
+                        controlled ? &controlled_point_color
+                        : selected ? &selected_point_color
+                                   : &point_color,
                         &rect);
                 }
             }
@@ -915,7 +988,8 @@ PF_Err HandleSurfaceGizmoEvent(
     if (event_extra->e_type == PF_Event_DO_CLICK) {
         constexpr double kHitRadiusSquared = 100.0;
         double closest = kHitRadiusSquared;
-        g_drag = {};
+        LatticePointRef hit{};
+        bool found = false;
         for (std::uint32_t surface_index = 0;
              surface_index < scene.surface_count;
              ++surface_index) {
@@ -957,43 +1031,67 @@ PF_Err HandleSurfaceGizmoEvent(
                     const double distance = dx * dx + dy * dy;
                     if (distance <= closest) {
                         closest = distance;
-                        g_drag = {
-                            true,
-                            surface_index,
-                            row,
-                            column,
-                            mouse};
+                        hit = {surface_index, row, column};
+                        found = true;
                     }
                 }
             }
         }
-        if (g_drag.active) {
+
+        const bool shift =
+            (event_extra->u.do_click.modifiers & PF_Mod_SHIFT_KEY) != 0;
+        g_selection.dragging = false;
+        if (!found) {
+            if (!shift && !g_selection.points.empty()) {
+                ClearSelection();
+                event_extra->evt_out_flags =
+                    static_cast<PF_EventOutFlags>(
+                        PF_EO_HANDLED_EVENT | PF_EO_ALWAYS_UPDATE);
+            }
+            return PF_Err_NONE;
+        }
+
+        if (shift) {
+            ToggleSelection(hit);
+        } else if (!SelectionContains(hit)) {
+            SetSelection(hit);
+        } else {
+            g_selection.primary = hit;
+        }
+
+        if (!g_selection.points.empty()) {
+            g_selection.dragging = true;
+            g_selection.last_mouse = mouse;
             event_extra->evt_out_flags =
                 static_cast<PF_EventOutFlags>(
                     PF_EO_HANDLED_EVENT | PF_EO_ALWAYS_UPDATE);
+        } else {
+            event_extra->evt_out_flags = PF_EO_HANDLED_EVENT;
         }
         return PF_Err_NONE;
     }
 
-    if (!g_drag.active || g_drag.surface >= scene.surface_count) {
+    if (!g_selection.dragging ||
+        g_selection.points.empty() ||
+        g_selection.primary.surface >= scene.surface_count) {
         return PF_Err_NONE;
     }
-    SurfaceData surface = scene.surfaces[g_drag.surface];
-    const std::size_t point_index = LatticePointIndex(
+    SurfaceData surface = scene.surfaces[g_selection.primary.surface];
+    const std::size_t primary_index = LatticePointIndex(
         surface.lattice.divisions_x,
-        g_drag.row,
-        g_drag.column);
+        g_selection.primary.row,
+        g_selection.primary.column);
     if (null_overrides.IsControlled(
-            g_drag.surface,
-            point_index)) {
-        g_drag = {};
+            g_selection.primary.surface,
+            primary_index)) {
+        ClearSelection();
         return PF_Err_NONE;
     }
     const double u =
-        static_cast<double>(g_drag.column) /
+        static_cast<double>(g_selection.primary.column) /
         surface.lattice.divisions_x;
     const double v =
-        static_cast<double>(g_drag.row) /
+        static_cast<double>(g_selection.primary.row) /
         surface.lattice.divisions_y;
     Point2 origin;
     if (!ProjectSurfacePointToFrame(
@@ -1007,9 +1105,9 @@ PF_Err HandleSurfaceGizmoEvent(
         return PF_Err_NONE;
     }
     SurfaceData probe_x = surface;
-    probe_x.lattice.points[point_index].x += 1.0F;
+    probe_x.lattice.points[primary_index].x += 1.0F;
     SurfaceData probe_y = surface;
-    probe_y.lattice.points[point_index].y += 1.0F;
+    probe_y.lattice.points[primary_index].y += 1.0F;
     Point2 projected_x;
     Point2 projected_y;
     if (!ProjectSurfacePointToFrame(
@@ -1034,15 +1132,15 @@ PF_Err HandleSurfaceGizmoEvent(
     const double jyx = projected_x.y - origin.y;
     const double jxy = projected_y.x - origin.x;
     const double jyy = projected_y.y - origin.y;
-    const double screen_x = mouse.x - g_drag.last_mouse.x;
-    const double screen_y = mouse.y - g_drag.last_mouse.y;
+    const double screen_x = mouse.x - g_selection.last_mouse.x;
+    const double screen_y = mouse.y - g_selection.last_mouse.y;
     const bool depth_drag =
         (event_extra->u.do_click.modifiers &
          PF_Mod_OPT_ALT_KEY) != 0;
     double delta_z = 0.0;
     if (depth_drag) {
         SurfaceData probe_z = surface;
-        probe_z.lattice.points[point_index].z += 1.0F;
+        probe_z.lattice.points[primary_index].z += 1.0F;
         Point2 projected_z;
         if (ProjectSurfacePointToFrame(
                 in_data,
@@ -1075,26 +1173,41 @@ PF_Err HandleSurfaceGizmoEvent(
                                ? 0.0
                                : (jxx * screen_y -
                                   jyx * screen_x) / determinant;
+    const float apply_x = static_cast<float>(
+        std::clamp(delta_x, -2000.0, 2000.0));
+    const float apply_y = static_cast<float>(
+        std::clamp(delta_y, -2000.0, 2000.0));
+    const float apply_z = static_cast<float>(
+        std::clamp(delta_z, -2000.0, 2000.0));
+
     PF_Handle handle =
-        params[SurfaceLatticeParam(g_drag.surface)]->u.arb_d.value;
+        params[SurfaceLatticeParam(g_selection.primary.surface)]
+            ->u.arb_d.value;
     auto* lattice =
         static_cast<LatticeData*>(PF_LOCK_HANDLE(handle));
-    if (!lattice || point_index >= lattice->point_count) {
-        if (lattice) {
-            PF_UNLOCK_HANDLE(handle);
-        }
+    if (!lattice) {
         return PF_Err_NONE;
     }
-    lattice->points[point_index].x += static_cast<float>(
-        std::clamp(delta_x, -2000.0, 2000.0));
-    lattice->points[point_index].y += static_cast<float>(
-        std::clamp(delta_y, -2000.0, 2000.0));
-    lattice->points[point_index].z += static_cast<float>(
-        std::clamp(delta_z, -2000.0, 2000.0));
+    for (const LatticePointRef& ref : g_selection.points) {
+        if (ref.surface != g_selection.primary.surface) {
+            continue;
+        }
+        const std::size_t point_index = LatticePointIndex(
+            lattice->divisions_x,
+            ref.row,
+            ref.column);
+        if (point_index >= lattice->point_count ||
+            null_overrides.IsControlled(ref.surface, point_index)) {
+            continue;
+        }
+        lattice->points[point_index].x += apply_x;
+        lattice->points[point_index].y += apply_y;
+        lattice->points[point_index].z += apply_z;
+    }
     PF_UNLOCK_HANDLE(handle);
-    params[SurfaceLatticeParam(g_drag.surface)]->uu.change_flags |=
-        PF_ChangeFlag_CHANGED_VALUE;
-    g_drag.last_mouse = mouse;
+    params[SurfaceLatticeParam(g_selection.primary.surface)]
+        ->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+    g_selection.last_mouse = mouse;
     event_extra->evt_out_flags = static_cast<PF_EventOutFlags>(
         PF_EO_HANDLED_EVENT |
         PF_EO_ALWAYS_UPDATE |
