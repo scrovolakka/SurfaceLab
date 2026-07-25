@@ -150,6 +150,13 @@ struct LatticeLineRef {
     std::uint16_t index{};
 };
 
+enum class TranslateAxis {
+    None,
+    X,
+    Y,
+    Z
+};
+
 struct GizmoSelectionState {
     std::vector<LatticePointRef> points{};
     bool dragging{};
@@ -159,9 +166,15 @@ struct GizmoSelectionState {
     Point2 marquee_end{};
     LatticePointRef primary{};
     Point2 last_mouse{};
+    // Translate gizmo: axis drag moves the whole selection in lattice space.
+    TranslateAxis axis_drag{TranslateAxis::None};
+    Point3 selection_centroid{};
 };
 
 GizmoSelectionState g_selection;
+
+constexpr double kTranslateAxisPixels = 56.0;
+constexpr double kTranslateAxisHitPixels = 10.0;
 
 bool SameLatticePoint(const LatticePointRef& a, const LatticePointRef& b) {
     return a.surface == b.surface &&
@@ -184,6 +197,227 @@ void ClearSelection() {
     g_selection.marquee_active = false;
     g_selection.marquee_additive = false;
     g_selection.primary = {};
+    g_selection.axis_drag = TranslateAxis::None;
+    g_selection.selection_centroid = {};
+}
+
+Point3 AxisUnit(TranslateAxis axis) {
+    switch (axis) {
+        case TranslateAxis::X:
+            return {1.0, 0.0, 0.0};
+        case TranslateAxis::Y:
+            return {0.0, 1.0, 0.0};
+        case TranslateAxis::Z:
+            return {0.0, 0.0, 1.0};
+        case TranslateAxis::None:
+        default:
+            return {};
+    }
+}
+
+double PointSegmentDistanceSquared(
+    Point2 point,
+    Point2 a,
+    Point2 b) {
+    const double abx = b.x - a.x;
+    const double aby = b.y - a.y;
+    const double apx = point.x - a.x;
+    const double apy = point.y - a.y;
+    const double ab_length_squared = abx * abx + aby * aby;
+    if (ab_length_squared <= 1.0e-12) {
+        return apx * apx + apy * apy;
+    }
+    const double t = std::clamp(
+        (apx * abx + apy * aby) / ab_length_squared,
+        0.0,
+        1.0);
+    const double dx = point.x - (a.x + abx * t);
+    const double dy = point.y - (a.y + aby * t);
+    return dx * dx + dy * dy;
+}
+
+bool ComputeSelectionCentroid(
+    const SceneData& scene,
+    Point3& centroid) {
+    if (g_selection.points.empty()) {
+        return false;
+    }
+    const std::uint32_t surface_index = g_selection.points.front().surface;
+    if (surface_index >= scene.surface_count) {
+        return false;
+    }
+    const SurfaceData& surface = scene.surfaces[surface_index];
+    if (!IsValidLattice(surface.lattice)) {
+        return false;
+    }
+    Point3 sum{};
+    std::size_t count = 0;
+    for (const LatticePointRef& ref : g_selection.points) {
+        if (ref.surface != surface_index) {
+            continue;
+        }
+        const std::size_t point_index = LatticePointIndex(
+            surface.lattice.divisions_x,
+            ref.row,
+            ref.column);
+        if (point_index >= surface.lattice.point_count) {
+            continue;
+        }
+        const StoredPoint3& point = surface.lattice.points[point_index];
+        sum.x += point.x;
+        sum.y += point.y;
+        sum.z += point.z;
+        ++count;
+    }
+    if (count == 0) {
+        return false;
+    }
+    centroid = {
+        sum.x / static_cast<double>(count),
+        sum.y / static_cast<double>(count),
+        sum.z / static_cast<double>(count)};
+    return true;
+}
+
+// Project a cage-local lattice coordinate through the same transform chain as
+// EvaluateTransformedPoint, without routing through UV evaluation.
+bool ProjectCageLocalPointToFrame(
+    PF_InData* in_data,
+    PF_EventExtra* event_extra,
+    const SurfaceData& surface,
+    const CameraState& camera,
+    Point3 local,
+    Point2& frame_point) {
+    const SurfaceEvaluationState state = BuildSurfaceEvaluationState(
+        surface,
+        camera,
+        1.0,
+        1.0,
+        1.0);
+    Point3 world = ScaleSurfaceCagePoint(local, state.coordinate_transform);
+    world = RotateSurfaceWorldPoint(world, state.coordinate_transform);
+    if (state.root_transform_enabled) {
+        world = ApplyAffine3D(state.root_pre_scene_transform, world);
+    }
+    const Vertex projected = ProjectVertex(
+        world,
+        {0.0, 0.0, -1.0},
+        0.0,
+        0.0,
+        camera);
+    return projected.visible &&
+           LayerPointToFrame(
+               in_data,
+               event_extra,
+               {projected.x, projected.y},
+               frame_point);
+}
+
+bool ProjectSelectionCentroidToFrame(
+    PF_InData* in_data,
+    PF_EventExtra* event_extra,
+    const SceneData& scene,
+    const CameraState& camera,
+    Point3 centroid,
+    Point2& frame_point) {
+    if (g_selection.points.empty()) {
+        return false;
+    }
+    const std::uint32_t surface_index = g_selection.points.front().surface;
+    if (surface_index >= scene.surface_count) {
+        return false;
+    }
+    return ProjectCageLocalPointToFrame(
+        in_data,
+        event_extra,
+        scene.surfaces[surface_index],
+        camera,
+        centroid,
+        frame_point);
+}
+
+bool BuildTranslateAxisScreen(
+    PF_InData* in_data,
+    PF_EventExtra* event_extra,
+    const SceneData& scene,
+    const CameraState& camera,
+    Point3 centroid,
+    TranslateAxis axis,
+    Point2& origin,
+    Point2& tip,
+    double& pixels_per_unit) {
+    if (!ProjectSelectionCentroidToFrame(
+            in_data,
+            event_extra,
+            scene,
+            camera,
+            centroid,
+            origin)) {
+        return false;
+    }
+    const Point3 unit = AxisUnit(axis);
+    // Probe far enough for a stable screen direction on shallow projections.
+    constexpr double kProbe = 32.0;
+    Point2 probed;
+    if (!ProjectSelectionCentroidToFrame(
+            in_data,
+            event_extra,
+            scene,
+            camera,
+            {centroid.x + unit.x * kProbe,
+             centroid.y + unit.y * kProbe,
+             centroid.z + unit.z * kProbe},
+            probed)) {
+        return false;
+    }
+    const double dx = probed.x - origin.x;
+    const double dy = probed.y - origin.y;
+    const double length = std::sqrt(dx * dx + dy * dy);
+    if (length <= 1.0e-6) {
+        return false;
+    }
+    pixels_per_unit = length / kProbe;
+    const double scale = kTranslateAxisPixels / length;
+    tip = {origin.x + dx * scale, origin.y + dy * scale};
+    return true;
+}
+
+TranslateAxis HitTestTranslateAxes(
+    PF_InData* in_data,
+    PF_EventExtra* event_extra,
+    const SceneData& scene,
+    const CameraState& camera,
+    Point3 centroid,
+    Point2 mouse) {
+    const double hit_radius_squared =
+        kTranslateAxisHitPixels * kTranslateAxisHitPixels;
+    double best = hit_radius_squared;
+    TranslateAxis best_axis = TranslateAxis::None;
+    for (TranslateAxis axis :
+         {TranslateAxis::X, TranslateAxis::Y, TranslateAxis::Z}) {
+        Point2 origin;
+        Point2 tip;
+        double pixels_per_unit = 0.0;
+        if (!BuildTranslateAxisScreen(
+                in_data,
+                event_extra,
+                scene,
+                camera,
+                centroid,
+                axis,
+                origin,
+                tip,
+                pixels_per_unit)) {
+            continue;
+        }
+        const double distance =
+            PointSegmentDistanceSquared(mouse, origin, tip);
+        if (distance <= best) {
+            best = distance;
+            best_axis = axis;
+        }
+    }
+    return best_axis;
 }
 
 void SetSelectionPoints(const std::vector<LatticePointRef>& points) {
@@ -238,27 +472,6 @@ void MergePointsIntoSelection(const std::vector<LatticePointRef>& points) {
     for (const LatticePointRef& point : points) {
         AddPointToSelection(point);
     }
-}
-
-double PointSegmentDistanceSquared(
-    Point2 point,
-    Point2 a,
-    Point2 b) {
-    const double abx = b.x - a.x;
-    const double aby = b.y - a.y;
-    const double apx = point.x - a.x;
-    const double apy = point.y - a.y;
-    const double ab_length_squared = abx * abx + aby * aby;
-    if (ab_length_squared <= 1.0e-12) {
-        return apx * apx + apy * apy;
-    }
-    const double t = std::clamp(
-        (apx * abx + apy * aby) / ab_length_squared,
-        0.0,
-        1.0);
-    const double dx = point.x - (a.x + abx * t);
-    const double dy = point.y - (a.y + aby * t);
-    return dx * dx + dy * dy;
 }
 
 std::vector<LatticePointRef> CollectFreeLinePoints(
@@ -1321,6 +1534,70 @@ PF_Err HandleSurfaceGizmoEvent(
                 marquee);
         }
 
+        Point3 centroid{};
+        if (!g_selection.points.empty() &&
+            !g_selection.marquee_active &&
+            ComputeSelectionCentroid(scene, centroid)) {
+            const DRAWBOT_ColorRGBA axis_colors[3] = {
+                {0.95F, 0.28F, 0.28F, 0.95F},  // X
+                {0.30F, 0.85F, 0.35F, 0.95F},  // Y
+                {0.30F, 0.55F, 1.0F, 0.95F},   // Z
+            };
+            const TranslateAxis axes[3] = {
+                TranslateAxis::X,
+                TranslateAxis::Y,
+                TranslateAxis::Z};
+            for (int axis_index = 0; axis_index < 3; ++axis_index) {
+                Point2 origin;
+                Point2 tip;
+                double pixels_per_unit = 0.0;
+                if (!BuildTranslateAxisScreen(
+                        in_data,
+                        event_extra,
+                        scene,
+                        camera,
+                        centroid,
+                        axes[axis_index],
+                        origin,
+                        tip,
+                        pixels_per_unit)) {
+                    continue;
+                }
+                DRAWBOT_PathP axis_path(
+                    drawbot.supplier_suiteP,
+                    supplier);
+                drawbot.path_suiteP->MoveTo(
+                    axis_path,
+                    static_cast<float>(origin.x),
+                    static_cast<float>(origin.y));
+                drawbot.path_suiteP->LineTo(
+                    axis_path,
+                    static_cast<float>(tip.x),
+                    static_cast<float>(tip.y));
+                const float stroke =
+                    g_selection.axis_drag == axes[axis_index] ? 3.0F
+                                                              : 2.0F;
+                DRAWBOT_PenP axis_pen(
+                    drawbot.supplier_suiteP,
+                    supplier,
+                    &axis_colors[axis_index],
+                    stroke);
+                drawbot.surface_suiteP->StrokePath(
+                    drawing_surface,
+                    axis_pen,
+                    axis_path);
+                DRAWBOT_RectF32 tip_rect{
+                    static_cast<float>(tip.x - 3.0),
+                    static_cast<float>(tip.y - 3.0),
+                    6.0F,
+                    6.0F};
+                suites.SurfaceSuiteCurrent()->PaintRect(
+                    drawing_surface,
+                    &axis_colors[axis_index],
+                    &tip_rect);
+            }
+        }
+
         AEFX_ReleaseDrawbotSuites(in_data, out_data);
         event_extra->evt_out_flags = PF_EO_HANDLED_EVENT;
         return PF_Err_NONE;
@@ -1339,6 +1616,7 @@ PF_Err HandleSurfaceGizmoEvent(
              PF_Mod_CMD_CTRL_KEY) != 0;
         g_selection.dragging = false;
         g_selection.marquee_active = false;
+        g_selection.axis_drag = TranslateAxis::None;
 
         // Cmd/Ctrl-drag starts a same-surface marquee (Foldspace-style).
         if (command) {
@@ -1360,6 +1638,28 @@ PF_Err HandleSurfaceGizmoEvent(
                 static_cast<PF_EventOutFlags>(
                     PF_EO_HANDLED_EVENT | PF_EO_ALWAYS_UPDATE);
             return PF_Err_NONE;
+        }
+
+        Point3 centroid{};
+        if (!g_selection.points.empty() &&
+            ComputeSelectionCentroid(scene, centroid)) {
+            const TranslateAxis axis = HitTestTranslateAxes(
+                in_data,
+                event_extra,
+                scene,
+                camera,
+                centroid,
+                mouse);
+            if (axis != TranslateAxis::None) {
+                g_selection.axis_drag = axis;
+                g_selection.selection_centroid = centroid;
+                g_selection.dragging = true;
+                g_selection.last_mouse = mouse;
+                event_extra->evt_out_flags =
+                    static_cast<PF_EventOutFlags>(
+                        PF_EO_HANDLED_EVENT | PF_EO_ALWAYS_UPDATE);
+                return PF_Err_NONE;
+            }
         }
 
         constexpr double kPointHitRadiusSquared = 100.0;
@@ -1493,109 +1793,152 @@ PF_Err HandleSurfaceGizmoEvent(
         g_selection.primary.surface >= scene.surface_count) {
         return PF_Err_NONE;
     }
-    SurfaceData surface = scene.surfaces[g_selection.primary.surface];
-    const std::size_t primary_index = LatticePointIndex(
-        surface.lattice.divisions_x,
-        g_selection.primary.row,
-        g_selection.primary.column);
-    if (null_overrides.IsControlled(
-            g_selection.primary.surface,
-            primary_index)) {
-        ClearSelection();
-        return PF_Err_NONE;
-    }
-    const double u =
-        static_cast<double>(g_selection.primary.column) /
-        surface.lattice.divisions_x;
-    const double v =
-        static_cast<double>(g_selection.primary.row) /
-        surface.lattice.divisions_y;
-    Point2 origin;
-    if (!ProjectSurfacePointToFrame(
-            in_data,
-            event_extra,
-            surface,
-            camera,
-            u,
-            v,
-            origin)) {
-        return PF_Err_NONE;
-    }
-    SurfaceData probe_x = surface;
-    probe_x.lattice.points[primary_index].x += 1.0F;
-    SurfaceData probe_y = surface;
-    probe_y.lattice.points[primary_index].y += 1.0F;
-    Point2 projected_x;
-    Point2 projected_y;
-    if (!ProjectSurfacePointToFrame(
-            in_data,
-            event_extra,
-            probe_x,
-            camera,
-            u,
-            v,
-            projected_x) ||
-        !ProjectSurfacePointToFrame(
-            in_data,
-            event_extra,
-            probe_y,
-            camera,
-            u,
-            v,
-            projected_y)) {
-        return PF_Err_NONE;
-    }
-    const double jxx = projected_x.x - origin.x;
-    const double jyx = projected_x.y - origin.y;
-    const double jxy = projected_y.x - origin.x;
-    const double jyy = projected_y.y - origin.y;
+
     const double screen_x = mouse.x - g_selection.last_mouse.x;
     const double screen_y = mouse.y - g_selection.last_mouse.y;
-    const bool depth_drag =
-        (event_extra->u.do_click.modifiers &
-         PF_Mod_OPT_ALT_KEY) != 0;
-    double delta_z = 0.0;
-    if (depth_drag) {
-        SurfaceData probe_z = surface;
-        probe_z.lattice.points[primary_index].z += 1.0F;
-        Point2 projected_z;
-        if (ProjectSurfacePointToFrame(
+    float apply_x = 0.0F;
+    float apply_y = 0.0F;
+    float apply_z = 0.0F;
+
+    if (g_selection.axis_drag != TranslateAxis::None) {
+        Point2 origin;
+        Point2 tip;
+        double pixels_per_unit = 0.0;
+        if (!BuildTranslateAxisScreen(
                 in_data,
                 event_extra,
-                probe_z,
+                scene,
+                camera,
+                g_selection.selection_centroid,
+                g_selection.axis_drag,
+                origin,
+                tip,
+                pixels_per_unit) ||
+            pixels_per_unit <= 1.0e-8) {
+            return PF_Err_NONE;
+        }
+        const double dir_x = tip.x - origin.x;
+        const double dir_y = tip.y - origin.y;
+        const double dir_length = std::sqrt(dir_x * dir_x + dir_y * dir_y);
+        if (dir_length <= 1.0e-8) {
+            return PF_Err_NONE;
+        }
+        const double axis_delta =
+            (screen_x * dir_x + screen_y * dir_y) /
+            (dir_length * pixels_per_unit);
+        const Point3 unit = AxisUnit(g_selection.axis_drag);
+        apply_x = static_cast<float>(
+            std::clamp(unit.x * axis_delta, -2000.0, 2000.0));
+        apply_y = static_cast<float>(
+            std::clamp(unit.y * axis_delta, -2000.0, 2000.0));
+        apply_z = static_cast<float>(
+            std::clamp(unit.z * axis_delta, -2000.0, 2000.0));
+        g_selection.selection_centroid.x += apply_x;
+        g_selection.selection_centroid.y += apply_y;
+        g_selection.selection_centroid.z += apply_z;
+    } else {
+        SurfaceData surface = scene.surfaces[g_selection.primary.surface];
+        const std::size_t primary_index = LatticePointIndex(
+            surface.lattice.divisions_x,
+            g_selection.primary.row,
+            g_selection.primary.column);
+        if (null_overrides.IsControlled(
+                g_selection.primary.surface,
+                primary_index)) {
+            ClearSelection();
+            return PF_Err_NONE;
+        }
+        const double u =
+            static_cast<double>(g_selection.primary.column) /
+            surface.lattice.divisions_x;
+        const double v =
+            static_cast<double>(g_selection.primary.row) /
+            surface.lattice.divisions_y;
+        Point2 origin;
+        if (!ProjectSurfacePointToFrame(
+                in_data,
+                event_extra,
+                surface,
                 camera,
                 u,
                 v,
-                projected_z)) {
-            const double jzx = projected_z.x - origin.x;
-            const double jzy = projected_z.y - origin.y;
-            const double length_squared = jzx * jzx + jzy * jzy;
-            delta_z = length_squared > 1.0e-8
-                          ? (screen_x * jzx + screen_y * jzy) /
-                                length_squared
-                          : -screen_y;
-        } else {
-            delta_z = -screen_y;
+                origin)) {
+            return PF_Err_NONE;
         }
+        SurfaceData probe_x = surface;
+        probe_x.lattice.points[primary_index].x += 1.0F;
+        SurfaceData probe_y = surface;
+        probe_y.lattice.points[primary_index].y += 1.0F;
+        Point2 projected_x;
+        Point2 projected_y;
+        if (!ProjectSurfacePointToFrame(
+                in_data,
+                event_extra,
+                probe_x,
+                camera,
+                u,
+                v,
+                projected_x) ||
+            !ProjectSurfacePointToFrame(
+                in_data,
+                event_extra,
+                probe_y,
+                camera,
+                u,
+                v,
+                projected_y)) {
+            return PF_Err_NONE;
+        }
+        const double jxx = projected_x.x - origin.x;
+        const double jyx = projected_x.y - origin.y;
+        const double jxy = projected_y.x - origin.x;
+        const double jyy = projected_y.y - origin.y;
+        const bool depth_drag =
+            (event_extra->u.do_click.modifiers &
+             PF_Mod_OPT_ALT_KEY) != 0;
+        double delta_z = 0.0;
+        if (depth_drag) {
+            SurfaceData probe_z = surface;
+            probe_z.lattice.points[primary_index].z += 1.0F;
+            Point2 projected_z;
+            if (ProjectSurfacePointToFrame(
+                    in_data,
+                    event_extra,
+                    probe_z,
+                    camera,
+                    u,
+                    v,
+                    projected_z)) {
+                const double jzx = projected_z.x - origin.x;
+                const double jzy = projected_z.y - origin.y;
+                const double length_squared = jzx * jzx + jzy * jzy;
+                delta_z = length_squared > 1.0e-8
+                              ? (screen_x * jzx + screen_y * jzy) /
+                                    length_squared
+                              : -screen_y;
+            } else {
+                delta_z = -screen_y;
+            }
+        }
+        const double determinant = jxx * jyy - jxy * jyx;
+        if (!depth_drag && std::abs(determinant) <= 1.0e-8) {
+            return PF_Err_NONE;
+        }
+        const double delta_x = depth_drag
+                                   ? 0.0
+                                   : (screen_x * jyy -
+                                      screen_y * jxy) / determinant;
+        const double delta_y = depth_drag
+                                   ? 0.0
+                                   : (jxx * screen_y -
+                                      jyx * screen_x) / determinant;
+        apply_x = static_cast<float>(
+            std::clamp(delta_x, -2000.0, 2000.0));
+        apply_y = static_cast<float>(
+            std::clamp(delta_y, -2000.0, 2000.0));
+        apply_z = static_cast<float>(
+            std::clamp(delta_z, -2000.0, 2000.0));
     }
-    const double determinant = jxx * jyy - jxy * jyx;
-    if (!depth_drag && std::abs(determinant) <= 1.0e-8) {
-        return PF_Err_NONE;
-    }
-    const double delta_x = depth_drag
-                               ? 0.0
-                               : (screen_x * jyy -
-                                  screen_y * jxy) / determinant;
-    const double delta_y = depth_drag
-                               ? 0.0
-                               : (jxx * screen_y -
-                                  jyx * screen_x) / determinant;
-    const float apply_x = static_cast<float>(
-        std::clamp(delta_x, -2000.0, 2000.0));
-    const float apply_y = static_cast<float>(
-        std::clamp(delta_y, -2000.0, 2000.0));
-    const float apply_z = static_cast<float>(
-        std::clamp(delta_z, -2000.0, 2000.0));
 
     PF_Handle handle =
         params[SurfaceLatticeParam(g_selection.primary.surface)]

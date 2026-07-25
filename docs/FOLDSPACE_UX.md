@@ -41,7 +41,7 @@ Priority key:
 | Box select | Cmd/Ctrl drag | Cmd/Ctrl marquee | **Must** | A (done) |
 | Line selection mode | Explicit mode | Click lattice line | **Must** | A (done) |
 | Object/surface selection mode | Yes | No | Nice | A |
-| PRS transform gizmos | Pos/Rot/Scale | No | **Must** | A |
+| PRS transform gizmos | Pos/Rot/Scale | Translate axes (local) | **Must** | A (partial) |
 | Gizmo local / world space | Yes | No | Nice | A |
 | Active-surface-driven UI | Selected surface params | All 8 always visible | Nice | A |
 | Point → Null attach (relative) | Parent-like attach | World override markers | **Must** | A/B |
@@ -84,8 +84,9 @@ Make the lattice feel editable like a real tool.
 3. Line hit (click grid line → select free row/column) — **done (A2)**
 4. Multi-point drag (same local delta; Option/Alt still depth) — **done (A1)**
 5. Selection drawing (selected / Null-controlled / idle / marquee) — **done (A2)**
-6. Later A: PRS gizmo for selection centroid; local/world
-7. Later A: active surface highlight + optional param focus
+6. Translate gizmo at selection centroid (local X/Y/Z) — **done (A3 partial)**
+7. Later A: rotate/scale gizmos; local/world toggle
+8. Later A: active surface highlight + optional param focus
 
 **Exit criteria**
 
@@ -129,7 +130,7 @@ Make the lattice feel editable like a real tool.
 |---|---|---|
 | **A1** | Docs + multi-select / multi-drag / selection draw | Done |
 | **A2** | Box select + line hit | Done |
-| **A3** | PRS gizmo (translate first, then rotate/scale) | Med–high |
+| **A3** | Translate gizmo at selection centroid | Done (rotate/scale later) |
 | **B1** | Attach relative offsets in render/gizmo | High |
 | **B2** | Roll model + tests | Med |
 | **B3** | Roll UI + control Null script | Med |

@@ -57,8 +57,9 @@ to issue 3D Null point controllers for a surface.
 - The Composition panel draws the lattice. Drag a point for local X/Y;
   Option/Alt-drag for Z. **Shift-click** toggles points; click a grid **line**
   to select a whole free row/column; **Cmd/Ctrl-drag** box-selects free points
-  on one surface (Shift+Cmd/Ctrl adds). Null-controlled points appear orange
-  and are read-only in the gizmo.
+  on one surface (Shift+Cmd/Ctrl adds). A selected set shows an RGB
+  **translate gizmo** at its cage centroid (local X/Y/Z). Null-controlled
+  points appear orange and are read-only in the gizmo.
 - Foldspace-oriented interaction work is tracked in
   [docs/FOLDSPACE_UX.md](docs/FOLDSPACE_UX.md).
 
