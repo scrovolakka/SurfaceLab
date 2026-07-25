@@ -201,6 +201,24 @@ void ClearSelection() {
     g_selection.selection_centroid = {};
 }
 
+// AE only sends PF_Event_DRAG after DO_CLICK if send_drag is set. Without
+// this the gizmo highlights on click but never receives mouse motion.
+void BeginCompDrag(PF_EventExtra* event_extra) {
+    if (event_extra) {
+        event_extra->u.do_click.send_drag = TRUE;
+    }
+}
+
+void EndCompDragIfFinished(PF_EventExtra* event_extra) {
+    if (!event_extra || !event_extra->u.do_click.last_time) {
+        return;
+    }
+    event_extra->u.do_click.send_drag = FALSE;
+    g_selection.dragging = false;
+    g_selection.marquee_active = false;
+    g_selection.axis_drag = TranslateAxis::None;
+}
+
 Point3 AxisUnit(TranslateAxis axis) {
     switch (axis) {
         case TranslateAxis::X:
@@ -1669,6 +1687,7 @@ PF_Err HandleSurfaceGizmoEvent(
                 scene,
                 camera,
                 null_overrides);
+            BeginCompDrag(event_extra);
             event_extra->evt_out_flags =
                 static_cast<PF_EventOutFlags>(
                     PF_EO_HANDLED_EVENT | PF_EO_ALWAYS_UPDATE);
@@ -1690,6 +1709,7 @@ PF_Err HandleSurfaceGizmoEvent(
                 g_selection.selection_centroid = centroid;
                 g_selection.dragging = true;
                 g_selection.last_mouse = mouse;
+                BeginCompDrag(event_extra);
                 event_extra->evt_out_flags =
                     static_cast<PF_EventOutFlags>(
                         PF_EO_HANDLED_EVENT | PF_EO_ALWAYS_UPDATE);
@@ -1761,6 +1781,7 @@ PF_Err HandleSurfaceGizmoEvent(
             if (!g_selection.points.empty()) {
                 g_selection.dragging = true;
                 g_selection.last_mouse = mouse;
+                BeginCompDrag(event_extra);
                 event_extra->evt_out_flags =
                     static_cast<PF_EventOutFlags>(
                         PF_EO_HANDLED_EVENT | PF_EO_ALWAYS_UPDATE);
@@ -1792,6 +1813,7 @@ PF_Err HandleSurfaceGizmoEvent(
                 }
                 g_selection.dragging = true;
                 g_selection.last_mouse = mouse;
+                BeginCompDrag(event_extra);
                 event_extra->evt_out_flags =
                     static_cast<PF_EventOutFlags>(
                         PF_EO_HANDLED_EVENT | PF_EO_ALWAYS_UPDATE);
@@ -1808,6 +1830,12 @@ PF_Err HandleSurfaceGizmoEvent(
         return PF_Err_NONE;
     }
 
+    if (event_extra->e_type == PF_Event_DRAG &&
+        event_extra->u.do_click.send_drag) {
+        // Keep the drag stream alive until AE marks last_time.
+        event_extra->u.do_click.send_drag = TRUE;
+    }
+
     if (g_selection.marquee_active) {
         g_selection.marquee_end = mouse;
         ApplyMarqueeSelection(
@@ -1820,12 +1848,14 @@ PF_Err HandleSurfaceGizmoEvent(
             PF_EO_HANDLED_EVENT |
             PF_EO_ALWAYS_UPDATE |
             PF_EO_UPDATE_NOW);
+        EndCompDragIfFinished(event_extra);
         return PF_Err_NONE;
     }
 
     if (!g_selection.dragging ||
         g_selection.points.empty() ||
         g_selection.primary.surface >= scene.surface_count) {
+        EndCompDragIfFinished(event_extra);
         return PF_Err_NONE;
     }
 
@@ -2007,5 +2037,6 @@ PF_Err HandleSurfaceGizmoEvent(
         PF_EO_HANDLED_EVENT |
         PF_EO_ALWAYS_UPDATE |
         PF_EO_UPDATE_NOW);
+    EndCompDragIfFinished(event_extra);
     return PF_Err_NONE;
 }
