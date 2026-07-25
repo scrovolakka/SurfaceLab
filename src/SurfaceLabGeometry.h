@@ -1,15 +1,7 @@
 #pragma once
 
-// Host-independent geometry and deformation math for SurfaceLab.
-//
-// AE-free: everything here operates purely on the Point/scene model. The small,
-// hot vector primitives are inline; EvaluatePatch (bicubic surface point) and
-// the deformation pass are defined in SurfaceLabGeometry.cpp so they can be
-// unit-tested off-host alongside the model.
-
 #include "SurfaceLabModel.h"
 
-#include <array>
 #include <cmath>
 
 inline Point3 Cross(Point3 a, Point3 b) {
@@ -19,22 +11,21 @@ inline Point3 Cross(Point3 a, Point3 b) {
         a.x * b.y - a.y * b.x};
 }
 
-inline Point3 Normalize(Point3 vector) {
-    const double length = std::sqrt(
-        vector.x * vector.x + vector.y * vector.y + vector.z * vector.z);
-    if (length <= 1.0e-10) {
-        return {0.0, 0.0, 1.0};
-    }
-    return {vector.x / length, vector.y / length, vector.z / length};
-}
-
 inline double Dot(Point3 a, Point3 b) {
     return a.x * b.x + a.y * b.y + a.z * b.z;
 }
 
-// Row-major 2D affine mapping:
-//   x' = xx * x + xy * y + tx
-//   y' = yx * x + yy * y + ty
+inline Point3 Normalize(Point3 vector) {
+    const double length = std::sqrt(Dot(vector, vector));
+    if (length <= 1.0e-10) {
+        return {0.0, 0.0, 1.0};
+    }
+    return {
+        vector.x / length,
+        vector.y / length,
+        vector.z / length};
+}
+
 struct Affine2D {
     double xx{1.0};
     double xy{};
@@ -50,6 +41,28 @@ bool TryInvertAffine2D(
     const Affine2D& transform,
     Affine2D& inverse);
 
+Point3 ApplyAffine3D(
+    const Affine3D& transform,
+    Point3 point);
+
+bool TryInvertAffine3D(
+    const Affine3D& transform,
+    Affine3D& inverse);
+
+// Returns the world-space delta that maps geometry from its bind transform to
+// the current transform. An unchanged oriented Root therefore produces the
+// identity transform instead of applying its bind orientation twice.
+bool BuildAffineDeltaTransform(
+    const Affine3D& bind_transform,
+    const Affine3D& current_transform,
+    Affine3D& delta_transform);
+
+Affine3D ScaleAffine3DCoordinateSystem(
+    const Affine3D& transform,
+    double scale_x,
+    double scale_y,
+    double scale_z);
+
 inline Point3 RotatePoint(
     Point3 point,
     double center_x,
@@ -61,29 +74,23 @@ inline Point3 RotatePoint(
     point.x -= center_x;
     point.y -= center_y;
     point.z -= center_z;
-
-    const double sin_x = std::sin(rotation_x);
-    const double cos_x = std::cos(rotation_x);
-    const double y_x = point.y * cos_x - point.z * sin_x;
-    const double z_x = point.y * sin_x + point.z * cos_x;
-    point.y = y_x;
-    point.z = z_x;
-
-    const double sin_y = std::sin(rotation_y);
-    const double cos_y = std::cos(rotation_y);
-    const double x_y = point.x * cos_y + point.z * sin_y;
-    const double z_y = -point.x * sin_y + point.z * cos_y;
-    point.x = x_y;
-    point.z = z_y;
-
-    const double sin_z = std::sin(rotation_z);
-    const double cos_z = std::cos(rotation_z);
-    const double x_z = point.x * cos_z - point.y * sin_z;
-    const double y_z = point.x * sin_z + point.y * cos_z;
-    point.x = x_z + center_x;
-    point.y = y_z + center_y;
-    point.z += center_z;
-    return point;
+    const double sx = std::sin(rotation_x);
+    const double cx = std::cos(rotation_x);
+    const double sy = std::sin(rotation_y);
+    const double cy = std::cos(rotation_y);
+    const double sz = std::sin(rotation_z);
+    const double cz = std::cos(rotation_z);
+    const double x_y = point.x;
+    const double y_x = point.y * cx - point.z * sx;
+    const double z_x = point.y * sx + point.z * cx;
+    const double x_z = x_y * cy + z_x * sy;
+    const double z_y = -x_y * sy + z_x * cy;
+    const double final_x = x_z * cz - y_x * sz;
+    const double final_y = x_z * sz + y_x * cz;
+    return {
+        final_x + center_x,
+        final_y + center_y,
+        z_y + center_z};
 }
 
 inline Point3 InverseRotateVector(
@@ -91,36 +98,27 @@ inline Point3 InverseRotateVector(
     double rotation_x,
     double rotation_y,
     double rotation_z) {
-    const double sin_z = std::sin(rotation_z);
-    const double cos_z = std::cos(rotation_z);
-    const double x_z = vector.x * cos_z + vector.y * sin_z;
-    const double y_z = -vector.x * sin_z + vector.y * cos_z;
-    vector.x = x_z;
-    vector.y = y_z;
-
-    const double sin_y = std::sin(rotation_y);
-    const double cos_y = std::cos(rotation_y);
-    const double x_y = vector.x * cos_y - vector.z * sin_y;
-    const double z_y = vector.x * sin_y + vector.z * cos_y;
-    vector.x = x_y;
-    vector.z = z_y;
-
-    const double sin_x = std::sin(rotation_x);
-    const double cos_x = std::cos(rotation_x);
-    const double y_x = vector.y * cos_x + vector.z * sin_x;
-    const double z_x = -vector.y * sin_x + vector.z * cos_x;
-    vector.y = y_x;
-    vector.z = z_x;
+    const double sz = std::sin(rotation_z);
+    const double cz = std::cos(rotation_z);
+    const double xz = vector.x * cz + vector.y * sz;
+    const double yz = -vector.x * sz + vector.y * cz;
+    vector.x = xz;
+    vector.y = yz;
+    const double sy = std::sin(rotation_y);
+    const double cy = std::cos(rotation_y);
+    const double xy = vector.x * cy - vector.z * sy;
+    const double zy = vector.x * sy + vector.z * cy;
+    vector.x = xy;
+    vector.z = zy;
+    const double sx = std::sin(rotation_x);
+    const double cx = std::cos(rotation_x);
+    const double yx = vector.y * cx + vector.z * sx;
+    const double zx = -vector.y * sx + vector.z * cx;
+    vector.y = yx;
+    vector.z = zx;
     return vector;
 }
 
-// Canonical coordinate contract for controller rigs and rendering.
-//
-// SurfaceData persists its cage points in absolute effect coordinates. Local
-// coordinates are offsets from pivot. "World" here means SurfaceLab's
-// evaluated, pre-camera coordinate space (before the host layer transform).
-// Deformation is intentionally not part of this transform: the renderer
-// applies it between scale and rotation.
 struct SurfaceCoordinateTransform {
     Point3 pivot{};
     Point3 rotation_origin{};
@@ -128,9 +126,6 @@ struct SurfaceCoordinateTransform {
     Point3 rotation_radians{};
 };
 
-// Parent transform shared by every surface. The fixed pivot is the
-// composition/effect center and Position is the parent origin, so the default
-// Position == pivot produces an identity transform.
 struct SceneCoordinateTransform {
     Point3 pivot{};
     Point3 position{};
@@ -155,18 +150,15 @@ bool TryInverseScenePointTransform(
     const SceneCoordinateTransform& transform,
     Point3& untransformed);
 
+bool BuildPreSceneRootTransform(
+    const Affine3D& root_world_transform,
+    const SceneCoordinateTransform& scene_transform,
+    Affine3D& pre_scene_transform);
+
 SurfaceCoordinateTransform BuildSurfaceCoordinateTransform(
     const SurfaceData& surface,
     Point3 legacy_pivot,
     Point3 render_scale = {1.0, 1.0, 1.0});
-
-Point3 SurfaceCageToLocal(
-    Point3 cage_point,
-    const SurfaceCoordinateTransform& transform);
-
-Point3 SurfaceLocalToCage(
-    Point3 local_point,
-    const SurfaceCoordinateTransform& transform);
 
 Point3 ScaleSurfaceCagePoint(
     Point3 cage_point,
@@ -176,27 +168,12 @@ Point3 RotateSurfaceWorldPoint(
     Point3 scaled_point,
     const SurfaceCoordinateTransform& transform);
 
-Point3 SurfaceCageToWorld(
-    Point3 cage_point,
-    const SurfaceCoordinateTransform& transform);
-
-bool TrySurfaceWorldToCage(
-    Point3 world_point,
-    const SurfaceCoordinateTransform& transform,
-    Point3& cage_point);
-
-Point3 EvaluatePatch(
-    const std::array<Point3, 16>& points,
+Point3 EvaluateLattice(
+    const LatticeData& lattice,
     double u,
     double v);
 
-void ApplySurfaceDeform(
-    Point3& point,
-    const SurfaceData& surface,
+Point3 EvaluateLatticeNormal(
+    const LatticeData& lattice,
     double u,
-    double v,
-    double pivot_x,
-    double pivot_y,
-    double pivot_z,
-    double extent_x,
-    double extent_y);
+    double v);

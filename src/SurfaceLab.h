@@ -1,31 +1,40 @@
 #pragma once
 
-#define PF_DEEP_COLOR_AWARE 1
-
+#include "AE_Effect.h"
+#include "AE_EffectCB.h"
+#include "AE_EffectUI.h"
+#include "AE_Macros.h"
 #include "AEConfig.h"
 #include "entry.h"
-#include "AE_Effect.h"
-#include "AE_EffectUI.h"
-#include "AE_EffectCB.h"
-#include "AE_Macros.h"
 #include "Param_Utils.h"
 
-// PF_VERSION packs subvers and bugvers into 4-bit fields (max 15), so the
-// AE-facing version saturates at 0.15.15; releases past that bump the 9-bit
-// build field instead. The bundle (Info.plist/CMake) version keeps counting
-// normally: bundle 0.15.16 == AE 0.15.15 build 2.
-constexpr A_long kMajorVersion = 0;
-constexpr A_long kMinorVersion = 15;
-constexpr A_long kBugVersion = 15;
-constexpr A_long kBuildVersion = 2;
-constexpr PF_ParamIndex kSurfaceAnimationPropertyCount = 84;
-constexpr PF_ParamIndex kSurfaceAnimationBankStride =
-    kSurfaceAnimationPropertyCount + 2;
-constexpr PF_ParamIndex kAdditionalSurfaceAnimationBanks = 7;
+#include <cstddef>
+#include <cstdint>
 
-enum ParamIndex {
+constexpr std::uint32_t kSurfaceCount = 8;
+constexpr PF_ParamIndex kSurfaceParameterStride = 14;
+constexpr PF_ParamIndex kRigBridgeCoordinateCount = 17 * 3;
+
+enum SurfaceParamOffset : PF_ParamIndex {
+    kSurfaceTopicStartOffset = 0,
+    kSurfaceSourceOffset,
+    kSurfacePositionOffset,
+    kSurfaceRotationXOffset,
+    kSurfaceRotationYOffset,
+    kSurfaceRotationZOffset,
+    kSurfaceScaleXOffset,
+    kSurfaceScaleYOffset,
+    kSurfaceScaleZOffset,
+    kSurfaceDivisionsXOffset,
+    kSurfaceDivisionsYOffset,
+    kSurfaceMeshQualityOffset,
+    kSurfaceLatticeOffset,
+    kSurfaceTopicEndOffset
+};
+
+enum ParamIndex : PF_ParamIndex {
     kParamInput = 0,
-    kParamSceneTransformStart,
+    kParamSceneStart,
     kParamScenePosition,
     kParamSceneRotationX,
     kParamSceneRotationY,
@@ -33,327 +42,91 @@ enum ParamIndex {
     kParamSceneScaleX,
     kParamSceneScaleY,
     kParamSceneScaleZ,
-    kParamSceneTransformEnd,
-    kParamSceneData,
+    kParamSceneEnd,
     kParamSurfacesStart,
-    kParamSurfaceCount,
-    kParamSurfaceSelect,
-    kParamAddSurface,
-    kParamDuplicateSurface,
-    kParamDeleteSurface,
-    kParamControllerSurfaceId,
-    kParamControllerAnimationBank,
-    kParamGizmoInteractionMode,
-    kParamGizmoTool,
-    kParamSelectedSurfaceStart,
-    kParamControlPointsStart,
-    kParamPoint00,
-    kParamPoint01,
-    kParamPoint02,
-    kParamPoint03,
-    kParamPoint10,
-    kParamPoint11,
-    kParamPoint12,
-    kParamPoint13,
-    kParamPoint20,
-    kParamPoint21,
-    kParamPoint22,
-    kParamPoint23,
-    kParamPoint30,
-    kParamPoint31,
-    kParamPoint32,
-    kParamPoint33,
-    kParamControlPointsEnd,
-    kParamDepthStart,
-    kParamDepth00,
-    kParamDepth01,
-    kParamDepth02,
-    kParamDepth03,
-    kParamDepth10,
-    kParamDepth11,
-    kParamDepth12,
-    kParamDepth13,
-    kParamDepth20,
-    kParamDepth21,
-    kParamDepth22,
-    kParamDepth23,
-    kParamDepth30,
-    kParamDepth31,
-    kParamDepth32,
-    kParamDepth33,
-    kParamDepthEnd,
-    kParamSurfaceTransformStart,
-    kParamSurfaceSizeX,
-    kParamSurfaceSizeY,
-    kParamSurfacePosition,
-    kParamRotationX,
-    kParamRotationY,
-    kParamRotationZ,
-    kParamSurfaceRotationOriginStart,
-    kParamSurfaceRotationOriginMode,
-    kParamSurfaceRotationOriginX,
-    kParamSurfaceRotationOriginY,
-    kParamSurfaceRotationOriginEnd,
-    kParamSurfaceScaleStart,
-    kParamSurfaceScaleX,
-    kParamSurfaceScaleY,
-    kParamSurfaceScaleZ,
-    kParamSurfaceScaleEnd,
-    kParamSurfaceTransformEnd,
-    kParamSurfaceDivisionsStart,
-    kParamSurfaceDivisionsX,
-    kParamSurfaceDivisionsY,
-    kParamSurfaceDivisionsEnd,
-    kParamSurfaceThickness,
-    kParamSurfaceDeformStart,
-    kParamSurfaceBendX,
-    kParamSurfaceBendY,
-    kParamSurfaceRollEdge,
-    kParamSurfaceRollAngle,
-    kParamSurfaceRollLength,
-    kParamSurfaceCornerCurlStart,
-    kParamSurfaceCornerSelect,
-    kParamSurfaceCornerAmount,
-    kParamSurfaceCornerRadius,
-    kParamSurfaceCornerDirection,
-    kParamSurfaceCornerLength,
-    kParamSurfaceCorner2Amount,
-    kParamSurfaceCorner2Radius,
-    kParamSurfaceCorner2Direction,
-    kParamSurfaceCorner2Length,
-    kParamSurfaceCorner3Amount,
-    kParamSurfaceCorner3Radius,
-    kParamSurfaceCorner3Direction,
-    kParamSurfaceCorner3Length,
-    kParamSurfaceCorner4Amount,
-    kParamSurfaceCorner4Radius,
-    kParamSurfaceCorner4Direction,
-    kParamSurfaceCorner4Length,
-    kParamSurfaceCornerCurlEnd,
-    kParamSurfaceEdgeTwistStart,
-    kParamSurfaceTwistEdge,
-    kParamSurfaceTwistAngle,
-    kParamSurfaceTwistFalloff,
-    kParamSurfaceTwist2Angle,
-    kParamSurfaceTwist2Falloff,
-    kParamSurfaceTwist3Angle,
-    kParamSurfaceTwist3Falloff,
-    kParamSurfaceTwist4Angle,
-    kParamSurfaceTwist4Falloff,
-    kParamSurfaceEdgeTwistEnd,
-    kParamSurfaceDeformEnd,
-    kParamSurfaceMaterialStart,
-    kParamSurfaceSourceSlot,
-    kParamSurfaceBackSourceSlot,
-    kParamSurfaceSourceLayersStart,
-    kParamSurfaceSourceLayer1,
-    kParamSurfaceSourceLayer2,
-    kParamSurfaceSourceLayer3,
-    kParamSurfaceSourceLayer4,
-    kParamSurfaceSourceLayer5,
-    kParamSurfaceSourceLayer6,
-    kParamSurfaceSourceLayer7,
-    kParamSurfaceSourceLayer8,
-    kParamSurfaceSourceLayersEnd,
-    kParamSurfaceImageSize,
-    kParamSurfaceImageBorder,
-    kParamSurfaceOpacity,
-    kParamSurfaceDiffuse,
-    kParamSurfaceSpecular,
-    kParamSurfaceShininess,
-    kParamSurfaceMaterialEnd,
-    kParamSelectedSurfaceEnd,
-    kParamSurfaceAnimationBanksStart,
+    kParamSurfaceParametersStart,
     kParamSurfacesEnd =
-        kParamSurfaceAnimationBanksStart +
-        kAdditionalSurfaceAnimationBanks * kSurfaceAnimationBankStride,
-    kParamCameraStart,
-    kParamPerspective,
-    kParamCameraDistance,
-    kParamCameraSource,
-    kParamCoordinateSpace,
-    kParamCameraOffsetX,
-    kParamCameraOffsetY,
-    kParamCameraOffsetZ,
-    kParamCameraRotationX,
-    kParamCameraRotationY,
-    kParamCameraRotationZ,
-    kParamCameraEnd,
-    kParamLightsStart,
-    kParamLightSource,
-    kParamLightingEnabled,
-    kParamLightRotationX,
-    kParamLightRotationY,
-    kParamLightIntensity,
-    kParamAmbientLight,
-    kParamLightsEnd,
-    kParamRenderSettingsStart,
-    kParamTessellation,
-    kParamWireframe,
+        kParamSurfaceParametersStart +
+        kSurfaceCount * kSurfaceParameterStride,
     kParamRenderView,
-    kParamTextureFilter,
-    kParamBackfaceCulling,
-    kParamOutputBoundsMode,
-    kParamOutputPaddingX,
-    kParamOutputPaddingY,
-    kParamRenderSettingsEnd,
+    kParamRigBridgeStart,
+    kParamRigSurface,
+    kParamRigRow,
+    kParamRigSurfaceId0,
+    kParamRigSurfaceId1,
+    kParamRigSurfaceId2,
+    kParamRigSurfaceId3,
+    kParamRigDivisionsX,
+    kParamRigDivisionsY,
+    kParamRigPointsStart,
+    kParamRigPointsEnd =
+        kParamRigPointsStart +
+        kRigBridgeCoordinateCount,
+    kParamRigBridgeEnd = kParamRigPointsEnd,
     kParamCount
 };
 
-enum ParamDiskId {
-    kDiskTessellation = 1,
-    kDiskWireframe,
-    kDiskPerspective,
-    kDiskCameraDistance,
-    kDiskRotationX,
-    kDiskRotationY,
-    kDiskRotationZ,
-    kDiskPoint00 = 100,
-    kDiskDepth00 = 200,
-    kDiskSceneData = 300,
-    kDiskSurfacesStart,
-    kDiskSurfaceCount,
-    kDiskSurfaceSelect,
-    kDiskAddSurface,
-    kDiskDuplicateSurface,
-    kDiskDeleteSurface,
-    kDiskSurfacesEnd,
-    kDiskSurfaceSizeX,
-    kDiskSurfaceSizeY,
-    kDiskSurfacePosition,
-    kDiskSurfaceScaleStart,
-    kDiskSurfaceScaleX,
-    kDiskSurfaceScaleY,
-    kDiskSurfaceScaleZ,
-    kDiskSurfaceScaleEnd,
-    kDiskSurfaceDivisionsStart,
-    kDiskSurfaceDivisionsX,
-    kDiskSurfaceDivisionsY,
-    kDiskSurfaceDivisionsEnd,
-    kDiskSurfaceMaterialStart,
-    kDiskSurfaceSourceSlot,
-    kDiskSurfaceSourceLayersStart,
-    kDiskSurfaceSourceLayer1,
-    kDiskSurfaceSourceLayer2,
-    kDiskSurfaceSourceLayer3,
-    kDiskSurfaceSourceLayer4,
-    kDiskSurfaceSourceLayer5,
-    kDiskSurfaceSourceLayer6,
-    kDiskSurfaceSourceLayer7,
-    kDiskSurfaceSourceLayer8,
-    kDiskSurfaceSourceLayersEnd,
-    kDiskSurfaceImageSize,
-    kDiskSurfaceImageBorder,
-    kDiskSurfaceOpacity,
-    kDiskSurfaceMaterialEnd,
-    kDiskSurfaceThickness,
-    kDiskSurfaceDiffuse,
-    kDiskSurfaceSpecular,
-    kDiskSurfaceShininess,
-    kDiskCameraStart,
-    kDiskCameraOffsetX,
-    kDiskCameraOffsetY,
-    kDiskCameraOffsetZ,
-    kDiskCameraRotationX,
-    kDiskCameraRotationY,
-    kDiskCameraRotationZ,
-    kDiskCameraEnd,
-    kDiskLightsStart,
-    kDiskLightingEnabled,
-    kDiskLightRotationX,
-    kDiskLightRotationY,
-    kDiskLightIntensity,
-    kDiskAmbientLight,
-    kDiskLightsEnd,
-    kDiskRenderSettingsStart,
-    kDiskTextureFilter,
-    kDiskBackfaceCulling,
-    kDiskRenderSettingsEnd,
-    kDiskSurfaceDeformStart,
-    kDiskSurfaceBendX,
-    kDiskSurfaceBendY,
-    kDiskSurfaceRollEdge,
-    kDiskSurfaceRollAngle,
-    kDiskSurfaceRollLength,
-    kDiskSurfaceDeformEnd,
-    kDiskOutputBoundsMode,
-    kDiskOutputPaddingX,
-    kDiskOutputPaddingY,
-    kDiskSurfaceCornerCurlStart,
-    kDiskSurfaceCornerSelect,
-    kDiskSurfaceCornerAmount,
-    kDiskSurfaceCornerRadius,
-    kDiskSurfaceCornerDirection,
-    kDiskSurfaceCornerLength,
-    kDiskSurfaceCornerCurlEnd,
-    kDiskSurfaceEdgeTwistStart,
-    kDiskSurfaceTwistEdge,
-    kDiskSurfaceTwistAngle,
-    kDiskSurfaceTwistFalloff,
-    kDiskSurfaceEdgeTwistEnd,
-    kDiskSurfaceRotationOriginStart,
-    kDiskSurfaceRotationOriginMode,
-    kDiskSurfaceRotationOriginX,
-    kDiskSurfaceRotationOriginY,
-    kDiskSurfaceRotationOriginEnd,
-    kDiskSurfaceCorner2Amount,
-    kDiskSurfaceCorner2Radius,
-    kDiskSurfaceCorner2Direction,
-    kDiskSurfaceCorner2Length,
-    kDiskSurfaceCorner3Amount,
-    kDiskSurfaceCorner3Radius,
-    kDiskSurfaceCorner3Direction,
-    kDiskSurfaceCorner3Length,
-    kDiskSurfaceCorner4Amount,
-    kDiskSurfaceCorner4Radius,
-    kDiskSurfaceCorner4Direction,
-    kDiskSurfaceCorner4Length,
-    kDiskSurfaceTwist2Angle,
-    kDiskSurfaceTwist2Falloff,
-    kDiskSurfaceTwist3Angle,
-    kDiskSurfaceTwist3Falloff,
-    kDiskSurfaceTwist4Angle,
-    kDiskSurfaceTwist4Falloff,
-    kDiskSurfaceBackSourceSlot,
-    kDiskGizmoInteractionMode,
-    kDiskGizmoTool,
-    kDiskCameraSource,
-    kDiskLightSource,
-    // Reserved script-facing metadata. Explicit IDs avoid renumbering any
-    // existing serialized parameter streams.
-    kDiskControllerSurfaceId = 500,
-    kDiskControllerAnimationBank = 501,
-    kDiskCoordinateSpace = 502,
-    kDiskRenderView = 503,
-    kDiskSceneTransformStart = 504,
-    kDiskScenePosition = 505,
-    kDiskSceneRotationX = 506,
-    kDiskSceneRotationY = 507,
-    kDiskSceneRotationZ = 508,
-    kDiskSceneScaleX = 509,
-    kDiskSceneScaleY = 510,
-    kDiskSceneScaleZ = 511,
-    kDiskSceneTransformEnd = 512,
-    kDiskSelectedSurfaceStart = 513,
-    kDiskControlPointsStart = 514,
-    kDiskControlPointsEnd = 515,
-    kDiskDepthStart = 516,
-    kDiskDepthEnd = 517,
-    kDiskSurfaceTransformStart = 518,
-    kDiskSurfaceTransformEnd = 519,
-    kDiskSelectedSurfaceEnd = 520
+constexpr PF_ParamIndex SurfaceParam(
+    std::uint32_t surface,
+    SurfaceParamOffset offset) {
+    return kParamSurfaceParametersStart +
+           static_cast<PF_ParamIndex>(surface) * kSurfaceParameterStride +
+           static_cast<PF_ParamIndex>(offset);
+}
+
+constexpr PF_ParamIndex SurfaceSourceParam(std::uint32_t surface) {
+    return SurfaceParam(surface, kSurfaceSourceOffset);
+}
+
+constexpr PF_ParamIndex SurfaceLatticeParam(std::uint32_t surface) {
+    return SurfaceParam(surface, kSurfaceLatticeOffset);
+}
+
+constexpr PF_ParamIndex RigPointParam(std::uint32_t column) {
+    return kParamRigPointsStart +
+           static_cast<PF_ParamIndex>(column * 3U);
+}
+
+constexpr PF_ParamIndex RigPointCoordinateParam(
+    std::uint32_t column,
+    std::uint32_t axis) {
+    return RigPointParam(column) + static_cast<PF_ParamIndex>(axis);
+}
+
+enum ParamDiskId : A_long {
+    kDiskSceneStart = 100,
+    kDiskScenePosition,
+    kDiskSceneRotationX,
+    kDiskSceneRotationY,
+    kDiskSceneRotationZ,
+    kDiskSceneScaleX,
+    kDiskSceneScaleY,
+    kDiskSceneScaleZ,
+    kDiskSceneEnd,
+    kDiskSurfacesStart = 200,
+    kDiskSurfaceParametersStart = 300,
+    kDiskSurfacesEnd = 500,
+    kDiskRenderView = 600,
+    kDiskRigBridgeStart = 700,
+    kDiskRigSurface,
+    kDiskRigRow,
+    kDiskRigSurfaceId0,
+    kDiskRigSurfaceId1,
+    kDiskRigSurfaceId2,
+    kDiskRigSurfaceId3,
+    kDiskRigDivisionsX,
+    kDiskRigDivisionsY,
+    kDiskRigPointsStart = 720,
+    kDiskRigBridgeEnd = 799
 };
 
-// The companion controller script resolves streams by these serialized IDs.
-static_assert(kDiskRotationX == 5 && kDiskRotationZ == 7);
-static_assert(kDiskPoint00 == 100 && kDiskDepth00 == 200);
-static_assert(kDiskSurfaceSizeX == 308 && kDiskSurfaceSizeY == 309);
-static_assert(kDiskSurfacePosition == 310);
-static_assert(kDiskSurfaceScaleX == 312 && kDiskSurfaceScaleZ == 314);
-static_assert(kDiskCoordinateSpace == 502);
-static_assert(kDiskRenderView == 503);
-static_assert(kDiskScenePosition == 505);
-static_assert(kDiskSceneScaleZ == 511);
+constexpr A_long SurfaceDiskId(
+    std::uint32_t surface,
+    SurfaceParamOffset offset) {
+    return kDiskSurfaceParametersStart +
+           static_cast<A_long>(surface) * 32 +
+           static_cast<A_long>(offset);
+}
 
 extern "C" {
 

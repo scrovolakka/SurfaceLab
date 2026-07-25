@@ -10,27 +10,14 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <string>
+#include <string_view>
 #include <type_traits>
 #include <vector>
 
 #include "SurfaceLabRender.h"
 
 namespace {
-
-std::array<Point3, 16> ToControlPoints(
-    const SurfaceData& surface,
-    double scale_x,
-    double scale_y,
-    double scale_z) {
-    std::array<Point3, 16> result{};
-    for (int index = 0; index < 16; ++index) {
-        result[static_cast<std::size_t>(index)] = {
-            static_cast<double>(surface.control_points[index].x) * scale_x,
-            static_cast<double>(surface.control_points[index].y) * scale_y,
-            static_cast<double>(surface.control_points[index].z) * scale_z};
-    }
-    return result;
-}
 
 bool IsFinitePoint3(const Point3& point) {
     return std::isfinite(point.x) &&
@@ -784,18 +771,50 @@ SurfaceEvaluationState BuildSurfaceEvaluationState(
     double render_scale_y,
     double render_scale_z) {
     SurfaceEvaluationState state;
-    state.control_points =
-        ToControlPoints(surface, render_scale_x, render_scale_y, render_scale_z);
-    // The legacy (transform_mode == 0) pivot is the effect-input centre in
-    // effect coordinates. camera.center_x/y is the PROJECTION centre, which
-    // Composition World mode moves to the comp centre -- using it here would
-    // shift the legacy pivot (and with it the rotation origin) by the host
-    // layer offset, rotating the render around a point outside the cage.
+    state.lattice = surface.lattice;
+    double minimum_x = std::numeric_limits<double>::infinity();
+    double minimum_y = std::numeric_limits<double>::infinity();
+    double minimum_z = std::numeric_limits<double>::infinity();
+    double maximum_x = -std::numeric_limits<double>::infinity();
+    double maximum_y = -std::numeric_limits<double>::infinity();
+    double maximum_z = -std::numeric_limits<double>::infinity();
+    for (std::size_t index = 0; index < state.lattice.point_count; ++index) {
+        StoredPoint3& point = state.lattice.points[index];
+        point.x = static_cast<float>(point.x * render_scale_x);
+        point.y = static_cast<float>(point.y * render_scale_y);
+        point.z = static_cast<float>(point.z * render_scale_z);
+        minimum_x = std::min(minimum_x, static_cast<double>(point.x));
+        minimum_y = std::min(minimum_y, static_cast<double>(point.y));
+        minimum_z = std::min(minimum_z, static_cast<double>(point.z));
+        maximum_x = std::max(maximum_x, static_cast<double>(point.x));
+        maximum_y = std::max(maximum_y, static_cast<double>(point.y));
+        maximum_z = std::max(maximum_z, static_cast<double>(point.z));
+    }
     state.coordinate_transform = BuildSurfaceCoordinateTransform(
         surface,
         {camera.input_center_x, camera.input_center_y, 0.0},
         {render_scale_x, render_scale_y, render_scale_z});
+    if (surface.root_transform_enabled != 0) {
+        state.root_transform_enabled =
+            BuildPreSceneRootTransform(
+                surface.root_world_transform,
+                camera.scene_transform,
+                state.root_pre_scene_transform);
+    }
     const SurfaceCoordinateTransform& transform = state.coordinate_transform;
+    const Point3 lattice_center{
+        (minimum_x + maximum_x) * 0.5,
+        (minimum_y + maximum_y) * 0.5,
+        (minimum_z + maximum_z) * 0.5};
+    for (std::size_t index = 0; index < state.lattice.point_count; ++index) {
+        StoredPoint3& point = state.lattice.points[index];
+        point.x = static_cast<float>(
+            point.x - lattice_center.x + transform.pivot.x);
+        point.y = static_cast<float>(
+            point.y - lattice_center.y + transform.pivot.y);
+        point.z = static_cast<float>(
+            point.z - lattice_center.z + transform.pivot.z);
+    }
     state.rotation_x = transform.rotation_radians.x;
     state.rotation_y = transform.rotation_radians.y;
     state.rotation_z = transform.rotation_radians.z;
@@ -814,17 +833,9 @@ SurfaceEvaluationState BuildSurfaceEvaluationState(
     state.rotation_origin_x = transform.rotation_origin.x;
     state.rotation_origin_y = transform.rotation_origin.y;
     state.rotation_origin_z = transform.rotation_origin.z;
-    state.deform_extent_x = std::max(
-        1.0e-6,
-        static_cast<double>(surface.size_x) * render_scale_x *
-            std::abs(state.scale_x));
-    state.deform_extent_y = std::max(
-        1.0e-6,
-        static_cast<double>(surface.size_y) * render_scale_y *
-            std::abs(state.scale_y));
-    state.half_thickness =
-        std::max(0.0, static_cast<double>(surface.thickness)) *
-        render_scale_z * std::abs(state.scale_z) * 0.5;
+    state.deform_extent_x = std::max(1.0e-6, maximum_x - minimum_x);
+    state.deform_extent_y = std::max(1.0e-6, maximum_y - minimum_y);
+    state.half_thickness = 0.0;
     return state;
 }
 
@@ -833,19 +844,13 @@ Point3 EvaluateTransformedPoint(
     const SurfaceEvaluationState& state,
     double u,
     double v) {
-    Point3 point = EvaluatePatch(state.control_points, u, v);
+    Point3 point = EvaluateLattice(state.lattice, u, v);
     point = ScaleSurfaceCagePoint(point, state.coordinate_transform);
-    ApplySurfaceDeform(
-        point,
-        surface,
-        u,
-        v,
-        state.pivot_x,
-        state.pivot_y,
-        state.pivot_z,
-        state.deform_extent_x,
-        state.deform_extent_y);
-    return RotateSurfaceWorldPoint(point, state.coordinate_transform);
+    point = RotateSurfaceWorldPoint(point, state.coordinate_transform);
+    if (state.root_transform_enabled) {
+        point = ApplyAffine3D(state.root_pre_scene_transform, point);
+    }
+    return point;
 }
 
 namespace {
@@ -894,16 +899,25 @@ void RasterizeSurface(
         scale_x,
         scale_y,
         scale_z);
-    const int divisions_x = static_cast<int>(ResolveDivisions(
-        surface.divisions_x,
-        static_cast<std::uint32_t>(legacy_tessellation)));
-    const int divisions_y = static_cast<int>(ResolveDivisions(
-        surface.divisions_y,
-        static_cast<std::uint32_t>(legacy_tessellation)));
+    (void)legacy_tessellation;
+    const int divisions_x =
+        static_cast<int>(surface.lattice.divisions_x) *
+        std::clamp<int>(
+            surface.mesh_quality,
+            kMinimumMeshQuality,
+            kMaximumMeshQuality);
+    const int divisions_y =
+        static_cast<int>(surface.lattice.divisions_y) *
+        std::clamp<int>(
+            surface.mesh_quality,
+            kMinimumMeshQuality,
+            kMaximumMeshQuality);
     const int stride = divisions_x + 1;
     const bool has_thickness = evaluation.half_thickness > 1.0e-6;
-    std::array<Vertex, 33 * 33> front_vertices{};
-    std::array<Vertex, 33 * 33> back_vertices{};
+    std::vector<Vertex> front_vertices(
+        static_cast<std::size_t>(divisions_x + 1) *
+        static_cast<std::size_t>(divisions_y + 1));
+    std::vector<Vertex> back_vertices(front_vertices.size());
 
     for (int row = 0; row <= divisions_y; ++row) {
         const double v = static_cast<double>(row) / divisions_y;
@@ -1013,7 +1027,7 @@ void RasterizeSurface(
             TextureFace::Front);
     };
 
-    const auto raster_grid = [&](const std::array<Vertex, 33 * 33>& vertices,
+    const auto raster_grid = [&](const std::vector<Vertex>& vertices,
                                  TextureFace texture_face) {
         for (int row = 0; row < divisions_y; ++row) {
             for (int column = 0; column < divisions_x; ++column) {
@@ -1081,7 +1095,7 @@ void RasterizeSurface(
     }
 
     if (wireframe && render_view == kRenderViewFinish) {
-        const auto draw_grid = [&](const std::array<Vertex, 33 * 33>& vertices) {
+        const auto draw_grid = [&](const std::vector<Vertex>& vertices) {
             for (int row = 0; row <= divisions_y; ++row) {
                 for (int column = 0; column < divisions_x; ++column) {
                     const Vertex& a =
@@ -1149,36 +1163,24 @@ void RasterizeSurface(
 
 }  // namespace
 
-CameraState BuildCameraState(
-    PF_ParamDef* params[],
+CameraState BuildDefaultAfterEffectsCameraState(
     double center_x,
     double center_y,
     double output_offset_x,
     double output_offset_y,
-    double scale_x,
-    double scale_y,
+    double camera_distance,
     double scale_z) {
-    constexpr double kDegreesToRadians = 3.14159265358979323846 / 180.0;
-    const double camera_distance = std::max(
-        1.0,
-        static_cast<double>(params[kParamCameraDistance]->u.sd.value) * scale_z);
     CameraState camera;
     camera.center_x = center_x;
     camera.center_y = center_y;
     camera.output_offset_x = output_offset_x;
     camera.output_offset_y = output_offset_y;
-    camera.focal_distance = camera_distance;
-    camera.perspective = params[kParamPerspective]->u.bd.value != FALSE;
+    camera.focal_distance = camera_distance * scale_z;
+    camera.perspective = true;
     camera.position = {
-        center_x + params[kParamCameraOffsetX]->u.fs_d.value * scale_x,
-        center_y + params[kParamCameraOffsetY]->u.fs_d.value * scale_y,
-        -camera_distance + params[kParamCameraOffsetZ]->u.fs_d.value * scale_z};
-    camera.rotation_x =
-        FIX_2_FLOAT(params[kParamCameraRotationX]->u.ad.value) * kDegreesToRadians;
-    camera.rotation_y =
-        FIX_2_FLOAT(params[kParamCameraRotationY]->u.ad.value) * kDegreesToRadians;
-    camera.rotation_z =
-        FIX_2_FLOAT(params[kParamCameraRotationZ]->u.ad.value) * kDegreesToRadians;
+        center_x,
+        center_y,
+        -camera.focal_distance};
     return camera;
 }
 
@@ -1204,9 +1206,9 @@ SceneCoordinateTransform BuildSceneCoordinateTransform(
     SceneCoordinateTransform transform;
     transform.pivot = {center_x, center_y, 0.0};
     transform.position = {
-        position.x_value * scale_x,
-        position.y_value * scale_y,
-        position.z_value * scale_z};
+        position.x_value,
+        position.y_value,
+        position.z_value};
     transform.rotation_radians = {
         FIX_2_FLOAT(params[kParamSceneRotationX]->u.ad.value) *
             kDegreesToRadians,
@@ -1252,7 +1254,7 @@ Point3 ScaledMatrixPosition(
         matrix.mat[3][2] * scale_z};
 }
 
-bool ResolveAfterEffectsCamera(
+bool ResolveAfterEffectsView(
     PF_InData* in_data,
     double center_x,
     double center_y,
@@ -1267,42 +1269,31 @@ bool ResolveAfterEffectsCamera(
         return false;
     }
     AEGP_SuiteHandler suites(in_data->pica_basicP);
-    AEGP_LayerH camera_layer = nullptr;
-    if (suites.PFInterfaceSuite1()->AEGP_GetEffectCamera(
+    A_Matrix4 camera_to_world{};
+    A_FpLong distance_to_image_plane = 0.0;
+    A_short image_plane_width = 0;
+    A_short image_plane_height = 0;
+    if (suites.PFInterfaceSuite1()->AEGP_GetEffectCameraMatrix(
             in_data->effect_ref,
             &comp_time,
-            &camera_layer) != A_Err_NONE ||
-        !camera_layer) {
-        return false;
-    }
-
-    A_Matrix4 layer_to_world{};
-    if (suites.LayerSuite5()->AEGP_GetLayerToWorldXform(
-            camera_layer,
-            &comp_time,
-            &layer_to_world) != A_Err_NONE) {
-        return false;
-    }
-    AEGP_StreamVal zoom{};
-    if (suites.StreamSuite2()->AEGP_GetLayerStreamValue(
-            camera_layer,
-            AEGP_LayerStream_ZOOM,
-            AEGP_LTimeMode_CompTime,
-            &comp_time,
-            FALSE,
-            &zoom,
-            nullptr) != A_Err_NONE ||
-        !std::isfinite(zoom.one_d) || zoom.one_d <= 0.0) {
+            &camera_to_world,
+            &distance_to_image_plane,
+            &image_plane_width,
+            &image_plane_height) != A_Err_NONE ||
+        !std::isfinite(distance_to_image_plane) ||
+        distance_to_image_plane <= 0.0 ||
+        image_plane_width <= 0 ||
+        image_plane_height <= 0) {
         return false;
     }
 
     camera = {};
     camera.position = ScaledMatrixPosition(
-        layer_to_world, scale_x, scale_y, scale_z);
-    camera.right = Normalize(MatrixRow(layer_to_world, 0));
-    camera.down = Normalize(MatrixRow(layer_to_world, 1));
-    camera.forward = Normalize(MatrixRow(layer_to_world, 2));
-    camera.focal_distance = zoom.one_d * scale_z;
+        camera_to_world, scale_x, scale_y, scale_z);
+    camera.right = Normalize(MatrixRow(camera_to_world, 0));
+    camera.down = Normalize(MatrixRow(camera_to_world, 1));
+    camera.forward = Normalize(MatrixRow(camera_to_world, 2));
+    camera.focal_distance = distance_to_image_plane * scale_z;
     camera.center_x = center_x;
     camera.center_y = center_y;
     camera.output_offset_x = output_offset_x;
@@ -1313,85 +1304,33 @@ bool ResolveAfterEffectsCamera(
     return true;
 }
 
-// In Composition World mode SurfaceLab points and 3D controller Nulls share
-// AE comp-world coordinates. The effect output is still a 2D layer, so cancel
-// that host layer's affine transform before AE composites it. This must apply
-// for EVERY camera source: with the internal camera (or no comp camera at
-// all) the coordinates are still comp-world, and skipping the cancel leaves
-// the render offset from the Null rig by the host layer's placement.
-bool ApplyCompWorldOutputTransform(
+bool ResolveAfterEffectsDefaultCameraDistance(
     PF_InData* in_data,
-    double scale_x,
-    double scale_y,
-    CameraState& camera) {
-    A_Time comp_time{};
-    if (!ResolveCompTime(in_data, comp_time)) {
+    double& camera_distance) {
+    if (!in_data || !in_data->effect_ref) {
         return false;
     }
     AEGP_SuiteHandler suites(in_data->pica_basicP);
     AEGP_LayerH effect_layer = nullptr;
-    AEGP_LayerFlags layer_flags = AEGP_LayerFlag_NONE;
     AEGP_CompH comp = nullptr;
-    AEGP_ItemH comp_item = nullptr;
-    A_long comp_width = 0;
-    A_long comp_height = 0;
-    A_Matrix4 effect_to_world{};
+    A_FpLong distance = 0.0;
     if (suites.PFInterfaceSuite1()->AEGP_GetEffectLayer(
             in_data->effect_ref,
-            &effect_layer) == A_Err_NONE &&
-        effect_layer &&
-        suites.LayerSuite5()->AEGP_GetLayerFlags(
-            effect_layer,
-            &layer_flags) == A_Err_NONE &&
-        (layer_flags & AEGP_LayerFlag_LAYER_IS_3D) == 0 &&
+            &effect_layer) != A_Err_NONE ||
+        !effect_layer ||
         suites.LayerSuite5()->AEGP_GetLayerParentComp(
             effect_layer,
-            &comp) == A_Err_NONE &&
-        comp &&
-        suites.CompSuite4()->AEGP_GetItemFromComp(
+            &comp) != A_Err_NONE ||
+        !comp ||
+        suites.CameraSuite2()->AEGP_GetDefaultCameraDistanceToImagePlane(
             comp,
-            &comp_item) == A_Err_NONE &&
-        comp_item &&
-        suites.ItemSuite6()->AEGP_GetItemDimensions(
-            comp_item,
-            &comp_width,
-            &comp_height) == A_Err_NONE &&
-        comp_width > 0 &&
-        comp_height > 0 &&
-        suites.LayerSuite5()->AEGP_GetLayerToWorldXform(
-            effect_layer,
-            &comp_time,
-            &effect_to_world) == A_Err_NONE) {
-        const double safe_scale_x = std::max(1.0e-12, scale_x);
-        const double safe_scale_y = std::max(1.0e-12, scale_y);
-        const Affine2D output_to_comp{
-            effect_to_world.mat[0][0],
-            effect_to_world.mat[1][0] * safe_scale_x / safe_scale_y,
-            effect_to_world.mat[0][1] * safe_scale_y / safe_scale_x,
-            effect_to_world.mat[1][1],
-            effect_to_world.mat[3][0] * scale_x,
-            effect_to_world.mat[3][1] * scale_y};
-        Affine2D comp_to_output;
-        if (TryInvertAffine2D(output_to_comp, comp_to_output)) {
-            const double previous_center_x = camera.center_x;
-            const double previous_center_y = camera.center_y;
-            camera.center_x =
-                static_cast<double>(comp_width) * scale_x * 0.5;
-            camera.center_y =
-                static_cast<double>(comp_height) * scale_y * 0.5;
-            if (!camera.use_basis) {
-                // The internal camera sits on and looks at the projection
-                // center; carry its position along when that center moves
-                // from the layer to the comp.
-                camera.position.x += camera.center_x - previous_center_x;
-                camera.position.y += camera.center_y - previous_center_y;
-            }
-            camera.comp_to_output = comp_to_output;
-            camera.use_comp_to_output = true;
-            return true;
-        }
+            &distance) != A_Err_NONE ||
+        !std::isfinite(distance) ||
+        distance <= 0.0) {
+        return false;
     }
-    return false;
+    camera_distance = distance;
+    return true;
 }
 
 bool ReadLayerStream(
@@ -1555,6 +1494,519 @@ bool ResolveAfterEffectsLights(
     return true;
 }
 
+struct PointControllerMarker {
+    std::uint64_t host_layer_id{};
+    std::uint64_t surface_id{};
+    std::uint16_t row{};
+    std::uint16_t column{};
+};
+
+enum class RootControllerKind {
+    Scene,
+    Surface
+};
+
+struct RootControllerMarker {
+    RootControllerKind kind{RootControllerKind::Scene};
+    std::uint64_t version{};
+    std::uint64_t host_layer_id{};
+    std::uint64_t surface_id{};
+    Point3 bind_world{};
+    Affine3D bind_transform{};
+};
+
+bool ParseUnsignedField(
+    std::string_view marker,
+    std::string_view key,
+    std::uint64_t& value) {
+    const std::string token = "|" + std::string(key) + "=";
+    const std::size_t start = marker.find(token);
+    if (start == std::string_view::npos) {
+        return false;
+    }
+    std::size_t cursor = start + token.size();
+    if (cursor >= marker.size() ||
+        marker[cursor] < '0' || marker[cursor] > '9') {
+        return false;
+    }
+    std::uint64_t parsed = 0;
+    while (cursor < marker.size() &&
+           marker[cursor] >= '0' && marker[cursor] <= '9') {
+        const std::uint64_t digit =
+            static_cast<std::uint64_t>(marker[cursor] - '0');
+        if (parsed >
+            (std::numeric_limits<std::uint64_t>::max() - digit) / 10U) {
+            return false;
+        }
+        parsed = parsed * 10U + digit;
+        ++cursor;
+    }
+    if (cursor < marker.size() && marker[cursor] != '|') {
+        return false;
+    }
+    value = parsed;
+    return true;
+}
+
+bool ParseSignedField(
+    std::string_view marker,
+    std::string_view key,
+    std::int64_t& value) {
+    const std::string token = "|" + std::string(key) + "=";
+    const std::size_t start = marker.find(token);
+    if (start == std::string_view::npos) {
+        return false;
+    }
+    std::size_t cursor = start + token.size();
+    bool negative = false;
+    if (cursor < marker.size() && marker[cursor] == '-') {
+        negative = true;
+        ++cursor;
+    }
+    if (cursor >= marker.size() ||
+        marker[cursor] < '0' || marker[cursor] > '9') {
+        return false;
+    }
+    std::uint64_t parsed = 0;
+    while (cursor < marker.size() &&
+           marker[cursor] >= '0' && marker[cursor] <= '9') {
+        const std::uint64_t digit =
+            static_cast<std::uint64_t>(marker[cursor] - '0');
+        if (parsed >
+            (static_cast<std::uint64_t>(
+                 std::numeric_limits<std::int64_t>::max()) -
+             digit) / 10U) {
+            return false;
+        }
+        parsed = parsed * 10U + digit;
+        ++cursor;
+    }
+    if (cursor < marker.size() && marker[cursor] != '|') {
+        return false;
+    }
+    value = negative
+                ? -static_cast<std::int64_t>(parsed)
+                : static_cast<std::int64_t>(parsed);
+    return true;
+}
+
+bool ParsePointControllerMarker(
+    std::string_view marker,
+    PointControllerMarker& controller) {
+    constexpr std::string_view kPrefix = "SurfaceLabV1|point";
+    if (marker.substr(0, kPrefix.size()) != kPrefix) {
+        return false;
+    }
+    std::uint64_t row = 0;
+    std::uint64_t column = 0;
+    std::array<std::uint64_t, 4> id_chunks{};
+    if (!ParseUnsignedField(
+            marker, "host", controller.host_layer_id) ||
+        !ParseUnsignedField(marker, "id0", id_chunks[0]) ||
+        !ParseUnsignedField(marker, "id1", id_chunks[1]) ||
+        !ParseUnsignedField(marker, "id2", id_chunks[2]) ||
+        !ParseUnsignedField(marker, "id3", id_chunks[3]) ||
+        !ParseUnsignedField(marker, "row", row) ||
+        !ParseUnsignedField(marker, "col", column) ||
+        controller.host_layer_id == 0 ||
+        id_chunks[0] > 0xffffU ||
+        id_chunks[1] > 0xffffU ||
+        id_chunks[2] > 0xffffU ||
+        id_chunks[3] > 0xffffU ||
+        row > kMaximumLatticeDivisions ||
+        column > kMaximumLatticeDivisions) {
+        return false;
+    }
+    controller.surface_id =
+        (id_chunks[0] << 48U) |
+        (id_chunks[1] << 32U) |
+        (id_chunks[2] << 16U) |
+        id_chunks[3];
+    if (controller.surface_id == 0) {
+        return false;
+    }
+    controller.row = static_cast<std::uint16_t>(row);
+    controller.column = static_cast<std::uint16_t>(column);
+    return true;
+}
+
+bool ParseRootControllerMarker(
+    std::string_view marker,
+    RootControllerMarker& controller) {
+    constexpr std::string_view kScenePrefix =
+        "SurfaceLabV1|scene-root";
+    constexpr std::string_view kSurfacePrefix =
+        "SurfaceLabV1|surface-root";
+    if (marker.substr(0, kScenePrefix.size()) == kScenePrefix) {
+        controller.kind = RootControllerKind::Scene;
+    } else if (
+        marker.substr(0, kSurfacePrefix.size()) == kSurfacePrefix) {
+        controller.kind = RootControllerKind::Surface;
+    } else {
+        return false;
+    }
+    std::uint64_t root_version = 0;
+    std::int64_t bind_x = 0;
+    std::int64_t bind_y = 0;
+    std::int64_t bind_z = 0;
+    if (!ParseUnsignedField(marker, "rootv", root_version) ||
+        (root_version != 2 && root_version != 3) ||
+        !ParseUnsignedField(
+            marker, "host", controller.host_layer_id) ||
+        !ParseSignedField(marker, "bindx", bind_x) ||
+        !ParseSignedField(marker, "bindy", bind_y) ||
+        !ParseSignedField(marker, "bindz", bind_z) ||
+        controller.host_layer_id == 0) {
+        return false;
+    }
+    controller.version = root_version;
+    controller.bind_world = {
+        static_cast<double>(bind_x) / 1000.0,
+        static_cast<double>(bind_y) / 1000.0,
+        static_cast<double>(bind_z) / 1000.0};
+    controller.bind_transform.tx = controller.bind_world.x;
+    controller.bind_transform.ty = controller.bind_world.y;
+    controller.bind_transform.tz = controller.bind_world.z;
+    if (root_version == 3) {
+        constexpr std::array<std::string_view, 9> kBasisFields{
+            "bxx", "bxy", "bxz",
+            "byx", "byy", "byz",
+            "bzx", "bzy", "bzz"};
+        std::array<std::int64_t, 9> basis{};
+        for (std::size_t index = 0; index < basis.size(); ++index) {
+            if (!ParseSignedField(
+                    marker,
+                    kBasisFields[index],
+                    basis[index])) {
+                return false;
+            }
+        }
+        controller.bind_transform.xx =
+            static_cast<double>(basis[0]) / 1000000.0;
+        controller.bind_transform.xy =
+            static_cast<double>(basis[1]) / 1000000.0;
+        controller.bind_transform.xz =
+            static_cast<double>(basis[2]) / 1000000.0;
+        controller.bind_transform.yx =
+            static_cast<double>(basis[3]) / 1000000.0;
+        controller.bind_transform.yy =
+            static_cast<double>(basis[4]) / 1000000.0;
+        controller.bind_transform.yz =
+            static_cast<double>(basis[5]) / 1000000.0;
+        controller.bind_transform.zx =
+            static_cast<double>(basis[6]) / 1000000.0;
+        controller.bind_transform.zy =
+            static_cast<double>(basis[7]) / 1000000.0;
+        controller.bind_transform.zz =
+            static_cast<double>(basis[8]) / 1000000.0;
+        Affine3D inverse{};
+        if (!TryInvertAffine3D(
+                controller.bind_transform,
+                inverse)) {
+            return false;
+        }
+    }
+    if (controller.kind == RootControllerKind::Scene) {
+        return true;
+    }
+    std::array<std::uint64_t, 4> id_chunks{};
+    if (!ParseUnsignedField(marker, "id0", id_chunks[0]) ||
+        !ParseUnsignedField(marker, "id1", id_chunks[1]) ||
+        !ParseUnsignedField(marker, "id2", id_chunks[2]) ||
+        !ParseUnsignedField(marker, "id3", id_chunks[3]) ||
+        id_chunks[0] > 0xffffU ||
+        id_chunks[1] > 0xffffU ||
+        id_chunks[2] > 0xffffU ||
+        id_chunks[3] > 0xffffU) {
+        return false;
+    }
+    controller.surface_id =
+        (id_chunks[0] << 48U) |
+        (id_chunks[1] << 32U) |
+        (id_chunks[2] << 16U) |
+        id_chunks[3];
+    return controller.surface_id != 0;
+}
+
+bool ReadMarkerComment(
+    AEGP_SuiteHandler& suites,
+    AEGP_PluginID plugin_id,
+    AEGP_ConstMarkerValP marker,
+    std::string& comment) {
+    AEGP_MemHandle unicode_handle = nullptr;
+    if (!marker ||
+        suites.MarkerSuite3()->AEGP_GetMarkerString(
+            plugin_id,
+            marker,
+            AEGP_MarkerString_COMMENT,
+            &unicode_handle) != A_Err_NONE ||
+        !unicode_handle) {
+        return false;
+    }
+    void* locked = nullptr;
+    const A_Err lock_error =
+        suites.MemorySuite1()->AEGP_LockMemHandle(
+            unicode_handle,
+            &locked);
+    bool valid = lock_error == A_Err_NONE && locked;
+    comment.clear();
+    if (valid) {
+        const auto* unicode = static_cast<const A_u_short*>(locked);
+        constexpr std::size_t kMaximumMarkerLength = 512;
+        for (std::size_t index = 0;
+             index < kMaximumMarkerLength && unicode[index] != 0;
+             ++index) {
+            if (unicode[index] > 0x7fU) {
+                valid = false;
+                break;
+            }
+            comment.push_back(static_cast<char>(unicode[index]));
+        }
+    }
+    if (locked) {
+        suites.MemorySuite1()->AEGP_UnlockMemHandle(unicode_handle);
+    }
+    suites.MemorySuite1()->AEGP_FreeMemHandle(unicode_handle);
+    return valid && !comment.empty();
+}
+
+bool ReadPointControllerMarker(
+    AEGP_SuiteHandler& suites,
+    AEGP_PluginID plugin_id,
+    AEGP_LayerH layer,
+    PointControllerMarker& controller) {
+    AEGP_StreamRefH marker_stream = nullptr;
+    if (suites.StreamSuite6()->AEGP_GetNewLayerStream(
+            plugin_id,
+            layer,
+            AEGP_LayerStream_MARKER,
+            &marker_stream) != A_Err_NONE ||
+        !marker_stream) {
+        return false;
+    }
+    A_long keyframe_count = 0;
+    bool found = false;
+    if (suites.KeyframeSuite5()->AEGP_GetStreamNumKFs(
+            marker_stream,
+            &keyframe_count) == A_Err_NONE) {
+        for (A_long index = 0;
+             index < keyframe_count && !found;
+             ++index) {
+            AEGP_StreamValue2 value{};
+            if (suites.KeyframeSuite5()->AEGP_GetNewKeyframeValue(
+                    plugin_id,
+                    marker_stream,
+                    index,
+                    &value) != A_Err_NONE) {
+                continue;
+            }
+            std::string comment;
+            found =
+                ReadMarkerComment(
+                    suites,
+                    plugin_id,
+                    value.val.markerP,
+                    comment) &&
+                ParsePointControllerMarker(comment, controller);
+            suites.StreamSuite6()->AEGP_DisposeStreamValue(&value);
+        }
+    }
+    suites.StreamSuite6()->AEGP_DisposeStream(marker_stream);
+    return found;
+}
+
+bool ReadRootControllerMarker(
+    AEGP_SuiteHandler& suites,
+    AEGP_PluginID plugin_id,
+    AEGP_LayerH layer,
+    RootControllerMarker& controller) {
+    AEGP_StreamRefH marker_stream = nullptr;
+    if (suites.StreamSuite6()->AEGP_GetNewLayerStream(
+            plugin_id,
+            layer,
+            AEGP_LayerStream_MARKER,
+            &marker_stream) != A_Err_NONE ||
+        !marker_stream) {
+        return false;
+    }
+    A_long keyframe_count = 0;
+    bool found = false;
+    if (suites.KeyframeSuite5()->AEGP_GetStreamNumKFs(
+            marker_stream,
+            &keyframe_count) == A_Err_NONE) {
+        for (A_long index = 0;
+             index < keyframe_count && !found;
+             ++index) {
+            AEGP_StreamValue2 value{};
+            if (suites.KeyframeSuite5()->AEGP_GetNewKeyframeValue(
+                    plugin_id,
+                    marker_stream,
+                    index,
+                    &value) != A_Err_NONE) {
+                continue;
+            }
+            std::string comment;
+            found =
+                ReadMarkerComment(
+                    suites,
+                    plugin_id,
+                    value.val.markerP,
+                    comment) &&
+                ParseRootControllerMarker(comment, controller);
+            suites.StreamSuite6()->AEGP_DisposeStreamValue(&value);
+        }
+    }
+    suites.StreamSuite6()->AEGP_DisposeStream(marker_stream);
+    return found;
+}
+
+bool BuildRootDeltaTransform(
+    const A_Matrix4& layer_to_world,
+    const RootControllerMarker& marker,
+    Affine3D& delta_transform) {
+    const Affine3D current_transform{
+        layer_to_world.mat[0][0],
+        layer_to_world.mat[0][1],
+        layer_to_world.mat[0][2],
+        layer_to_world.mat[1][0],
+        layer_to_world.mat[1][1],
+        layer_to_world.mat[1][2],
+        layer_to_world.mat[2][0],
+        layer_to_world.mat[2][1],
+        layer_to_world.mat[2][2],
+        layer_to_world.mat[3][0],
+        layer_to_world.mat[3][1],
+        layer_to_world.mat[3][2]};
+    if (marker.version >= 3) {
+        return BuildAffineDeltaTransform(
+            marker.bind_transform,
+            current_transform,
+            delta_transform);
+    }
+    delta_transform = current_transform;
+    const Point3 transformed_bind =
+        ApplyAffine3D(delta_transform, marker.bind_world);
+    delta_transform.tx +=
+        layer_to_world.mat[3][0] - transformed_bind.x;
+    delta_transform.ty +=
+        layer_to_world.mat[3][1] - transformed_bind.y;
+    delta_transform.tz +=
+        layer_to_world.mat[3][2] - transformed_bind.z;
+    return true;
+}
+
+bool IsDescendantOf(
+    AEGP_SuiteHandler& suites,
+    AEGP_LayerH layer,
+    AEGP_LayerH ancestor) {
+    if (!layer || !ancestor) {
+        return false;
+    }
+    AEGP_LayerH current = layer;
+    constexpr int kMaximumParentDepth = 64;
+    for (int depth = 0; depth < kMaximumParentDepth; ++depth) {
+        AEGP_LayerH parent = nullptr;
+        if (suites.LayerSuite5()->AEGP_GetLayerParent(
+                current,
+                &parent) != A_Err_NONE ||
+            !parent) {
+            return false;
+        }
+        if (parent == ancestor) {
+            return true;
+        }
+        current = parent;
+    }
+    return false;
+}
+
+Point3 TransformLayerAnchorToWorld(
+    const A_Matrix4& transform,
+    const AEGP_StreamVal& anchor) {
+    return {
+        anchor.three_d.x * transform.mat[0][0] +
+            anchor.three_d.y * transform.mat[1][0] +
+            anchor.three_d.z * transform.mat[2][0] +
+            transform.mat[3][0],
+        anchor.three_d.x * transform.mat[0][1] +
+            anchor.three_d.y * transform.mat[1][1] +
+            anchor.three_d.z * transform.mat[2][1] +
+            transform.mat[3][1],
+        anchor.three_d.x * transform.mat[0][2] +
+            anchor.three_d.y * transform.mat[1][2] +
+            anchor.three_d.z * transform.mat[2][2] +
+            transform.mat[3][2]};
+}
+
+bool TryResolveControllerLatticePoint(
+    Point3 full_world,
+    const SurfaceData& surface,
+    const CameraState& camera,
+    double scale_x,
+    double scale_y,
+    double scale_z,
+    Point3& lattice_point) {
+    constexpr double kMinimumScale = 1.0e-10;
+    if (std::abs(scale_x) <= kMinimumScale ||
+        std::abs(scale_y) <= kMinimumScale ||
+        std::abs(scale_z) <= kMinimumScale) {
+        return false;
+    }
+    Point3 scene_local{};
+    if (!TryInverseScenePointTransform(
+            {full_world.x * scale_x,
+             full_world.y * scale_y,
+             full_world.z * scale_z},
+            camera.scene_transform,
+            scene_local)) {
+        return false;
+    }
+    const SurfaceEvaluationState evaluation =
+        BuildSurfaceEvaluationState(
+            surface,
+            camera,
+            scale_x,
+            scale_y,
+            scale_z);
+    const SurfaceCoordinateTransform& transform =
+        evaluation.coordinate_transform;
+    if (std::abs(transform.scale.x) <= kMinimumScale ||
+        std::abs(transform.scale.y) <= kMinimumScale ||
+        std::abs(transform.scale.z) <= kMinimumScale) {
+        return false;
+    }
+    Point3 relative{
+        scene_local.x - transform.rotation_origin.x,
+        scene_local.y - transform.rotation_origin.y,
+        scene_local.z - transform.rotation_origin.z};
+    relative = InverseRotateVector(
+        relative,
+        transform.rotation_radians.x,
+        transform.rotation_radians.y,
+        transform.rotation_radians.z);
+    const Point3 cage_point{
+        transform.rotation_origin.x +
+            relative.x / transform.scale.x,
+        transform.rotation_origin.y +
+            relative.y / transform.scale.y,
+        transform.rotation_origin.z +
+            relative.z / transform.scale.z};
+    const StoredPoint3& original_zero = surface.lattice.points[0];
+    const StoredPoint3& evaluated_zero = evaluation.lattice.points[0];
+    const Point3 recenter_offset{
+        static_cast<double>(evaluated_zero.x) -
+            static_cast<double>(original_zero.x) * scale_x,
+        static_cast<double>(evaluated_zero.y) -
+            static_cast<double>(original_zero.y) * scale_y,
+        static_cast<double>(evaluated_zero.z) -
+            static_cast<double>(original_zero.z) * scale_z};
+    lattice_point = {
+        (cage_point.x - recenter_offset.x) / scale_x,
+        (cage_point.y - recenter_offset.y) / scale_y,
+        (cage_point.z - recenter_offset.z) / scale_z};
+    return IsFinitePoint3(lattice_point);
+}
+
 void IncludeProjectedVertex(Bounds2D& bounds, const Vertex& vertex) {
     if (!vertex.visible || !std::isfinite(vertex.x) || !std::isfinite(vertex.y)) {
         return;
@@ -1666,82 +2118,247 @@ struct OutputBounds {
 };
 
 OutputBounds ComputeOutputBounds(
-    PF_ParamDef* params[],
+    PF_ParamDef*[],
     A_long input_width,
     A_long input_height,
-    const SceneData& scene,
+    const SceneData&,
+    const CameraState&,
+    double,
+    double,
+    double) {
+    return {0, 0, input_width, input_height};
+}
+
+}  // namespace
+
+NullPointOverrideState ResolveNullPointOverrides(
+    PF_InData* in_data,
+    SceneData& scene,
     const CameraState& camera,
     double scale_x,
     double scale_y,
     double scale_z) {
-    const A_long mode = std::clamp<A_long>(
-        params[kParamOutputBoundsMode]->u.pd.value,
-        kOutputBoundsSource,
-        kOutputBoundsFixed);
-    const A_long padding_x = static_cast<A_long>(std::lround(
-        std::max<A_long>(0, params[kParamOutputPaddingX]->u.sd.value) *
-        scale_x));
-    const A_long padding_y = static_cast<A_long>(std::lround(
-        std::max<A_long>(0, params[kParamOutputPaddingY]->u.sd.value) *
-        scale_y));
+    NullPointOverrideState result;
+    if (!in_data || !in_data->effect_ref || !in_data->global_data) {
+        return result;
+    }
+    const auto* global =
+        reinterpret_cast<const GlobalData*>(in_data->global_data);
+    A_Time comp_time{};
+    if (!ResolveCompTime(in_data, comp_time)) {
+        return result;
+    }
+    AEGP_SuiteHandler suites(in_data->pica_basicP);
+    AEGP_LayerH effect_layer = nullptr;
+    AEGP_CompH comp = nullptr;
+    AEGP_LayerIDVal effect_layer_id = 0;
+    if (suites.PFInterfaceSuite1()->AEGP_GetEffectLayer(
+            in_data->effect_ref,
+            &effect_layer) != A_Err_NONE ||
+        !effect_layer ||
+        suites.LayerSuite5()->AEGP_GetLayerParentComp(
+            effect_layer,
+            &comp) != A_Err_NONE ||
+        !comp ||
+        suites.LayerSuite5()->AEGP_GetLayerID(
+            effect_layer,
+            &effect_layer_id) != A_Err_NONE) {
+        return result;
+    }
+    A_long layer_count = 0;
+    if (suites.LayerSuite5()->AEGP_GetCompNumLayers(
+            comp,
+            &layer_count) != A_Err_NONE) {
+        return result;
+    }
 
-    OutputBounds bounds{0, 0, input_width, input_height};
-    if (mode == kOutputBoundsFixed) {
-        LimitExpandedAxis(
-            -static_cast<double>(padding_x),
-            static_cast<double>(input_width + padding_x),
-            input_width,
-            PF_MAX_WORLD_WIDTH,
-            bounds.minimum_x,
-            bounds.maximum_x);
-        LimitExpandedAxis(
-            -static_cast<double>(padding_y),
-            static_cast<double>(input_height + padding_y),
-            input_height,
-            PF_MAX_WORLD_HEIGHT,
-            bounds.minimum_y,
-            bounds.maximum_y);
-    } else if (mode == kOutputBoundsAuto) {
-        const int legacy_tessellation = std::clamp(
-            static_cast<int>(params[kParamTessellation]->u.sd.value),
-            static_cast<int>(kMinimumDivisions),
-            static_cast<int>(kMaximumDivisions));
-        Bounds2D projected_bounds{
-            0.0,
-            0.0,
-            static_cast<double>(input_width),
-            static_cast<double>(input_height)};
-        for (std::uint32_t index = 0; index < scene.surface_count; ++index) {
-            if (scene.surfaces[index].enabled != 0) {
-                AccumulateSurfaceBounds(
-                    projected_bounds,
-                    scene.surfaces[index],
-                    legacy_tessellation,
-                    camera,
-                    scale_x,
-                    scale_y,
-                    scale_z);
+    struct ResolvedRootState {
+        AEGP_LayerH layer{};
+        Affine3D full_transform{};
+        Affine3D inverse_full_transform{};
+        bool valid{};
+    };
+    ResolvedRootState scene_root;
+    std::array<ResolvedRootState, kMaximumSurfaces> surface_roots{};
+    const auto find_surface_index =
+        [&](std::uint64_t surface_id) {
+            for (std::uint32_t index = 0;
+                 index < scene.surface_count;
+                 ++index) {
+                if (scene.surfaces[index].lattice.surface_id ==
+                    surface_id) {
+                    return index;
+                }
+            }
+            return kMaximumSurfaces;
+        };
+
+    // Resolve the roots first. A Surface Root's layer-to-world matrix already
+    // contains its Scene Root parent, so it becomes the complete rigid
+    // transform for that surface. Surfaces without their own root inherit the
+    // Scene Root transform directly.
+    for (A_long layer_index = 0;
+         layer_index < layer_count;
+         ++layer_index) {
+        AEGP_LayerH layer = nullptr;
+        if (suites.LayerSuite5()->AEGP_GetCompLayerByIndex(
+                comp,
+                layer_index,
+                &layer) != A_Err_NONE ||
+            !layer ||
+            layer == effect_layer) {
+            continue;
+        }
+        RootControllerMarker marker{};
+        if (!ReadRootControllerMarker(
+                suites,
+                global->plugin_id,
+                layer,
+                marker) ||
+            marker.host_layer_id !=
+                static_cast<std::uint64_t>(effect_layer_id)) {
+            continue;
+        }
+        ResolvedRootState* destination = nullptr;
+        if (marker.kind == RootControllerKind::Scene) {
+            destination = &scene_root;
+        } else {
+            const std::uint32_t surface_index =
+                find_surface_index(marker.surface_id);
+            if (surface_index < scene.surface_count) {
+                destination = &surface_roots[surface_index];
             }
         }
-        LimitExpandedAxis(
-            projected_bounds.minimum_x - padding_x,
-            projected_bounds.maximum_x + padding_x,
-            input_width,
-            PF_MAX_WORLD_WIDTH,
-            bounds.minimum_x,
-            bounds.maximum_x);
-        LimitExpandedAxis(
-            projected_bounds.minimum_y - padding_y,
-            projected_bounds.maximum_y + padding_y,
-            input_height,
-            PF_MAX_WORLD_HEIGHT,
-            bounds.minimum_y,
-            bounds.maximum_y);
+        if (!destination || destination->valid) {
+            continue;
+        }
+        A_Matrix4 layer_to_world{};
+        if (suites.LayerSuite5()->AEGP_GetLayerToWorldXform(
+                layer,
+                &comp_time,
+                &layer_to_world) != A_Err_NONE) {
+            continue;
+        }
+        Affine3D transform{};
+        if (!BuildRootDeltaTransform(
+                layer_to_world,
+                marker,
+                transform)) {
+            continue;
+        }
+        Affine3D inverse{};
+        if (!TryInvertAffine3D(transform, inverse)) {
+            continue;
+        }
+        destination->layer = layer;
+        destination->full_transform = transform;
+        destination->inverse_full_transform = inverse;
+        destination->valid = true;
     }
-    return bounds;
-}
 
-}  // namespace
+    std::array<ResolvedRootState*, kMaximumSurfaces> effective_roots{};
+    for (std::uint32_t index = 0;
+         index < scene.surface_count;
+         ++index) {
+        ResolvedRootState* root =
+            surface_roots[index].valid
+                ? &surface_roots[index]
+                : (scene_root.valid ? &scene_root : nullptr);
+        effective_roots[index] = root;
+        SurfaceData& surface = scene.surfaces[index];
+        surface.root_transform_enabled = root ? 1U : 0U;
+        surface.root_world_transform =
+            root ? ScaleAffine3DCoordinateSystem(
+                       root->full_transform,
+                       scale_x,
+                       scale_y,
+                       scale_z)
+                 : Affine3D{};
+    }
+
+    for (A_long layer_index = 0;
+         layer_index < layer_count;
+         ++layer_index) {
+        AEGP_LayerH layer = nullptr;
+        if (suites.LayerSuite5()->AEGP_GetCompLayerByIndex(
+                comp,
+                layer_index,
+                &layer) != A_Err_NONE ||
+            !layer ||
+            layer == effect_layer) {
+            continue;
+        }
+        PointControllerMarker marker{};
+        if (!ReadPointControllerMarker(
+                suites,
+                global->plugin_id,
+                layer,
+                marker) ||
+            marker.host_layer_id !=
+                static_cast<std::uint64_t>(effect_layer_id)) {
+            continue;
+        }
+        const std::uint32_t surface_index =
+            find_surface_index(marker.surface_id);
+        if (surface_index >= scene.surface_count) {
+            continue;
+        }
+        SurfaceData& surface = scene.surfaces[surface_index];
+        if (marker.row > surface.lattice.divisions_y ||
+            marker.column > surface.lattice.divisions_x) {
+            continue;
+        }
+        const std::size_t point_index = LatticePointIndex(
+            surface.lattice.divisions_x,
+            marker.row,
+            marker.column);
+        if (result.IsControlled(surface_index, point_index)) {
+            continue;
+        }
+        A_Matrix4 layer_to_world{};
+        AEGP_StreamVal anchor{};
+        if (suites.LayerSuite5()->AEGP_GetLayerToWorldXform(
+                layer,
+                &comp_time,
+                &layer_to_world) != A_Err_NONE ||
+            !ReadLayerStream(
+                suites,
+                layer,
+                AEGP_LayerStream_ANCHORPOINT,
+                comp_time,
+                anchor)) {
+            continue;
+        }
+        Point3 world =
+            TransformLayerAnchorToWorld(layer_to_world, anchor);
+        const ResolvedRootState* root =
+            effective_roots[surface_index];
+        if (root &&
+            IsDescendantOf(suites, layer, root->layer)) {
+            world = ApplyAffine3D(
+                root->inverse_full_transform,
+                world);
+        }
+        Point3 lattice_point{};
+        if (!TryResolveControllerLatticePoint(
+                world,
+                surface,
+                camera,
+                scale_x,
+                scale_y,
+                scale_z,
+                lattice_point)) {
+            continue;
+        }
+        StoredPoint3& stored = surface.lattice.points[point_index];
+        stored.x = static_cast<float>(lattice_point.x);
+        stored.y = static_cast<float>(lattice_point.y);
+        stored.z = static_cast<float>(lattice_point.z);
+        result.controlled[surface_index][point_index] = true;
+        ++result.count;
+    }
+    return result;
+}
 
 CameraState BuildResolvedCameraState(
     PF_InData* in_data,
@@ -1753,35 +2370,30 @@ CameraState BuildResolvedCameraState(
     double scale_x,
     double scale_y,
     double scale_z) {
-    CameraState camera = BuildCameraState(
-        params,
+    double default_camera_distance = 1.0;
+    ResolveAfterEffectsDefaultCameraDistance(
+        in_data,
+        default_camera_distance);
+    CameraState camera = BuildDefaultAfterEffectsCameraState(
+        center_x,
+        center_y,
+        output_offset_x,
+        output_offset_y,
+        default_camera_distance,
+        scale_z);
+    ResolveAfterEffectsView(
+        in_data,
         center_x,
         center_y,
         output_offset_x,
         output_offset_y,
         scale_x,
         scale_y,
-        scale_z);
-    if (params[kParamCameraSource]->u.pd.value ==
-        kCameraSourceAfterEffects) {
-        ResolveAfterEffectsCamera(
-            in_data,
-            center_x,
-            center_y,
-            output_offset_x,
-            output_offset_y,
-            scale_x,
-            scale_y,
-            scale_z,
-            camera);
-    }
-    if (params[kParamCoordinateSpace]->u.pd.value ==
-        kCoordinateSpaceCompWorld) {
-        ApplyCompWorldOutputTransform(in_data, scale_x, scale_y, camera);
-    }
-    // Preserve the true effect-input centre after any comp-world override of
-    // center_x/center_y; effect-space consumers (the legacy surface pivot)
-    // must use this, never the projection centre.
+        scale_z,
+        camera);
+    // The full-comp 2D host is a render window, not a scene object. AE applies
+    // its layer transform after the effect, so folding the host transform back
+    // into the projection shifts the comp-world surface a second time.
     camera.input_center_x = center_x;
     camera.input_center_y = center_y;
     camera.scene_transform = BuildSceneCoordinateTransform(
@@ -1898,7 +2510,7 @@ struct RenderFrameSnapshot {
     SceneData scene{};
     CameraState camera{};
     LightingState lighting{};
-    int legacy_tessellation{static_cast<int>(kDefaultDivisions)};
+    int legacy_tessellation{1};
     double scale_x{1.0};
     double scale_y{1.0};
     double scale_z{1.0};
@@ -1922,7 +2534,7 @@ RenderFrameSnapshot BuildRenderFrameSnapshot(
         static_cast<double>(in_data->downsample_y.num) /
         std::max<A_u_long>(1U, in_data->downsample_y.den);
     snapshot.scale_z = (snapshot.scale_x + snapshot.scale_y) * 0.5;
-    snapshot.wireframe = params[kParamWireframe]->u.bd.value != FALSE;
+    snapshot.wireframe = false;
     snapshot.render_view = std::clamp<A_long>(
         params[kParamRenderView]->u.pd.value,
         kRenderViewFinish,
@@ -1939,61 +2551,35 @@ RenderFrameSnapshot BuildRenderFrameSnapshot(
         snapshot.scale_z);
 
     LightingState& lighting = snapshot.lighting;
-    lighting.enabled = params[kParamLightingEnabled]->u.bd.value != FALSE;
-    lighting.backface_culling =
-        params[kParamBackfaceCulling]->u.bd.value != FALSE;
-    lighting.texture_filter = std::clamp<A_long>(
-        params[kParamTextureFilter]->u.pd.value,
-        kTextureFilterNearest,
-        kTextureFilterBilinear);
-    const double internal_intensity = std::clamp(
-        params[kParamLightIntensity]->u.fs_d.value / 100.0,
-        0.0,
-        4.0);
-    const double internal_ambient = std::clamp(
-        params[kParamAmbientLight]->u.fs_d.value / 100.0,
-        0.0,
-        1.0);
-    constexpr double kDegreesToRadians = 3.14159265358979323846 / 180.0;
-    const double light_rotation_x =
-        FIX_2_FLOAT(params[kParamLightRotationX]->u.ad.value) *
-        kDegreesToRadians;
-    const double light_rotation_y =
-        FIX_2_FLOAT(params[kParamLightRotationY]->u.ad.value) *
-        kDegreesToRadians;
-    RenderLight& internal_light = lighting.lights[0];
-    internal_light.type = RenderLightType::Directional;
-    internal_light.direction = Normalize(RotatePoint(
-        {0.0, 0.0, -1.0},
-        0.0,
-        0.0,
-        0.0,
-        light_rotation_x,
-        light_rotation_y,
-        0.0));
-    internal_light.intensity = internal_intensity;
-    lighting.light_count = 1;
-    lighting.ambient = {
-        internal_ambient,
-        internal_ambient,
-        internal_ambient};
-    if (lighting.enabled &&
-        params[kParamLightSource]->u.pd.value ==
-            kLightSourceAfterEffects) {
-        ResolveAfterEffectsLights(
-            in_data,
-            snapshot.scale_x,
-            snapshot.scale_y,
-            snapshot.scale_z,
-            lighting);
-    }
+    lighting.enabled = true;
+    lighting.backface_culling = false;
+    lighting.texture_filter = kTextureFilterBilinear;
+    lighting.light_count = 0;
+    lighting.ambient = {1.0, 1.0, 1.0};
+    ResolveAfterEffectsLights(
+        in_data,
+        snapshot.scale_x,
+        snapshot.scale_y,
+        snapshot.scale_z,
+        lighting);
     lighting.camera_position = snapshot.camera.position;
-    snapshot.legacy_tessellation = std::clamp(
-        static_cast<int>(params[kParamTessellation]->u.sd.value),
-        static_cast<int>(kMinimumDivisions),
-        static_cast<int>(kMaximumDivisions));
-    snapshot.scene =
-        ResolveSceneForFrame(in_data, params, input_width, input_height);
+    snapshot.legacy_tessellation = 1;
+    const double full_width = static_cast<double>(input_width) /
+                              std::max(1.0e-6, snapshot.scale_x);
+    const double full_height = static_cast<double>(input_height) /
+                               std::max(1.0e-6, snapshot.scale_y);
+    snapshot.scene = ResolveSceneForFrame(
+        in_data,
+        params,
+        static_cast<A_long>(std::lround(full_width)),
+        static_cast<A_long>(std::lround(full_height)));
+    ResolveNullPointOverrides(
+        in_data,
+        snapshot.scene,
+        snapshot.camera,
+        snapshot.scale_x,
+        snapshot.scale_y,
+        snapshot.scale_z);
     if (snapshot.render_view == kRenderViewFinish) {
         for (std::uint32_t index = 0;
              index < snapshot.scene.surface_count;
@@ -2046,8 +2632,7 @@ PF_Err RenderSurface(PF_InData* in_data, PF_ParamDef* params[], PF_LayerDef* out
 
         CheckedOutLayerParam front_checkout(in_data);
         const PF_Err front_checkout_error = front_checkout.Checkout(
-            kParamSurfaceSourceLayer1 +
-            static_cast<PF_ParamIndex>(surface.source_slot));
+            SurfaceSourceParam(surface.source_slot));
         if (front_checkout_error != PF_Err_NONE) {
             return front_checkout_error;
         }
@@ -2059,8 +2644,7 @@ PF_Err RenderSurface(PF_InData* in_data, PF_ParamDef* params[], PF_LayerDef* out
         CheckedOutLayerParam back_checkout(in_data);
         if (separate_back_checkout) {
             const PF_Err back_checkout_error = back_checkout.Checkout(
-                kParamSurfaceSourceLayer1 +
-                static_cast<PF_ParamIndex>(back_slot));
+                SurfaceSourceParam(back_slot));
             if (back_checkout_error != PF_Err_NONE) {
                 return back_checkout_error;
             }
@@ -2120,8 +2704,19 @@ PF_Err Render(PF_InData* in_data, PF_ParamDef* params[], PF_LayerDef* output) {
 
 namespace {
 
-constexpr A_long kSmartInputCheckoutId = 0;
-constexpr A_long kSmartSourceCheckoutBase = 1;
+constexpr A_long kSmartCheckoutStride =
+    1 + static_cast<A_long>(kMaximumSurfaces);
+
+A_long SmartInputCheckoutId(std::size_t sample) {
+    return static_cast<A_long>(sample) * kSmartCheckoutStride;
+}
+
+A_long SmartSourceCheckoutId(
+    std::size_t sample,
+    std::uint32_t source) {
+    return SmartInputCheckoutId(sample) + 1 +
+           static_cast<A_long>(source);
+}
 
 struct SmartParameterSet {
     explicit SmartParameterSet(PF_InData* in_data)
@@ -2181,7 +2776,7 @@ PF_Err CheckoutSmartParameter(
 PF_Err CheckoutSmartRenderParameters(
     PF_InData* in_data,
     SmartParameterSet& parameters) {
-    constexpr std::array<PF_ParamIndex, 31> kFrameParameters = {
+    constexpr std::array<PF_ParamIndex, 8> kFrameParameters = {
         kParamScenePosition,
         kParamSceneRotationX,
         kParamSceneRotationY,
@@ -2189,30 +2784,7 @@ PF_Err CheckoutSmartRenderParameters(
         kParamSceneScaleX,
         kParamSceneScaleY,
         kParamSceneScaleZ,
-        kParamTessellation,
-        kParamWireframe,
-        kParamPerspective,
-        kParamCameraDistance,
-        kParamSceneData,
-        kParamCameraSource,
-        kParamCoordinateSpace,
-        kParamCameraOffsetX,
-        kParamCameraOffsetY,
-        kParamCameraOffsetZ,
-        kParamCameraRotationX,
-        kParamCameraRotationY,
-        kParamCameraRotationZ,
-        kParamLightSource,
-        kParamLightingEnabled,
-        kParamLightRotationX,
-        kParamLightRotationY,
-        kParamLightIntensity,
-        kParamAmbientLight,
-        kParamRenderView,
-        kParamTextureFilter,
-        kParamBackfaceCulling,
-        kParamOutputBoundsMode,
-        kParamOutputPaddingX};
+        kParamRenderView};
     for (PF_ParamIndex index : kFrameParameters) {
         const PF_Err error =
             CheckoutSmartParameter(in_data, parameters, index);
@@ -2220,53 +2792,18 @@ PF_Err CheckoutSmartRenderParameters(
             return error;
         }
     }
-    PF_Err error = CheckoutSmartParameter(
-        in_data,
-        parameters,
-        kParamOutputPaddingY);
-    if (error != PF_Err_NONE) {
-        return error;
-    }
-
-    std::array<bool, kMaximumSurfaces> animation_banks{};
-    bool active_scene = false;
-    const PF_Handle scene_handle =
-        parameters.definitions[static_cast<std::size_t>(kParamSceneData)]
-            .u.arb_d.value;
-    if (scene_handle) {
-        const auto* scene =
-            static_cast<const SceneData*>(PF_LOCK_HANDLE(scene_handle));
-        if (scene) {
-            active_scene = IsValidScene(*scene) && scene->active != 0;
-            if (active_scene) {
-                for (std::uint32_t index = 0;
-                     index < scene->surface_count;
-                     ++index) {
-                    animation_banks[scene->surfaces[index].animation_bank] =
-                        true;
-                }
-            }
-            PF_UNLOCK_HANDLE(scene_handle);
-        }
-    }
-    if (!active_scene) {
-        animation_banks[0] = true;
-    }
-
-    for (std::uint32_t bank = 0;
-         bank < static_cast<std::uint32_t>(animation_banks.size());
-         ++bank) {
-        if (!animation_banks[bank]) {
-            continue;
-        }
-        for (std::size_t property = 0;
-             property < static_cast<std::size_t>(
-                            kSurfaceAnimationPropertyCount);
-             ++property) {
-            error = CheckoutSmartParameter(
+    for (std::uint32_t surface = 0;
+         surface < kSurfaceCount;
+         ++surface) {
+        for (PF_ParamIndex offset = kSurfaceSourceOffset;
+             offset <= kSurfaceLatticeOffset;
+             ++offset) {
+            const PF_Err error = CheckoutSmartParameter(
                 in_data,
                 parameters,
-                AnimationBankParam(bank, property));
+                SurfaceParam(
+                    surface,
+                    static_cast<SurfaceParamOffset>(offset)));
             if (error != PF_Err_NONE) {
                 return error;
             }
@@ -2275,8 +2812,12 @@ PF_Err CheckoutSmartRenderParameters(
     return PF_Err_NONE;
 }
 
+struct SmartRenderSnapshot {
+    std::vector<RenderFrameSnapshot> samples;
+};
+
 void DeleteSmartRenderSnapshot(void* data) {
-    delete static_cast<RenderFrameSnapshot*>(data);
+    delete static_cast<SmartRenderSnapshot*>(data);
 }
 
 PF_LRect FullTextureRequestRect() {
@@ -2401,14 +2942,158 @@ PF_Err RenderSmartFrame(
     return PF_Err_NONE;
 }
 
+template <typename Pixel>
+PF_Err RenderMotionSamples(
+    const SmartRenderSnapshot& render_snapshot,
+    const std::vector<const PF_LayerDef*>& inputs,
+    const std::vector<
+        std::array<const PF_LayerDef*, kMaximumSurfaces>>&
+        source_worlds,
+    PF_LayerDef& output) {
+    const std::size_t sample_count = render_snapshot.samples.size();
+    if (sample_count == 0 ||
+        inputs.size() != sample_count ||
+        source_worlds.size() != sample_count) {
+        return PF_Err_BAD_CALLBACK_PARAM;
+    }
+    if (sample_count == 1) {
+        return RenderSmartFrame<Pixel>(
+            render_snapshot.samples[0],
+            *inputs[0],
+            source_worlds[0],
+            output);
+    }
+
+    const std::size_t pixel_count =
+        static_cast<std::size_t>(output.width) *
+        static_cast<std::size_t>(output.height);
+    std::vector<Pixel> sample_pixels(pixel_count);
+    std::vector<float> accumulation(pixel_count * 4U, 0.0F);
+    PF_LayerDef sample_world = output;
+    sample_world.data =
+        reinterpret_cast<PF_PixelPtr>(sample_pixels.data());
+    sample_world.rowbytes =
+        static_cast<A_long>(
+            static_cast<std::size_t>(output.width) * sizeof(Pixel));
+
+    for (std::size_t sample = 0;
+         sample < sample_count;
+         ++sample) {
+        const PF_Err error = RenderSmartFrame<Pixel>(
+            render_snapshot.samples[sample],
+            *inputs[sample],
+            source_worlds[sample],
+            sample_world);
+        if (error != PF_Err_NONE) {
+            return error;
+        }
+        for (std::size_t index = 0; index < pixel_count; ++index) {
+            const Pixel& pixel = sample_pixels[index];
+            accumulation[index * 4U] +=
+                static_cast<float>(pixel.alpha);
+            accumulation[index * 4U + 1U] +=
+                static_cast<float>(pixel.red);
+            accumulation[index * 4U + 2U] +=
+                static_cast<float>(pixel.green);
+            accumulation[index * 4U + 3U] +=
+                static_cast<float>(pixel.blue);
+        }
+    }
+
+    const float inverse_samples =
+        1.0F / static_cast<float>(sample_count);
+    for (A_long y = 0; y < output.height; ++y) {
+        auto* row = reinterpret_cast<Pixel*>(
+            reinterpret_cast<A_u_char*>(output.data) +
+            static_cast<std::ptrdiff_t>(y) *
+                static_cast<std::ptrdiff_t>(output.rowbytes));
+        for (A_long x = 0; x < output.width; ++x) {
+            const std::size_t index =
+                static_cast<std::size_t>(y) *
+                    static_cast<std::size_t>(output.width) +
+                static_cast<std::size_t>(x);
+            const auto channel = [&](std::size_t offset) {
+                const float value =
+                    accumulation[index * 4U + offset] *
+                    inverse_samples;
+                if constexpr (std::is_same_v<Pixel, PF_PixelFloat>) {
+                    return value;
+                } else {
+                    return static_cast<decltype(Pixel{}.alpha)>(
+                        std::lround(value));
+                }
+            };
+            row[x].alpha = channel(0);
+            row[x].red = channel(1);
+            row[x].green = channel(2);
+            row[x].blue = channel(3);
+        }
+    }
+    return PF_Err_NONE;
+}
+
 }  // namespace
 
 namespace {
 
+std::vector<A_long> ResolveMotionSampleTimes(PF_InData* in_data) {
+    if (!in_data || !in_data->effect_ref || in_data->time_step <= 0) {
+        return {in_data ? in_data->current_time : 0};
+    }
+    AEGP_SuiteHandler suites(in_data->pica_basicP);
+    AEGP_LayerH effect_layer = nullptr;
+    AEGP_CompH comp = nullptr;
+    AEGP_LayerFlags layer_flags = AEGP_LayerFlag_NONE;
+    AEGP_CompFlags comp_flags = 0;
+    if (suites.PFInterfaceSuite1()->AEGP_GetEffectLayer(
+            in_data->effect_ref,
+            &effect_layer) != A_Err_NONE ||
+        !effect_layer ||
+        suites.LayerSuite5()->AEGP_GetLayerParentComp(
+            effect_layer,
+            &comp) != A_Err_NONE ||
+        !comp ||
+        suites.LayerSuite5()->AEGP_GetLayerFlags(
+            effect_layer,
+            &layer_flags) != A_Err_NONE ||
+        suites.CompSuite12()->AEGP_GetCompFlags(
+            comp,
+            &comp_flags) != A_Err_NONE ||
+        (layer_flags & AEGP_LayerFlag_MOTION_BLUR) == 0 ||
+        (comp_flags & AEGP_CompFlag_ENABLE_MOTION_BLUR) == 0) {
+        return {in_data->current_time};
+    }
+
+    A_long suggested_samples = 8;
+    if (suites.CompSuite12()
+            ->AEGP_GetCompSuggestedMotionBlurSamples(
+                comp,
+                &suggested_samples) != A_Err_NONE) {
+        suggested_samples = 8;
+    }
+    const std::vector<std::int64_t> wide_times =
+        BuildSubframeSampleTimes(
+            in_data->current_time,
+            in_data->time_step,
+            FIX_2_FLOAT(in_data->shutter_angle),
+            FIX_2_FLOAT(in_data->shutter_phase),
+            static_cast<std::uint32_t>(
+                std::clamp<A_long>(suggested_samples, 2, 32)));
+    std::vector<A_long> times;
+    times.reserve(wide_times.size());
+    for (std::int64_t time : wide_times) {
+        times.push_back(static_cast<A_long>(std::clamp<std::int64_t>(
+            time,
+            std::numeric_limits<A_long>::min(),
+            std::numeric_limits<A_long>::max())));
+    }
+    return times;
+}
+
 // AE's frame cache keys on stream parameters and checked-out layer frames.
 // Everything this effect reads through AEGP suites -- the comp camera, the
-// comp lights, and the host layer transform behind the Comp World cancel --
-// is invisible to that key. Without mixing that state into the render GUID,
+// comp lights, and future external controller state -- is invisible to that
+// key. Without mixing that state into the render GUID,
 // editing only the camera re-serves a stale frame rendered from the old
 // pose while the 3D Nulls track the live view: the render appears to
 // rotate the wrong way around a mirrored hinge, and the mismatch depends
@@ -2424,9 +3109,14 @@ void AppendPointDigest(std::vector<double>& digest, const Point3& point) {
 
 std::vector<double> BuildExternalStateDigest(
     const CameraState& camera,
-    const LightingState& lighting) {
+    const LightingState& lighting,
+    const SceneData& scene) {
     std::vector<double> digest;
-    digest.reserve(48 + lighting.light_count * 16);
+    digest.reserve(
+        48 +
+        lighting.light_count * 16 +
+        scene.surface_count * 4 +
+        kMaximumLatticePoints * 3);
     AppendPointDigest(digest, camera.scene_transform.pivot);
     AppendPointDigest(digest, camera.scene_transform.position);
     AppendPointDigest(digest, camera.scene_transform.scale);
@@ -2467,6 +3157,36 @@ std::vector<double> BuildExternalStateDigest(
         digest.push_back(light.cone_angle);
         digest.push_back(light.cone_feather);
     }
+    digest.push_back(static_cast<double>(scene.surface_count));
+    for (std::uint32_t surface_index = 0;
+         surface_index < scene.surface_count;
+         ++surface_index) {
+        const LatticeData& lattice =
+            scene.surfaces[surface_index].lattice;
+        digest.push_back(static_cast<double>(lattice.surface_id));
+        digest.push_back(static_cast<double>(lattice.divisions_x));
+        digest.push_back(static_cast<double>(lattice.divisions_y));
+        digest.push_back(static_cast<double>(lattice.point_count));
+        const SurfaceData& surface = scene.surfaces[surface_index];
+        digest.push_back(
+            surface.root_transform_enabled != 0 ? 1.0 : 0.0);
+        const Affine3D& root = surface.root_world_transform;
+        digest.insert(
+            digest.end(),
+            {
+                root.xx, root.xy, root.xz,
+                root.yx, root.yy, root.yz,
+                root.zx, root.zy, root.zz,
+                root.tx, root.ty, root.tz});
+        for (std::size_t point_index = 0;
+             point_index < lattice.point_count;
+             ++point_index) {
+            const StoredPoint3& point = lattice.points[point_index];
+            digest.push_back(point.x);
+            digest.push_back(point.y);
+            digest.push_back(point.z);
+        }
+    }
     return digest;
 }
 
@@ -2482,87 +3202,130 @@ PF_Err SmartPreRender(
 
     PF_RenderRequest texture_request = extra->input->output_request;
     texture_request.rect = FullTextureRequestRect();
-    PF_CheckoutResult input_result{};
-    PF_Err error = extra->cb->checkout_layer(
-        in_data->effect_ref,
-        kParamInput,
-        kSmartInputCheckoutId,
-        &texture_request,
-        in_data->current_time,
-        in_data->time_step,
-        in_data->time_scale,
-        &input_result);
-    if (error != PF_Err_NONE) {
-        return error;
-    }
+    const std::vector<A_long> sample_times =
+        ResolveMotionSampleTimes(in_data);
+    auto snapshot = std::make_unique<SmartRenderSnapshot>();
+    snapshot->samples.reserve(sample_times.size());
+    std::vector<double> external_state;
+    external_state.push_back(
+        static_cast<double>(sample_times.size()));
+    external_state.push_back(FIX_2_FLOAT(in_data->shutter_angle));
+    external_state.push_back(FIX_2_FLOAT(in_data->shutter_phase));
 
-    const A_long input_width = std::max<A_long>(
-        1,
-        input_result.max_result_rect.right -
-            input_result.max_result_rect.left);
-    const A_long input_height = std::max<A_long>(
-        1,
-        input_result.max_result_rect.bottom -
-            input_result.max_result_rect.top);
-    SmartParameterSet parameters(in_data);
-    error = CheckoutSmartRenderParameters(in_data, parameters);
-    if (error != PF_Err_NONE) {
-        return error;
-    }
-
-    auto snapshot = std::make_unique<RenderFrameSnapshot>(
-        BuildRenderFrameSnapshot(
-            in_data,
+    PF_LRect maximum_rect{};
+    bool has_bounds = false;
+    for (std::size_t sample = 0;
+         sample < sample_times.size();
+         ++sample) {
+        PF_InData sample_in = *in_data;
+        sample_in.current_time = sample_times[sample];
+        PF_CheckoutResult input_result{};
+        PF_Err error = extra->cb->checkout_layer(
+            in_data->effect_ref,
+            kParamInput,
+            SmartInputCheckoutId(sample),
+            &texture_request,
+            sample_in.current_time,
+            sample_in.time_step,
+            sample_in.time_scale,
+            &input_result);
+        if (error != PF_Err_NONE) {
+            return error;
+        }
+        const A_long input_width = std::max<A_long>(
+            1,
+            input_result.max_result_rect.right -
+                input_result.max_result_rect.left);
+        const A_long input_height = std::max<A_long>(
+            1,
+            input_result.max_result_rect.bottom -
+                input_result.max_result_rect.top);
+        SmartParameterSet parameters(&sample_in);
+        error = CheckoutSmartRenderParameters(
+            &sample_in,
+            parameters);
+        if (error != PF_Err_NONE) {
+            return error;
+        }
+        RenderFrameSnapshot frame = BuildRenderFrameSnapshot(
+            &sample_in,
             parameters.pointers.data(),
             input_width,
             input_height,
             0.0,
-            0.0));
-    const std::vector<double> external_state = BuildExternalStateDigest(
-        snapshot->camera,
-        snapshot->lighting);
-    error = extra->cb->GuidMixInPtr(
+            0.0);
+        external_state.push_back(
+            static_cast<double>(sample_in.current_time));
+        const std::vector<double> frame_state =
+            BuildExternalStateDigest(
+                frame.camera,
+                frame.lighting,
+                frame.scene);
+        external_state.insert(
+            external_state.end(),
+            frame_state.begin(),
+            frame_state.end());
+
+        for (std::uint32_t slot = 0;
+             slot <
+                 static_cast<std::uint32_t>(
+                     frame.source_slots.size());
+             ++slot) {
+            if (!frame.source_slots[slot]) {
+                continue;
+            }
+            PF_CheckoutResult source_result{};
+            error = extra->cb->checkout_layer(
+                in_data->effect_ref,
+                SurfaceSourceParam(slot),
+                SmartSourceCheckoutId(sample, slot),
+                &texture_request,
+                sample_in.current_time,
+                sample_in.time_step,
+                sample_in.time_scale,
+                &source_result);
+            if (error != PF_Err_NONE) {
+                return error;
+            }
+        }
+
+        const OutputBounds bounds = ComputeOutputBounds(
+            parameters.pointers.data(),
+            input_width,
+            input_height,
+            frame.scene,
+            frame.camera,
+            frame.scale_x,
+            frame.scale_y,
+            frame.scale_z);
+        const PF_LRect frame_rect{
+            bounds.minimum_x,
+            bounds.minimum_y,
+            bounds.maximum_x,
+            bounds.maximum_y};
+        if (!has_bounds) {
+            maximum_rect = frame_rect;
+            has_bounds = true;
+        } else {
+            maximum_rect.left =
+                std::min(maximum_rect.left, frame_rect.left);
+            maximum_rect.top =
+                std::min(maximum_rect.top, frame_rect.top);
+            maximum_rect.right =
+                std::max(maximum_rect.right, frame_rect.right);
+            maximum_rect.bottom =
+                std::max(maximum_rect.bottom, frame_rect.bottom);
+        }
+        snapshot->samples.push_back(std::move(frame));
+    }
+
+    PF_Err error = extra->cb->GuidMixInPtr(
         in_data->effect_ref,
         static_cast<A_u_long>(external_state.size() * sizeof(double)),
         external_state.data());
     if (error != PF_Err_NONE) {
         return error;
     }
-    for (std::uint32_t slot = 0;
-         slot < static_cast<std::uint32_t>(snapshot->source_slots.size());
-         ++slot) {
-        if (!snapshot->source_slots[slot]) {
-            continue;
-        }
-        PF_CheckoutResult source_result{};
-        error = extra->cb->checkout_layer(
-            in_data->effect_ref,
-            kParamSurfaceSourceLayer1 + static_cast<PF_ParamIndex>(slot),
-            kSmartSourceCheckoutBase + static_cast<A_long>(slot),
-            &texture_request,
-            in_data->current_time,
-            in_data->time_step,
-            in_data->time_scale,
-            &source_result);
-        if (error != PF_Err_NONE) {
-            return error;
-        }
-    }
-
-    const OutputBounds bounds = ComputeOutputBounds(
-        parameters.pointers.data(),
-        input_width,
-        input_height,
-        snapshot->scene,
-        snapshot->camera,
-        snapshot->scale_x,
-        snapshot->scale_y,
-        snapshot->scale_z);
-    const PF_LRect maximum_rect{
-        bounds.minimum_x,
-        bounds.minimum_y,
-        bounds.maximum_x,
-        bounds.maximum_y};
     extra->output->max_result_rect = maximum_rect;
     extra->output->result_rect = IntersectRects(
         maximum_rect,
@@ -2580,39 +3343,67 @@ PF_Err SmartRender(
         !extra->cb || !extra->input->pre_render_data) {
         return PF_Err_BAD_CALLBACK_PARAM;
     }
-    const auto& snapshot = *static_cast<const RenderFrameSnapshot*>(
+    const auto& snapshot = *static_cast<const SmartRenderSnapshot*>(
         extra->input->pre_render_data);
-
-    CheckedOutSmartLayerPixels input_checkout;
-    PF_Err error = input_checkout.Checkout(
-        in_data,
-        extra,
-        kSmartInputCheckoutId);
-    if (error != PF_Err_NONE || !input_checkout.World()) {
-        return error != PF_Err_NONE ? error : PF_Err_BAD_CALLBACK_PARAM;
+    if (snapshot.samples.empty()) {
+        return PF_Err_BAD_CALLBACK_PARAM;
     }
 
-    std::array<CheckedOutSmartLayerPixels, kMaximumSurfaces>
-        source_checkouts;
-    std::array<const PF_LayerDef*, kMaximumSurfaces> source_worlds{};
-    for (std::uint32_t slot = 0;
-         slot < static_cast<std::uint32_t>(snapshot.source_slots.size());
-         ++slot) {
-        if (!snapshot.source_slots[slot]) {
-            continue;
-        }
-        error = source_checkouts[slot].Checkout(
+    std::vector<std::unique_ptr<CheckedOutSmartLayerPixels>>
+        input_checkouts;
+    std::vector<
+        std::array<
+            std::unique_ptr<CheckedOutSmartLayerPixels>,
+            kMaximumSurfaces>>
+        source_checkouts(snapshot.samples.size());
+    std::vector<const PF_LayerDef*> input_worlds;
+    std::vector<
+        std::array<const PF_LayerDef*, kMaximumSurfaces>>
+        source_worlds(snapshot.samples.size());
+    input_checkouts.reserve(snapshot.samples.size());
+    input_worlds.reserve(snapshot.samples.size());
+    for (std::size_t sample = 0;
+         sample < snapshot.samples.size();
+         ++sample) {
+        input_checkouts.push_back(
+            std::make_unique<CheckedOutSmartLayerPixels>());
+        PF_Err error = input_checkouts.back()->Checkout(
             in_data,
             extra,
-            kSmartSourceCheckoutBase + static_cast<A_long>(slot));
-        if (error != PF_Err_NONE) {
-            return error;
+            SmartInputCheckoutId(sample));
+        if (error != PF_Err_NONE ||
+            !input_checkouts.back()->World()) {
+            return error != PF_Err_NONE
+                       ? error
+                       : PF_Err_BAD_CALLBACK_PARAM;
         }
-        source_worlds[slot] = source_checkouts[slot].World();
+        input_worlds.push_back(input_checkouts.back()->World());
+        for (std::uint32_t slot = 0;
+             slot <
+                 static_cast<std::uint32_t>(
+                     snapshot.samples[sample]
+                         .source_slots.size());
+             ++slot) {
+            if (!snapshot.samples[sample].source_slots[slot]) {
+                continue;
+            }
+            source_checkouts[sample][slot] =
+                std::make_unique<CheckedOutSmartLayerPixels>();
+            error = source_checkouts[sample][slot]->Checkout(
+                in_data,
+                extra,
+                SmartSourceCheckoutId(sample, slot));
+            if (error != PF_Err_NONE) {
+                return error;
+            }
+            source_worlds[sample][slot] =
+                source_checkouts[sample][slot]->World();
+        }
     }
 
     PF_EffectWorld* output = nullptr;
-    error = extra->cb->checkout_output(in_data->effect_ref, &output);
+    PF_Err error =
+        extra->cb->checkout_output(in_data->effect_ref, &output);
     if (error != PF_Err_NONE || !output) {
         return error != PF_Err_NONE ? error : PF_Err_BAD_CALLBACK_PARAM;
     }
@@ -2629,21 +3420,21 @@ PF_Err SmartRender(
     }
     switch (format) {
         case PF_PixelFormat_ARGB128:
-            return RenderSmartFrame<PF_PixelFloat>(
+            return RenderMotionSamples<PF_PixelFloat>(
                 snapshot,
-                *input_checkout.World(),
+                input_worlds,
                 source_worlds,
                 *output);
         case PF_PixelFormat_ARGB64:
-            return RenderSmartFrame<PF_Pixel16>(
+            return RenderMotionSamples<PF_Pixel16>(
                 snapshot,
-                *input_checkout.World(),
+                input_worlds,
                 source_worlds,
                 *output);
         case PF_PixelFormat_ARGB32:
-            return RenderSmartFrame<PF_Pixel8>(
+            return RenderMotionSamples<PF_Pixel8>(
                 snapshot,
-                *input_checkout.World(),
+                input_worlds,
                 source_worlds,
                 *output);
         default:

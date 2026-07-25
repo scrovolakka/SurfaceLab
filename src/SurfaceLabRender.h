@@ -10,13 +10,27 @@
 
 #include "SurfaceLabInternal.h"
 
-#include <array>
+struct NullPointOverrideState {
+    std::array<
+        std::array<bool, kMaximumLatticePoints>,
+        kMaximumSurfaces> controlled{};
+    std::size_t count{};
 
-// Evaluated per-frame transform state for one surface: scaled control
-// points, pivot, rotation origin, and deformation extents.
+    bool IsControlled(
+        std::uint32_t surface,
+        std::size_t point) const {
+        return surface < controlled.size() &&
+               point < controlled[surface].size() &&
+               controlled[surface][point];
+    }
+};
+
+// Evaluated per-frame transform state for one v1 surface.
 struct SurfaceEvaluationState {
-    std::array<Point3, 16> control_points{};
+    LatticeData lattice{};
     SurfaceCoordinateTransform coordinate_transform{};
+    Affine3D root_pre_scene_transform{};
+    bool root_transform_enabled{};
     double pivot_x{};
     double pivot_y{};
     double pivot_z{};
@@ -54,7 +68,11 @@ Vertex ProjectVertex(
     double v,
     const CameraState& camera);
 
-CameraState BuildCameraState(
+// Builds the same After Effects view snapshot for rendering and custom UI.
+// AEGP_GetEffectCameraMatrix supplies both an active camera layer and AE's
+// implicit default camera, so SurfaceLab never owns a separate camera.
+CameraState BuildResolvedCameraState(
+    PF_InData* in_data,
     PF_ParamDef* params[],
     double center_x,
     double center_y,
@@ -64,16 +82,14 @@ CameraState BuildCameraState(
     double scale_y,
     double scale_z);
 
-// Builds the same camera snapshot for rendering and custom UI. When the
-// selected source is the active After Effects camera, this resolves its
-// current transform and zoom; otherwise it returns the internal camera.
-CameraState BuildResolvedCameraState(
+// Resolves marker-identified 3D Nulls at the current comp time and replaces
+// only their corresponding lattice points. Null layer names and layer order
+// are deliberately ignored. The returned map is also used by the gizmo to
+// make externally controlled points read-only.
+NullPointOverrideState ResolveNullPointOverrides(
     PF_InData* in_data,
-    PF_ParamDef* params[],
-    double center_x,
-    double center_y,
-    double output_offset_x,
-    double output_offset_y,
+    SceneData& scene,
+    const CameraState& camera,
     double scale_x,
     double scale_y,
     double scale_z);

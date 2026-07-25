@@ -3,42 +3,178 @@
 #include <algorithm>
 #include <cmath>
 
-// Bicubic surface evaluation and deformation, extracted verbatim from
-// SurfaceLab.cpp. AE-free; depends only on the scene model. EvaluatePatch and
-// ApplySurfaceDeform are exported (declared in the header); the remaining
-// helpers are used only here.
-
 Point2 ApplyAffine2D(const Affine2D& transform, Point2 point) {
     return {
-        transform.xx * point.x + transform.xy * point.y + transform.tx,
-        transform.yx * point.x + transform.yy * point.y + transform.ty};
+        transform.xx * point.x +
+            transform.xy * point.y + transform.tx,
+        transform.yx * point.x +
+            transform.yy * point.y + transform.ty};
 }
 
 bool TryInvertAffine2D(
     const Affine2D& transform,
     Affine2D& inverse) {
-    constexpr double kMinimumDeterminant = 1.0e-12;
     const double determinant =
-        transform.xx * transform.yy - transform.xy * transform.yx;
+        transform.xx * transform.yy -
+        transform.xy * transform.yx;
     if (!std::isfinite(determinant) ||
-        std::abs(determinant) <= kMinimumDeterminant) {
+        std::abs(determinant) <= 1.0e-12) {
         return false;
     }
-    const double inverse_determinant = 1.0 / determinant;
-    inverse.xx = transform.yy * inverse_determinant;
-    inverse.xy = -transform.xy * inverse_determinant;
-    inverse.yx = -transform.yx * inverse_determinant;
-    inverse.yy = transform.xx * inverse_determinant;
+    inverse.xx = transform.yy / determinant;
+    inverse.xy = -transform.xy / determinant;
+    inverse.yx = -transform.yx / determinant;
+    inverse.yy = transform.xx / determinant;
     inverse.tx =
         -(inverse.xx * transform.tx + inverse.xy * transform.ty);
     inverse.ty =
         -(inverse.yx * transform.tx + inverse.yy * transform.ty);
-    return std::isfinite(inverse.xx) &&
-           std::isfinite(inverse.xy) &&
-           std::isfinite(inverse.yx) &&
-           std::isfinite(inverse.yy) &&
-           std::isfinite(inverse.tx) &&
-           std::isfinite(inverse.ty);
+    return true;
+}
+
+Point3 ApplyAffine3D(
+    const Affine3D& transform,
+    Point3 point) {
+    return {
+        point.x * transform.xx +
+            point.y * transform.yx +
+            point.z * transform.zx +
+            transform.tx,
+        point.x * transform.xy +
+            point.y * transform.yy +
+            point.z * transform.zy +
+            transform.ty,
+        point.x * transform.xz +
+            point.y * transform.yz +
+            point.z * transform.zz +
+            transform.tz};
+}
+
+bool TryInvertAffine3D(
+    const Affine3D& transform,
+    Affine3D& inverse) {
+    const double determinant =
+        transform.xx * (
+            transform.yy * transform.zz -
+            transform.yz * transform.zy) -
+        transform.xy * (
+            transform.yx * transform.zz -
+            transform.yz * transform.zx) +
+        transform.xz * (
+            transform.yx * transform.zy -
+            transform.yy * transform.zx);
+    if (!std::isfinite(determinant) ||
+        std::abs(determinant) <= 1.0e-12) {
+        return false;
+    }
+    const double reciprocal = 1.0 / determinant;
+    inverse.xx =
+        (transform.yy * transform.zz -
+         transform.yz * transform.zy) * reciprocal;
+    inverse.xy =
+        (transform.xz * transform.zy -
+         transform.xy * transform.zz) * reciprocal;
+    inverse.xz =
+        (transform.xy * transform.yz -
+         transform.xz * transform.yy) * reciprocal;
+    inverse.yx =
+        (transform.yz * transform.zx -
+         transform.yx * transform.zz) * reciprocal;
+    inverse.yy =
+        (transform.xx * transform.zz -
+         transform.xz * transform.zx) * reciprocal;
+    inverse.yz =
+        (transform.xz * transform.yx -
+         transform.xx * transform.yz) * reciprocal;
+    inverse.zx =
+        (transform.yx * transform.zy -
+         transform.yy * transform.zx) * reciprocal;
+    inverse.zy =
+        (transform.xy * transform.zx -
+         transform.xx * transform.zy) * reciprocal;
+    inverse.zz =
+        (transform.xx * transform.yy -
+         transform.xy * transform.yx) * reciprocal;
+    inverse.tx = -(
+        transform.tx * inverse.xx +
+        transform.ty * inverse.yx +
+        transform.tz * inverse.zx);
+    inverse.ty = -(
+        transform.tx * inverse.xy +
+        transform.ty * inverse.yy +
+        transform.tz * inverse.zy);
+    inverse.tz = -(
+        transform.tx * inverse.xz +
+        transform.ty * inverse.yz +
+        transform.tz * inverse.zz);
+    const double values[] = {
+        inverse.xx, inverse.xy, inverse.xz,
+        inverse.yx, inverse.yy, inverse.yz,
+        inverse.zx, inverse.zy, inverse.zz,
+        inverse.tx, inverse.ty, inverse.tz};
+    for (double value : values) {
+        if (!std::isfinite(value)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool BuildAffineDeltaTransform(
+    const Affine3D& bind_transform,
+    const Affine3D& current_transform,
+    Affine3D& delta_transform) {
+    Affine3D inverse_bind{};
+    if (!TryInvertAffine3D(bind_transform, inverse_bind)) {
+        return false;
+    }
+    const auto map = [&](Point3 point) {
+        return ApplyAffine3D(
+            current_transform,
+            ApplyAffine3D(inverse_bind, point));
+    };
+    const Point3 origin = map({0.0, 0.0, 0.0});
+    const Point3 x_axis = map({1.0, 0.0, 0.0});
+    const Point3 y_axis = map({0.0, 1.0, 0.0});
+    const Point3 z_axis = map({0.0, 0.0, 1.0});
+    delta_transform = {
+        x_axis.x - origin.x,
+        x_axis.y - origin.y,
+        x_axis.z - origin.z,
+        y_axis.x - origin.x,
+        y_axis.y - origin.y,
+        y_axis.z - origin.z,
+        z_axis.x - origin.x,
+        z_axis.y - origin.y,
+        z_axis.z - origin.z,
+        origin.x,
+        origin.y,
+        origin.z};
+    return true;
+}
+
+Affine3D ScaleAffine3DCoordinateSystem(
+    const Affine3D& transform,
+    double scale_x,
+    double scale_y,
+    double scale_z) {
+    constexpr double kMinimumScale = 1.0e-12;
+    if (std::abs(scale_x) <= kMinimumScale ||
+        std::abs(scale_y) <= kMinimumScale ||
+        std::abs(scale_z) <= kMinimumScale) {
+        return {};
+    }
+    Affine3D scaled = transform;
+    scaled.xy = transform.xy * scale_y / scale_x;
+    scaled.xz = transform.xz * scale_z / scale_x;
+    scaled.yx = transform.yx * scale_x / scale_y;
+    scaled.yz = transform.yz * scale_z / scale_y;
+    scaled.zx = transform.zx * scale_x / scale_z;
+    scaled.zy = transform.zy * scale_y / scale_z;
+    scaled.tx = transform.tx * scale_x;
+    scaled.ty = transform.ty * scale_y;
+    scaled.tz = transform.tz * scale_z;
+    return scaled;
 }
 
 Point3 ApplySceneVectorTransform(
@@ -76,12 +212,12 @@ Point3 ApplySceneNormalTransform(
     Point3 normal,
     const SceneCoordinateTransform& transform) {
     constexpr double kMinimumScale = 1.0e-10;
-    const auto safe_inverse = [](double value) {
-        return std::abs(value) > kMinimumScale ? 1.0 / value : 0.0;
-    };
-    normal.x *= safe_inverse(transform.scale.x);
-    normal.y *= safe_inverse(transform.scale.y);
-    normal.z *= safe_inverse(transform.scale.z);
+    normal.x /= std::abs(transform.scale.x) > kMinimumScale
+                    ? transform.scale.x : 1.0;
+    normal.y /= std::abs(transform.scale.y) > kMinimumScale
+                    ? transform.scale.y : 1.0;
+    normal.z /= std::abs(transform.scale.z) > kMinimumScale
+                    ? transform.scale.z : 1.0;
     return Normalize(RotatePoint(
         normal,
         0.0,
@@ -120,106 +256,89 @@ bool TryInverseScenePointTransform(
            std::isfinite(untransformed.z);
 }
 
+bool BuildPreSceneRootTransform(
+    const Affine3D& root_world_transform,
+    const SceneCoordinateTransform& scene_transform,
+    Affine3D& pre_scene_transform) {
+    const auto map_point = [&](Point3 point, Point3& mapped) {
+        const Point3 scene_world =
+            ApplyScenePointTransform(point, scene_transform);
+        return TryInverseScenePointTransform(
+            ApplyAffine3D(root_world_transform, scene_world),
+            scene_transform,
+            mapped);
+    };
+    Point3 origin{};
+    Point3 x_axis{};
+    Point3 y_axis{};
+    Point3 z_axis{};
+    if (!map_point({0.0, 0.0, 0.0}, origin) ||
+        !map_point({1.0, 0.0, 0.0}, x_axis) ||
+        !map_point({0.0, 1.0, 0.0}, y_axis) ||
+        !map_point({0.0, 0.0, 1.0}, z_axis)) {
+        return false;
+    }
+    pre_scene_transform = {
+        x_axis.x - origin.x,
+        x_axis.y - origin.y,
+        x_axis.z - origin.z,
+        y_axis.x - origin.x,
+        y_axis.y - origin.y,
+        y_axis.z - origin.z,
+        z_axis.x - origin.x,
+        z_axis.y - origin.y,
+        z_axis.z - origin.z,
+        origin.x,
+        origin.y,
+        origin.z};
+    return true;
+}
+
 SurfaceCoordinateTransform BuildSurfaceCoordinateTransform(
     const SurfaceData& surface,
     Point3 legacy_pivot,
-    Point3 render_scale) {
-    constexpr double kDegreesToRadians = 3.14159265358979323846 / 180.0;
+    Point3) {
+    constexpr double kDegreesToRadians =
+        3.14159265358979323846 / 180.0;
     SurfaceCoordinateTransform transform;
-    if (surface.transform_mode != 0) {
-        transform.pivot = {
-            static_cast<double>(surface.position_x) * render_scale.x,
-            static_cast<double>(surface.position_y) * render_scale.y,
-            static_cast<double>(surface.position_z) * render_scale.z};
-        transform.scale = {
-            static_cast<double>(surface.scale_x) / 100.0,
-            static_cast<double>(surface.scale_y) / 100.0,
-            static_cast<double>(surface.scale_z) / 100.0};
-    } else {
-        transform.pivot = legacy_pivot;
-    }
+    transform.pivot = surface.transform_mode != 0
+                          ? Point3{
+                                surface.position_x,
+                                surface.position_y,
+                                surface.position_z}
+                          : legacy_pivot;
+    transform.rotation_origin = transform.pivot;
+    transform.scale = {
+        surface.scale_x / 100.0,
+        surface.scale_y / 100.0,
+        surface.scale_z / 100.0};
     transform.rotation_radians = {
-        static_cast<double>(surface.rotation_x) * kDegreesToRadians,
-        static_cast<double>(surface.rotation_y) * kDegreesToRadians,
-        static_cast<double>(surface.rotation_z) * kDegreesToRadians};
-
-    double origin_x_percent = 50.0;
-    double origin_y_percent = 50.0;
-    switch (surface.rotation_origin_mode) {
-        case kRotationOriginLeftEdge:
-            origin_x_percent = 0.0;
-            break;
-        case kRotationOriginRightEdge:
-            origin_x_percent = 100.0;
-            break;
-        case kRotationOriginTopEdge:
-            origin_y_percent = 0.0;
-            break;
-        case kRotationOriginBottomEdge:
-            origin_y_percent = 100.0;
-            break;
-        case kRotationOriginCustom:
-            origin_x_percent = static_cast<double>(surface.rotation_origin_x);
-            origin_y_percent = static_cast<double>(surface.rotation_origin_y);
-            break;
-        default:
-            break;
-    }
-    // The origin is defined on the UNSCALED cage: it is the shared fixed point
-    // ("hinge") of both scale and rotation, so it must not move when the scale
-    // changes. Center mode (50/50) keeps origin == pivot, which preserves the
-    // historical behavior; with scale at 100% the old and new definitions
-    // coincide for every mode. The controller rig places the surface Root null
-    // on this point.
-    transform.rotation_origin = {
-        transform.pivot.x +
-            (origin_x_percent / 100.0 - 0.5) *
-                static_cast<double>(surface.size_x) * render_scale.x,
-        transform.pivot.y +
-            (origin_y_percent / 100.0 - 0.5) *
-                static_cast<double>(surface.size_y) * render_scale.y,
-        transform.pivot.z};
+        surface.rotation_x * kDegreesToRadians,
+        surface.rotation_y * kDegreesToRadians,
+        surface.rotation_z * kDegreesToRadians};
     return transform;
 }
 
-Point3 SurfaceCageToLocal(
-    Point3 cage_point,
-    const SurfaceCoordinateTransform& transform) {
-    return {
-        cage_point.x - transform.pivot.x,
-        cage_point.y - transform.pivot.y,
-        cage_point.z - transform.pivot.z};
-}
-
-Point3 SurfaceLocalToCage(
-    Point3 local_point,
-    const SurfaceCoordinateTransform& transform) {
-    return {
-        local_point.x + transform.pivot.x,
-        local_point.y + transform.pivot.y,
-        local_point.z + transform.pivot.z};
-}
-
 Point3 ScaleSurfaceCagePoint(
-    Point3 cage_point,
+    Point3 point,
     const SurfaceCoordinateTransform& transform) {
-    // Scale and rotation share the rotation origin as their fixed point, so a
-    // Left Edge (or custom) origin behaves as a true hinge: it stays put under
-    // both operations, and a controller null placed there matches the render.
     return {
         transform.rotation_origin.x +
-            (cage_point.x - transform.rotation_origin.x) * transform.scale.x,
+            (point.x - transform.rotation_origin.x) *
+                transform.scale.x,
         transform.rotation_origin.y +
-            (cage_point.y - transform.rotation_origin.y) * transform.scale.y,
+            (point.y - transform.rotation_origin.y) *
+                transform.scale.y,
         transform.rotation_origin.z +
-            (cage_point.z - transform.rotation_origin.z) * transform.scale.z};
+            (point.z - transform.rotation_origin.z) *
+                transform.scale.z};
 }
 
 Point3 RotateSurfaceWorldPoint(
-    Point3 scaled_point,
+    Point3 point,
     const SurfaceCoordinateTransform& transform) {
     return RotatePoint(
-        scaled_point,
+        point,
         transform.rotation_origin.x,
         transform.rotation_origin.y,
         transform.rotation_origin.z,
@@ -228,357 +347,134 @@ Point3 RotateSurfaceWorldPoint(
         transform.rotation_radians.z);
 }
 
-Point3 SurfaceCageToWorld(
-    Point3 cage_point,
-    const SurfaceCoordinateTransform& transform) {
-    return RotateSurfaceWorldPoint(
-        ScaleSurfaceCagePoint(cage_point, transform),
-        transform);
-}
+namespace {
 
-bool TrySurfaceWorldToCage(
-    Point3 world_point,
-    const SurfaceCoordinateTransform& transform,
-    Point3& cage_point) {
-    constexpr double kMinimumScale = 1.0e-10;
-    if (std::abs(transform.scale.x) <= kMinimumScale ||
-        std::abs(transform.scale.y) <= kMinimumScale ||
-        std::abs(transform.scale.z) <= kMinimumScale) {
-        return false;
-    }
-    Point3 relative{
-        world_point.x - transform.rotation_origin.x,
-        world_point.y - transform.rotation_origin.y,
-        world_point.z - transform.rotation_origin.z};
-    relative = InverseRotateVector(
-        relative,
-        transform.rotation_radians.x,
-        transform.rotation_radians.y,
-        transform.rotation_radians.z);
-    const Point3 scaled_point{
-        relative.x + transform.rotation_origin.x,
-        relative.y + transform.rotation_origin.y,
-        relative.z + transform.rotation_origin.z};
-    cage_point = {
-        transform.rotation_origin.x +
-            (scaled_point.x - transform.rotation_origin.x) / transform.scale.x,
-        transform.rotation_origin.y +
-            (scaled_point.y - transform.rotation_origin.y) / transform.scale.y,
-        transform.rotation_origin.z +
-            (scaled_point.z - transform.rotation_origin.z) / transform.scale.z};
-    return true;
-}
-
-double Bernstein(int index, double t) {
-    const double s = 1.0 - t;
-    switch (index) {
-        case 0: return s * s * s;
-        case 1: return 3.0 * t * s * s;
-        case 2: return 3.0 * t * t * s;
-        default: return t * t * t;
-    }
-}
-
-Point3 EvaluatePatch(const std::array<Point3, 16>& points, double u, double v) {
-    Point3 result;
-    for (int row = 0; row < 4; ++row) {
-        const double bv = Bernstein(row, v);
-        for (int column = 0; column < 4; ++column) {
-            const double weight = Bernstein(column, u) * bv;
-            const Point3& point = points[static_cast<size_t>(row * 4 + column)];
-            result.x += point.x * weight;
-            result.y += point.y * weight;
-            result.z += point.z * weight;
-        }
-    }
-    return result;
-}
-
-void ApplyArcDeform(
-    double& coordinate,
-    double& depth,
-    double neutral_coordinate,
-    double center,
-    double depth_center,
-    double extent,
-    double angle_radians) {
-    if (std::abs(angle_radians) <= 1.0e-7 || extent <= 1.0e-7) {
-        return;
-    }
-    const double radius = extent / angle_radians;
-    const double phase = (neutral_coordinate - center) / radius;
-    const double sine = std::sin(phase);
-    const double cosine = std::cos(phase);
-    const double base_coordinate = center + sine * radius;
-    const double base_depth = (1.0 - cosine) * radius;
-    const double local_coordinate = coordinate - neutral_coordinate;
-    const double local_depth = depth - depth_center;
-    coordinate = base_coordinate + cosine * local_coordinate - sine * local_depth;
-    depth = depth_center + base_depth + sine * local_coordinate + cosine * local_depth;
-}
-
-void ApplyRollDeform(
-    double& coordinate,
-    double& depth,
-    double neutral_coordinate,
-    double minimum,
-    double maximum,
-    double depth_center,
-    bool reverse,
-    double roll_length_percent,
-    double angle_radians) {
-    const double extent = maximum - minimum;
-    const double roll_extent = extent *
-                               std::clamp(roll_length_percent / 100.0, 0.0, 1.0);
-    if (roll_extent <= 1.0e-7 || std::abs(angle_radians) <= 1.0e-7) {
-        return;
-    }
-    const double oriented =
-        reverse ? maximum - neutral_coordinate : neutral_coordinate - minimum;
-    const double start = extent - roll_extent;
-    if (oriented <= start) {
-        return;
-    }
-    const double distance = oriented - start;
-    const double radius = roll_extent / angle_radians;
-    const double phase = distance / radius;
-    const double sine = std::sin(phase);
-    const double cosine = std::cos(phase);
-    const double rolled = start + std::sin(phase) * radius;
-    const double base_coordinate =
-        reverse ? maximum - rolled : minimum + rolled;
-    const double base_depth = (1.0 - cosine) * radius;
-    const double local_coordinate = coordinate - neutral_coordinate;
-    const double local_depth = depth - depth_center;
-    const double orientation = reverse ? -1.0 : 1.0;
-    coordinate = base_coordinate + cosine * local_coordinate -
-                 orientation * sine * local_depth;
-    depth = depth_center + base_depth +
-            orientation * sine * local_coordinate + cosine * local_depth;
-}
-
-Point3 CornerCurlDisplacement(
-    const CornerCurlData& curl,
-    std::uint32_t corner,
-    double u,
-    double v,
-    double extent_x,
-    double extent_y) {
-    constexpr double kPi = 3.14159265358979323846;
-    const double maximum_angle = std::clamp(
-                                     std::abs(static_cast<double>(curl.amount)) /
-                                         100.0,
-                                     0.0,
-                                     1.0) *
-                                 kPi;
-    const double minimum_extent = std::min(extent_x, extent_y);
-    const double curl_length = minimum_extent *
-                               std::clamp(
-                                   static_cast<double>(curl.length) / 100.0,
-                                   0.0,
-                                   1.5);
-    const double requested_radius = minimum_extent *
-                                    std::clamp(
-                                        static_cast<double>(curl.radius) / 100.0,
-                                        0.001,
-                                        1.0);
-    if (maximum_angle <= 1.0e-7 ||
-        curl_length <= 1.0e-7 ||
-        requested_radius <= 1.0e-7) {
-        return {};
-    }
-
-    constexpr double kDegreesToRadians = kPi / 180.0;
-    const double direction = std::clamp(
-                                 static_cast<double>(curl.direction),
-                                 0.0,
-                                 90.0) *
-                             kDegreesToRadians;
-    const double horizontal_sign =
-        corner == kCornerTopRight || corner == kCornerBottomRight ? -1.0 : 1.0;
-    const double vertical_sign =
-        corner == kCornerBottomRight || corner == kCornerBottomLeft ? -1.0 : 1.0;
-    const double direction_x = horizontal_sign * std::cos(direction);
-    const double direction_y = vertical_sign * std::sin(direction);
-    const double inward_x =
-        (horizontal_sign > 0.0 ? u : 1.0 - u) * extent_x;
-    const double inward_y =
-        (vertical_sign > 0.0 ? v : 1.0 - v) * extent_y;
-    const double inward_distance =
-        inward_x * std::cos(direction) + inward_y * std::sin(direction);
-    if (inward_distance < -1.0e-6 || inward_distance >= curl_length) {
-        return {};
-    }
-
-    const double distance_from_fold = curl_length - inward_distance;
-    const double bend_length = std::min(
-        curl_length,
-        requested_radius * maximum_angle);
-    const double radius = bend_length / maximum_angle;
-    double curled_distance = inward_distance;
-    double depth = 0.0;
-    if (distance_from_fold <= bend_length) {
-        const double phase = distance_from_fold / radius;
-        curled_distance = curl_length - std::sin(phase) * radius;
-        depth = (1.0 - std::cos(phase)) * radius;
-    } else {
-        const double straight_length = distance_from_fold - bend_length;
-        curled_distance =
-            curl_length - std::sin(maximum_angle) * radius -
-            std::cos(maximum_angle) * straight_length;
-        depth =
-            (1.0 - std::cos(maximum_angle)) * radius +
-            std::sin(maximum_angle) * straight_length;
-    }
-
-    const double displacement = curled_distance - inward_distance;
-    const double depth_sign = curl.amount < 0.0F ? -1.0 : 1.0;
+Point3 Add(Point3 first, Point3 second) {
     return {
-        direction_x * displacement,
-        direction_y * displacement,
-        depth_sign * depth};
+        first.x + second.x,
+        first.y + second.y,
+        first.z + second.z};
 }
 
-double EdgeTwistWeight(double distance_from_edge, double falloff_percent) {
-    const double range = std::clamp(falloff_percent / 100.0, 0.01, 1.0);
-    if (distance_from_edge >= range) {
-        return 0.0;
+Point3 Multiply(Point3 point, double scalar) {
+    return {
+        point.x * scalar,
+        point.y * scalar,
+        point.z * scalar};
+}
+
+Point3 Reflected(Point3 endpoint, Point3 neighbor) {
+    return {
+        endpoint.x * 2.0 - neighbor.x,
+        endpoint.y * 2.0 - neighbor.y,
+        endpoint.z * 2.0 - neighbor.z};
+}
+
+Point3 CatmullRom(
+    Point3 p0,
+    Point3 p1,
+    Point3 p2,
+    Point3 p3,
+    double t) {
+    const double t2 = t * t;
+    const double t3 = t2 * t;
+    return Multiply(
+        Add(
+            Add(
+                Multiply(p1, 2.0),
+                Multiply(
+                    {p2.x - p0.x, p2.y - p0.y, p2.z - p0.z},
+                    t)),
+            Add(
+                Multiply(
+                    {2.0 * p0.x - 5.0 * p1.x +
+                         4.0 * p2.x - p3.x,
+                     2.0 * p0.y - 5.0 * p1.y +
+                         4.0 * p2.y - p3.y,
+                     2.0 * p0.z - 5.0 * p1.z +
+                         4.0 * p2.z - p3.z},
+                    t2),
+                Multiply(
+                    {-p0.x + 3.0 * p1.x -
+                         3.0 * p2.x + p3.x,
+                     -p0.y + 3.0 * p1.y -
+                         3.0 * p2.y + p3.y,
+                     -p0.z + 3.0 * p1.z -
+                         3.0 * p2.z + p3.z},
+                    t3))),
+        0.5);
+}
+
+template <typename Getter>
+Point3 EvaluateAxis(
+    std::uint16_t divisions,
+    double coordinate,
+    Getter getter) {
+    const double clamped = std::clamp(coordinate, 0.0, 1.0);
+    if (divisions == 1) {
+        return Add(
+            Multiply(getter(0), 1.0 - clamped),
+            Multiply(getter(1), clamped));
     }
-    const double value = 1.0 - std::clamp(distance_from_edge / range, 0.0, 1.0);
-    return value * value * (3.0 - 2.0 * value);
+    const double scaled = clamped * divisions;
+    const std::uint16_t segment = clamped >= 1.0
+                                      ? divisions - 1
+                                      : static_cast<std::uint16_t>(
+                                            std::floor(scaled));
+    const double t =
+        clamped >= 1.0 ? 1.0 : scaled - segment;
+    const Point3 p1 = getter(segment);
+    const Point3 p2 = getter(segment + 1);
+    const Point3 p0 = segment == 0
+                          ? Reflected(p1, p2)
+                          : getter(segment - 1);
+    const Point3 p3 = segment + 2 > divisions
+                          ? Reflected(p2, p1)
+                          : getter(segment + 2);
+    return CatmullRom(p0, p1, p2, p3, t);
 }
 
-void ApplyEdgeTwist(
-    Point3& point,
-    const SurfaceData& surface,
+}  // namespace
+
+Point3 EvaluateLattice(
+    const LatticeData& lattice,
     double u,
-    double v,
-    double pivot_x,
-    double pivot_y,
-    double pivot_z) {
-    constexpr double kDegreesToRadians = 3.14159265358979323846 / 180.0;
-    const EdgeTwistData& left = surface.edge_twists[kTwistEdgeLeft - 1];
-    const EdgeTwistData& right = surface.edge_twists[kTwistEdgeRight - 1];
-    const EdgeTwistData& top = surface.edge_twists[kTwistEdgeTop - 1];
-    const EdgeTwistData& bottom = surface.edge_twists[kTwistEdgeBottom - 1];
-    const double rotation_x =
-        (static_cast<double>(left.angle) * EdgeTwistWeight(u, left.falloff) +
-         static_cast<double>(right.angle) *
-             EdgeTwistWeight(1.0 - u, right.falloff)) *
-        kDegreesToRadians;
-    const double rotation_y =
-        (static_cast<double>(top.angle) * EdgeTwistWeight(v, top.falloff) +
-         static_cast<double>(bottom.angle) *
-             EdgeTwistWeight(1.0 - v, bottom.falloff)) *
-        kDegreesToRadians;
-    if (std::abs(rotation_x) <= 1.0e-7 && std::abs(rotation_y) <= 1.0e-7) {
-        return;
+    double v) {
+    if (!IsValidLattice(lattice)) {
+        return {};
     }
-
-    point.x -= pivot_x;
-    point.y -= pivot_y;
-    point.z -= pivot_z;
-    const double sin_x = std::sin(rotation_x);
-    const double cos_x = std::cos(rotation_x);
-    const double rotated_y = point.y * cos_x - point.z * sin_x;
-    const double rotated_z_x = point.y * sin_x + point.z * cos_x;
-    point.y = rotated_y;
-    point.z = rotated_z_x;
-    const double sin_y = std::sin(rotation_y);
-    const double cos_y = std::cos(rotation_y);
-    const double rotated_x = point.x * cos_y + point.z * sin_y;
-    const double rotated_z_y = -point.x * sin_y + point.z * cos_y;
-    point.x = rotated_x + pivot_x;
-    point.y += pivot_y;
-    point.z = rotated_z_y + pivot_z;
-}
-
-void ApplySurfaceDeform(
-    Point3& point,
-    const SurfaceData& surface,
-    double u,
-    double v,
-    double pivot_x,
-    double pivot_y,
-    double pivot_z,
-    double extent_x,
-    double extent_y) {
-    constexpr double kDegreesToRadians = 3.14159265358979323846 / 180.0;
-    const double minimum_x = pivot_x - extent_x * 0.5;
-    const double maximum_x = pivot_x + extent_x * 0.5;
-    const double minimum_y = pivot_y - extent_y * 0.5;
-    const double maximum_y = pivot_y + extent_y * 0.5;
-    const double neutral_x =
-        minimum_x + std::clamp(u, 0.0, 1.0) * extent_x;
-    const double neutral_y =
-        minimum_y + std::clamp(v, 0.0, 1.0) * extent_y;
-    const double roll_angle = static_cast<double>(surface.roll_angle) *
-                              kDegreesToRadians;
-    Point3 combined_corner_displacement{};
-    for (std::uint32_t corner = kCornerTopLeft;
-         corner <= kCornerBottomLeft;
-         ++corner) {
-        const Point3 displacement = CornerCurlDisplacement(
-            surface.corner_curls[corner - 1],
-            corner,
-            u,
-            v,
-            extent_x,
-            extent_y);
-        combined_corner_displacement.x += displacement.x;
-        combined_corner_displacement.y += displacement.y;
-        combined_corner_displacement.z += displacement.z;
-    }
-    point.x += combined_corner_displacement.x;
-    point.y += combined_corner_displacement.y;
-    point.z += combined_corner_displacement.z;
-    ApplyEdgeTwist(
-        point,
-        surface,
-        u,
+    return EvaluateAxis(
+        lattice.divisions_y,
         v,
-        pivot_x,
-        pivot_y,
-        pivot_z);
-    if (surface.roll_edge == kRollEdgeRight ||
-        surface.roll_edge == kRollEdgeLeft) {
-        ApplyRollDeform(
-            point.x,
-            point.z,
-            neutral_x,
-            minimum_x,
-            maximum_x,
-            pivot_z,
-            surface.roll_edge == kRollEdgeLeft,
-            surface.roll_length,
-            roll_angle);
-    } else if (surface.roll_edge == kRollEdgeBottom ||
-               surface.roll_edge == kRollEdgeTop) {
-        ApplyRollDeform(
-            point.y,
-            point.z,
-            neutral_y,
-            minimum_y,
-            maximum_y,
-            pivot_z,
-            surface.roll_edge == kRollEdgeTop,
-            surface.roll_length,
-            roll_angle);
-    }
-    ApplyArcDeform(
-        point.x,
-        point.z,
-        neutral_x,
-        pivot_x,
-        pivot_z,
-        extent_x,
-        static_cast<double>(surface.bend_x) * kDegreesToRadians);
-    ApplyArcDeform(
-        point.y,
-        point.z,
-        neutral_y,
-        pivot_y,
-        pivot_z,
-        extent_y,
-        static_cast<double>(surface.bend_y) * kDegreesToRadians);
+        [&](std::uint16_t row) {
+            return EvaluateAxis(
+                lattice.divisions_x,
+                u,
+                [&](std::uint16_t column) {
+                    const StoredPoint3& point =
+                        lattice.points[LatticePointIndex(
+                            lattice.divisions_x,
+                            row,
+                            column)];
+                    return Point3{point.x, point.y, point.z};
+                });
+        });
+}
+
+Point3 EvaluateLatticeNormal(
+    const LatticeData& lattice,
+    double u,
+    double v) {
+    constexpr double kStep = 1.0e-4;
+    const Point3 u0 =
+        EvaluateLattice(lattice, std::max(0.0, u - kStep), v);
+    const Point3 u1 =
+        EvaluateLattice(lattice, std::min(1.0, u + kStep), v);
+    const Point3 v0 =
+        EvaluateLattice(lattice, u, std::max(0.0, v - kStep));
+    const Point3 v1 =
+        EvaluateLattice(lattice, u, std::min(1.0, v + kStep));
+    return Normalize(Cross(
+        {u1.x - u0.x, u1.y - u0.y, u1.z - u0.z},
+        {v1.x - v0.x, v1.y - v0.y, v1.z - v0.z}));
 }
