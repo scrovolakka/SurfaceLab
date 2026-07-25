@@ -157,6 +157,57 @@ bool IsValidLattice(const LatticeData& lattice) {
     return true;
 }
 
+bool NeedsInputSizedInitialization(const LatticeData& lattice) {
+    if (!IsValidLattice(lattice) || lattice.point_count == 0) {
+        return false;
+    }
+    if ((lattice.reserved & kLatticeFlagNeedsInputSize) != 0) {
+        return true;
+    }
+
+    StoredPoint3 minimum = lattice.points[0];
+    StoredPoint3 maximum = minimum;
+    for (std::size_t index = 1; index < lattice.point_count; ++index) {
+        const StoredPoint3& point = lattice.points[index];
+        minimum.x = std::min(minimum.x, point.x);
+        minimum.y = std::min(minimum.y, point.y);
+        minimum.z = std::min(minimum.z, point.z);
+        maximum.x = std::max(maximum.x, point.x);
+        maximum.y = std::max(maximum.y, point.y);
+        maximum.z = std::max(maximum.z, point.z);
+    }
+    constexpr double kPlaceholderEpsilon = 1.0e-4;
+    if (maximum.x - minimum.x <= kPlaceholderEpsilon &&
+        maximum.y - minimum.y <= kPlaceholderEpsilon &&
+        maximum.z - minimum.z <= kPlaceholderEpsilon) {
+        return true;
+    }
+
+    // v1.2.1-v1.2.4 clamped an unknown ParamsSetup size to 1x1. Restrict the
+    // repair to the exact canonical grid so a deliberately tiny deformation
+    // is not mistaken for an uninitialized payload.
+    for (std::uint16_t row = 0; row <= lattice.divisions_y; ++row) {
+        for (std::uint16_t column = 0;
+             column <= lattice.divisions_x;
+             ++column) {
+            const StoredPoint3& point = lattice.points[LatticePointIndex(
+                lattice.divisions_x,
+                row,
+                column)];
+            const double expected_x =
+                static_cast<double>(column) / lattice.divisions_x;
+            const double expected_y =
+                static_cast<double>(row) / lattice.divisions_y;
+            if (std::abs(point.x - expected_x) > kPlaceholderEpsilon ||
+                std::abs(point.y - expected_y) > kPlaceholderEpsilon ||
+                std::abs(point.z) > kPlaceholderEpsilon) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 bool ResizeLattice(
     const LatticeData& source,
     std::uint16_t divisions_x,
@@ -253,12 +304,13 @@ std::vector<std::uint8_t> FlattenLattice(const LatticeData& lattice) {
         return {};
     }
     std::vector<std::uint8_t> bytes;
-    bytes.reserve(20 + lattice.point_count * 12);
+    bytes.reserve(22 + lattice.point_count * 12);
     AppendU32(bytes, lattice.magic);
     AppendU16(bytes, lattice.schema_version);
     AppendU16(bytes, lattice.divisions_x);
     AppendU16(bytes, lattice.divisions_y);
     AppendU16(bytes, lattice.point_count);
+    AppendU16(bytes, lattice.reserved);
     AppendU64(bytes, lattice.surface_id);
     for (std::size_t index = 0; index < lattice.point_count; ++index) {
         AppendFloat(bytes, lattice.points[index].x);
@@ -283,10 +335,21 @@ bool UnflattenLattice(
         !ReadU16(cursor, end, decoded.divisions_x) ||
         !ReadU16(cursor, end, decoded.divisions_y) ||
         !ReadU16(cursor, end, decoded.point_count) ||
-        !ReadU64(cursor, end, decoded.surface_id) ||
-        byte_count !=
-            20 + static_cast<std::size_t>(decoded.point_count) * 12 ||
         decoded.point_count > kMaximumLatticePoints) {
+        return false;
+    }
+    const std::size_t legacy_size =
+        20 + static_cast<std::size_t>(decoded.point_count) * 12;
+    const std::size_t flagged_size =
+        22 + static_cast<std::size_t>(decoded.point_count) * 12;
+    if (byte_count == flagged_size) {
+        if (!ReadU16(cursor, end, decoded.reserved)) {
+            return false;
+        }
+    } else if (byte_count != legacy_size) {
+        return false;
+    }
+    if (!ReadU64(cursor, end, decoded.surface_id)) {
         return false;
     }
     for (std::size_t index = 0; index < decoded.point_count; ++index) {

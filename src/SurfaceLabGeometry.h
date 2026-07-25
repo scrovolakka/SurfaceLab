@@ -137,6 +137,11 @@ Point3 ApplyScenePointTransform(
     Point3 point,
     const SceneCoordinateTransform& transform);
 
+Point3 RecenterCagePoint(
+    Point3 point,
+    Point3 fixed_reference_center,
+    Point3 target_center);
+
 Point3 ApplySceneVectorTransform(
     Point3 vector,
     const SceneCoordinateTransform& transform);

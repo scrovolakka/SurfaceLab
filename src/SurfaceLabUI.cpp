@@ -234,6 +234,72 @@ void BeginCompDrag(PF_EventExtra* event_extra) {
     g_selection.drag_origin_seeded = false;
 }
 
+bool InitializePendingLatticeForInput(
+    PF_InData* in_data,
+    PF_ParamDef* params[],
+    std::uint32_t surface) {
+    if (!in_data || !params || surface >= kSurfaceCount ||
+        !params[kParamInput]) {
+        return false;
+    }
+    const A_long input_width = params[kParamInput]->u.ld.width;
+    const A_long input_height = params[kParamInput]->u.ld.height;
+    if (input_width <= 1 || input_height <= 1) {
+        return false;
+    }
+    PF_ParamDef* lattice_parameter =
+        params[SurfaceLatticeParam(surface)];
+    const PF_Handle handle = lattice_parameter->u.arb_d.value;
+    if (!handle) {
+        return false;
+    }
+    auto* lattice =
+        static_cast<LatticeData*>(PF_LOCK_HANDLE(handle));
+    if (!lattice || !IsValidLattice(*lattice)) {
+        if (lattice) {
+            PF_UNLOCK_HANDLE(handle);
+        }
+        return false;
+    }
+    if (!NeedsInputSizedInitialization(*lattice)) {
+        PF_UNLOCK_HANDLE(handle);
+        return false;
+    }
+    const std::uint64_t surface_id = lattice->surface_id;
+    const std::uint16_t divisions_x = lattice->divisions_x;
+    const std::uint16_t divisions_y = lattice->divisions_y;
+    InitializeLattice(
+        *lattice,
+        divisions_x,
+        divisions_y,
+        input_width,
+        input_height,
+        surface_id);
+    PF_UNLOCK_HANDLE(handle);
+    lattice_parameter->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+
+    PF_ParamDef* surface_position_parameter =
+        params[SurfaceParam(surface, kSurfacePositionOffset)];
+    PF_Point3DDef& surface_position =
+        surface_position_parameter->u.point3d_d;
+    surface_position.x_value = input_width * 0.5;
+    surface_position.y_value = input_height * 0.5;
+    surface_position.z_value = 0.0;
+    surface_position_parameter->uu.change_flags |=
+        PF_ChangeFlag_CHANGED_VALUE;
+
+    PF_ParamDef* scene_position_parameter =
+        params[kParamScenePosition];
+    PF_Point3DDef& scene_position =
+        scene_position_parameter->u.point3d_d;
+    scene_position.x_value = input_width * 0.5;
+    scene_position.y_value = input_height * 0.5;
+    scene_position.z_value = 0.0;
+    scene_position_parameter->uu.change_flags |=
+        PF_ChangeFlag_CHANGED_VALUE;
+    return true;
+}
+
 bool CaptureDragSnapshot(
     PF_InData* in_data,
     PF_ParamDef* params[],
@@ -244,6 +310,10 @@ bool CaptureDragSnapshot(
         g_selection.has_snapshot = false;
         return false;
     }
+    InitializePendingLatticeForInput(
+        in_data,
+        params,
+        surface);
     PF_Handle handle =
         params[SurfaceLatticeParam(surface)]->u.arb_d.value;
     if (!handle) {
@@ -961,22 +1031,7 @@ PF_Err PublishRigBridge(
     }
     LatticeData published = *lattice;
     PF_UNLOCK_HANDLE(handle);
-    StoredPoint3 minimum = published.points[0];
-    StoredPoint3 maximum = minimum;
-    for (std::size_t index = 1;
-         index < published.point_count;
-         ++index) {
-        const StoredPoint3& point = published.points[index];
-        minimum.x = std::min(minimum.x, point.x);
-        minimum.y = std::min(minimum.y, point.y);
-        minimum.z = std::min(minimum.z, point.z);
-        maximum.x = std::max(maximum.x, point.x);
-        maximum.y = std::max(maximum.y, point.y);
-        maximum.z = std::max(maximum.z, point.z);
-    }
-    if (maximum.x - minimum.x <= 1.0e-4F &&
-        maximum.y - minimum.y <= 1.0e-4F &&
-        maximum.z - minimum.z <= 1.0e-4F) {
+    if (NeedsInputSizedInitialization(published)) {
         const double width =
             params[kParamInput]->u.ld.width > 0
                 ? params[kParamInput]->u.ld.width
@@ -1048,10 +1103,11 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
     PF_ParamDef def;
     AEFX_CLR_STRUCT(def);
 
-    const double default_center_x =
-        in_data && in_data->width > 0 ? in_data->width * 0.5 : 960.0;
-    const double default_center_y =
-        in_data && in_data->height > 0 ? in_data->height * 0.5 : 540.0;
+    // PF_Point3DDef defaults are percentages of the layer dimensions, not
+    // pixels. 50/50 becomes the actual input centre (for example 960/540 in a
+    // 1920x1080 comp). Passing pixel coordinates here produced 18432/5832.
+    constexpr double default_center_x = 50.0;
+    constexpr double default_center_y = 50.0;
 
     PF_ADD_TOPIC("Scene", kDiskSceneStart);
     PF_Err error = AddPoint3D(
@@ -1435,13 +1491,17 @@ PF_Err UpdateParameterUi(
     PF_OutData*,
     PF_ParamDef* params[]) {
     for (std::uint32_t surface = 0; surface < kSurfaceCount; ++surface) {
+        InitializePendingLatticeForInput(
+            in_data,
+            params,
+            surface);
         const PF_Handle handle =
             params[SurfaceLatticeParam(surface)]->u.arb_d.value;
         if (!handle) {
             continue;
         }
-        const auto* lattice =
-            static_cast<const LatticeData*>(PF_LOCK_HANDLE(handle));
+        auto* lattice =
+            static_cast<LatticeData*>(PF_LOCK_HANDLE(handle));
         if (lattice && IsValidLattice(*lattice)) {
             params[SurfaceParam(surface, kSurfaceDivisionsXOffset)]
                 ->u.sd.value = lattice->divisions_x;

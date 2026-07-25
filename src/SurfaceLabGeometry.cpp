@@ -229,6 +229,16 @@ Point3 ApplySceneNormalTransform(
         transform.rotation_radians.z));
 }
 
+Point3 RecenterCagePoint(
+    Point3 point,
+    Point3 fixed_reference_center,
+    Point3 target_center) {
+    return {
+        point.x - fixed_reference_center.x + target_center.x,
+        point.y - fixed_reference_center.y + target_center.y,
+        point.z - fixed_reference_center.z + target_center.z};
+}
+
 bool TryInverseScenePointTransform(
     Point3 point,
     const SceneCoordinateTransform& transform,
@@ -298,15 +308,15 @@ bool BuildPreSceneRootTransform(
 SurfaceCoordinateTransform BuildSurfaceCoordinateTransform(
     const SurfaceData& surface,
     Point3 legacy_pivot,
-    Point3) {
+    Point3 render_scale) {
     constexpr double kDegreesToRadians =
         3.14159265358979323846 / 180.0;
     SurfaceCoordinateTransform transform;
     transform.pivot = surface.transform_mode != 0
                           ? Point3{
-                                surface.position_x,
-                                surface.position_y,
-                                surface.position_z}
+                                surface.position_x * render_scale.x,
+                                surface.position_y * render_scale.y,
+                                surface.position_z * render_scale.z}
                           : legacy_pivot;
     transform.rotation_origin = transform.pivot;
     transform.scale = {

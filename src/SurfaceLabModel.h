@@ -61,6 +61,7 @@ constexpr std::uint32_t kRotationOriginCustom = 6;
 
 constexpr std::uint32_t kLatticeMagic = 0x534C5631U;  // "SLV1"
 constexpr std::uint16_t kLatticeSchemaVersion = 1;
+constexpr std::uint16_t kLatticeFlagNeedsInputSize = 1U;
 constexpr std::uint16_t kMinimumLatticeDivisions = 1;
 constexpr std::uint16_t kMaximumLatticeDivisions = 16;
 constexpr std::uint16_t kMinimumMeshQuality = 1;
@@ -163,6 +164,11 @@ void InitializeLattice(
     std::uint64_t surface_id = 0);
 
 bool IsValidLattice(const LatticeData& lattice);
+
+// ParamsSetup does not expose reliable input dimensions. New lattices carry a
+// persistent one-shot flag until the first real frame, and v1.2.1-v1.2.4 may
+// contain a canonical 1x1 placeholder. Both need input-sized initialization.
+bool NeedsInputSizedInitialization(const LatticeData& lattice);
 
 bool ResizeLattice(
     const LatticeData& source,

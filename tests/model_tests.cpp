@@ -46,6 +46,55 @@ void TestInitialization() {
     CHECK(Near(scene.surfaces[0].position_y, 540.0));
 }
 
+void TestDeferredInputSizedInitialization() {
+    LatticeData deferred{};
+    InitializeLattice(deferred, 3, 3, 0.0, 0.0, 10);
+    deferred.reserved |= kLatticeFlagNeedsInputSize;
+    CHECK(IsValidLattice(deferred));
+    CHECK(NeedsInputSizedInitialization(deferred));
+
+    LatticeData serialized{};
+    const std::vector<std::uint8_t> bytes = FlattenLattice(deferred);
+    CHECK(UnflattenLattice(bytes.data(), bytes.size(), serialized));
+    CHECK(
+        (serialized.reserved & kLatticeFlagNeedsInputSize) != 0);
+    CHECK(NeedsInputSizedInitialization(serialized));
+
+    InitializeLattice(serialized, 3, 3, 1920.0, 1080.0, 10);
+    CHECK(
+        (serialized.reserved & kLatticeFlagNeedsInputSize) == 0);
+    CHECK(!NeedsInputSizedInitialization(serialized));
+
+    LatticeData broken_v124{};
+    InitializeLattice(broken_v124, 3, 3, 1.0, 1.0, 11);
+    CHECK(NeedsInputSizedInitialization(broken_v124));
+
+    broken_v124.points[LatticePointIndex(3, 1, 1)].z = 0.25F;
+    CHECK(!NeedsInputSizedInitialization(broken_v124));
+
+    LatticeData real{};
+    InitializeLattice(real, 3, 3, 1920.0, 1080.0, 12);
+    CHECK(!NeedsInputSizedInitialization(real));
+}
+
+void TestFixedCageCenterUsesRenderSpaceOnce() {
+    // At half resolution the full 1920x1080 cage is 960x540 and its centre is
+    // already (480,270). Moving Position by (+50,-20) must translate every
+    // point by exactly that amount, not apply the 0.5 scale to the centre again.
+    const Point3 top_left = RecenterCagePoint(
+        {0.0, 0.0, 0.0},
+        {480.0, 270.0, 0.0},
+        {530.0, 250.0, 0.0});
+    const Point3 bottom_right = RecenterCagePoint(
+        {960.0, 540.0, 0.0},
+        {480.0, 270.0, 0.0},
+        {530.0, 250.0, 0.0});
+    CHECK(Near(top_left.x, 50.0));
+    CHECK(Near(top_left.y, -20.0));
+    CHECK(Near(bottom_right.x, 1010.0));
+    CHECK(Near(bottom_right.y, 520.0));
+}
+
 void TestEveryControlPointInterpolates() {
     LatticeData lattice{};
     InitializeLattice(lattice, 5, 3, 500.0, 300.0, 7);
@@ -169,7 +218,7 @@ void TestFlattenRoundTrip() {
         0x1020304050607080ULL);
     source.points[9].z = -123.25F;
     const std::vector<std::uint8_t> bytes = FlattenLattice(source);
-    CHECK(bytes.size() == 20 + source.point_count * 12);
+    CHECK(bytes.size() == 22 + source.point_count * 12);
     CHECK(bytes[0] == 0x53);
     CHECK(bytes[1] == 0x4C);
     CHECK(bytes[2] == 0x56);
@@ -177,6 +226,18 @@ void TestFlattenRoundTrip() {
     LatticeData decoded{};
     CHECK(UnflattenLattice(bytes.data(), bytes.size(), decoded));
     CHECK(CompareLattices(source, decoded));
+
+    // v1.2.4 and earlier did not serialize the reserved flags.
+    std::vector<std::uint8_t> legacy_bytes = bytes;
+    legacy_bytes.erase(legacy_bytes.begin() + 12, legacy_bytes.begin() + 14);
+    LatticeData legacy_decoded{};
+    CHECK(UnflattenLattice(
+        legacy_bytes.data(),
+        legacy_bytes.size(),
+        legacy_decoded));
+    CHECK(CompareLattices(source, legacy_decoded));
+    CHECK(legacy_decoded.reserved == 0);
+
     CHECK(!UnflattenLattice(bytes.data(), bytes.size() - 1, decoded));
 }
 
@@ -343,7 +404,7 @@ void TestRootTransformConjugatesThroughScene() {
         distance(first_unrooted, second_unrooted)));
 }
 
-void TestSurfacePositionIsNotDownsampledTwice() {
+void TestSurfacePositionUsesRenderScaleOnce() {
     SurfaceData surface{};
     surface.transform_mode = 1;
     surface.position_x = 56.5F;
@@ -357,9 +418,9 @@ void TestSurfacePositionIsNotDownsampledTwice() {
             surface,
             {960.0, 540.0, 0.0},
             {1.0 / 17.0, 1.0 / 17.0, 1.0 / 17.0});
-    CHECK(Near(transform.pivot.x, 56.5));
-    CHECK(Near(transform.pivot.y, 32.0));
-    CHECK(Near(transform.pivot.z, 4.0));
+    CHECK(Near(transform.pivot.x, 56.5 / 17.0));
+    CHECK(Near(transform.pivot.y, 32.0 / 17.0));
+    CHECK(Near(transform.pivot.z, 4.0 / 17.0));
 }
 
 void TestSubframeSampleTimes() {
@@ -415,6 +476,8 @@ void TestSurfaceRollIdentityAndCylinder() {
 
 int main() {
     TestInitialization();
+    TestDeferredInputSizedInitialization();
+    TestFixedCageCenterUsesRenderSpaceOnce();
     TestEveryControlPointInterpolates();
     TestDegenerateAxesAreLinear();
     TestLocalSupport();
@@ -426,7 +489,7 @@ int main() {
     TestAffineRoundTrip();
     TestAffine3DRootTransforms();
     TestRootTransformConjugatesThroughScene();
-    TestSurfacePositionIsNotDownsampledTwice();
+    TestSurfacePositionUsesRenderScaleOnce();
     TestSubframeSampleTimes();
     TestSurfaceRollIdentityAndCylinder();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);

@@ -138,6 +138,8 @@ PF_Err CreateLatticeHandle(
     double width,
     double height,
     std::uint32_t surface) {
+    (void)width;
+    (void)height;
     PF_Err error = AllocateLattice(in_data, destination);
     if (error != PF_Err_NONE) {
         return error;
@@ -154,14 +156,17 @@ PF_Err CreateLatticeHandle(
              static_cast<std::uint32_t>(in_data ? in_data->current_time : 0))
          << 32U) |
         (static_cast<std::uint64_t>(surface) + 1U);
-    // ParamsSetup can report 0x0 layer size; never seed a collapsed lattice.
+    // ParamsSetup does not expose the input layer dimensions reliably. Mark
+    // every newly-created lattice for one-time initialization once AE supplies
+    // a real input frame.
     InitializeLattice(
         *lattice,
         3,
         3,
-        std::max(1.0, width),
-        std::max(1.0, height),
+        0.0,
+        0.0,
         id);
+    lattice->reserved |= kLatticeFlagNeedsInputSize;
     PF_UNLOCK_HANDLE(*destination);
     return PF_Err_NONE;
 }
@@ -456,29 +461,9 @@ SceneData ResolveSceneForFrame(
                 PF_UNLOCK_HANDLE(handle);
             }
         }
-        const auto lattice_bounds = [&surface]() {
-            StoredPoint3 minimum = surface.lattice.points[0];
-            StoredPoint3 maximum = minimum;
-            for (std::size_t point_index = 1;
-                 point_index < surface.lattice.point_count;
-                 ++point_index) {
-                const StoredPoint3& point =
-                    surface.lattice.points[point_index];
-                minimum.x = std::min(minimum.x, point.x);
-                minimum.y = std::min(minimum.y, point.y);
-                minimum.z = std::min(minimum.z, point.z);
-                maximum.x = std::max(maximum.x, point.x);
-                maximum.y = std::max(maximum.y, point.y);
-                maximum.z = std::max(maximum.z, point.z);
-            }
-            return std::array<float, 3>{
-                maximum.x - minimum.x,
-                maximum.y - minimum.y,
-                maximum.z - minimum.z};
-        }();
-        if (lattice_bounds[0] <= 1.0e-4F &&
-            lattice_bounds[1] <= 1.0e-4F &&
-            lattice_bounds[2] <= 1.0e-4F) {
+        const bool initialize_from_input =
+            NeedsInputSizedInitialization(surface.lattice);
+        if (initialize_from_input) {
             const std::uint64_t surface_id = surface.lattice.surface_id;
             InitializeLattice(
                 surface.lattice,
@@ -495,9 +480,12 @@ SceneData ResolveSceneForFrame(
         surface.divisions_x = surface.lattice.divisions_x;
         surface.divisions_y = surface.lattice.divisions_y;
         UpdateDerivedTransform(surface);
-        surface.position_x = static_cast<float>(position.x_value);
-        surface.position_y = static_cast<float>(position.y_value);
-        surface.position_z = static_cast<float>(position.z_value);
+        surface.position_x = static_cast<float>(
+            initialize_from_input ? input_width * 0.5 : position.x_value);
+        surface.position_y = static_cast<float>(
+            initialize_from_input ? input_height * 0.5 : position.y_value);
+        surface.position_z = static_cast<float>(
+            initialize_from_input ? 0.0 : position.z_value);
     }
     return scene;
 }
