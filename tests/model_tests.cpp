@@ -54,6 +54,7 @@ void TestMaterialValidation() {
     surface.image_size_mode = kImageSizeFit;
     surface.image_border_mode = kImageBorderTransparent;
     surface.specular = 75.0F;
+    surface.metalness = 80.0F;
     surface.shininess = 32.0F;
     CHECK(IsValidScene(scene));
 
@@ -64,6 +65,9 @@ void TestMaterialValidation() {
     CHECK(!IsValidScene(scene));
     surface.image_size_mode = kImageSizeStretch;
     surface.specular = std::numeric_limits<float>::quiet_NaN();
+    CHECK(!IsValidScene(scene));
+    surface.specular = 75.0F;
+    surface.metalness = 101.0F;
     CHECK(!IsValidScene(scene));
 }
 

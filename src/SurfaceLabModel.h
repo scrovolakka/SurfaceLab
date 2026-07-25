@@ -128,6 +128,7 @@ struct SurfaceData {
     float thickness{};
     float diffuse{100.0F};
     float specular{};
+    float metalness{};
     float shininess{32.0F};
     // Procedural roll layer (degrees / cage units). Not part of lattice wire.
     float roll_angle{};

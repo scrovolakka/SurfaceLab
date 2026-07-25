@@ -14,12 +14,14 @@
 // Keep these in lockstep with CMake project VERSION and SurfaceLabPiPL.r.
 constexpr A_short kSurfaceLabVersionMajor = 1;
 constexpr A_short kSurfaceLabVersionMinor = 3;
-constexpr A_short kSurfaceLabVersionPatch = 2;
-constexpr const char* kSurfaceLabVersionString = "1.3.2";
+constexpr A_short kSurfaceLabVersionPatch = 3;
+constexpr const char* kSurfaceLabVersionString = "1.3.3";
 
 constexpr std::uint32_t kSurfaceCount = 8;
-constexpr PF_ParamIndex kSurfaceParameterStride = 22;
-constexpr PF_ParamIndex kRigBridgeCoordinateCount = 17 * 3;
+constexpr PF_ParamIndex kSurfaceParameterStride = 23;
+// The hidden script bridge uses one 3D Point per lattice column. Keeping XYZ
+// in one parameter leaves room under AE's 255-parameter effect limit.
+constexpr PF_ParamIndex kRigBridgePointCount = 17;
 
 enum SurfaceParamOffset : PF_ParamIndex {
     kSurfaceTopicStartOffset = 0,
@@ -43,6 +45,7 @@ enum SurfaceParamOffset : PF_ParamIndex {
     kSurfaceImageSizeOffset,
     kSurfaceSpecularOffset,
     kSurfaceRoughnessOffset,
+    kSurfaceMetalnessOffset,
     kSurfaceTopicEndOffset
 };
 
@@ -75,7 +78,7 @@ enum ParamIndex : PF_ParamIndex {
     kParamRigPointsStart,
     kParamRigPointsEnd =
         kParamRigPointsStart +
-        kRigBridgeCoordinateCount,
+        kRigBridgePointCount,
     kParamRigBridgeEnd = kParamRigPointsEnd,
     kParamAboutStart,
     kParamAboutVersion,
@@ -104,14 +107,7 @@ constexpr PF_ParamIndex SurfaceLatticeParam(std::uint32_t surface) {
 }
 
 constexpr PF_ParamIndex RigPointParam(std::uint32_t column) {
-    return kParamRigPointsStart +
-           static_cast<PF_ParamIndex>(column * 3U);
-}
-
-constexpr PF_ParamIndex RigPointCoordinateParam(
-    std::uint32_t column,
-    std::uint32_t axis) {
-    return RigPointParam(column) + static_cast<PF_ParamIndex>(axis);
+    return kParamRigPointsStart + static_cast<PF_ParamIndex>(column);
 }
 
 enum ParamDiskId : A_long {
@@ -137,7 +133,10 @@ enum ParamDiskId : A_long {
     kDiskRigSurfaceId3,
     kDiskRigDivisionsX,
     kDiskRigDivisionsY,
-    kDiskRigPointsStart = 720,
+    // v1.3.2 used 720...770 for separate XYZ float sliders. Allocate the
+    // compact 3D Point bridge elsewhere so saved projects never see a disk-ID
+    // type change.
+    kDiskRigPointsStart = 780,
     kDiskRigBridgeEnd = 799,
     kDiskAboutStart = 800,
     kDiskAboutVersion,

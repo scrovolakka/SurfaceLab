@@ -440,6 +440,7 @@ bool IsValidScene(const SceneData& scene) {
             !std::isfinite(surface.opacity) ||
             !std::isfinite(surface.diffuse) ||
             !std::isfinite(surface.specular) ||
+            !std::isfinite(surface.metalness) ||
             !std::isfinite(surface.shininess) ||
             surface.opacity < 0.0F ||
             surface.opacity > 100.0F ||
@@ -447,6 +448,8 @@ bool IsValidScene(const SceneData& scene) {
             surface.diffuse > 100.0F ||
             surface.specular < 0.0F ||
             surface.specular > 100.0F ||
+            surface.metalness < 0.0F ||
+            surface.metalness > 100.0F ||
             surface.shininess < 1.0F) {
             return false;
         }

@@ -572,11 +572,18 @@ Pixel ApplyLighting(
         static_cast<double>(surface.diffuse) / 100.0;
     const double specular_coefficient =
         static_cast<double>(surface.specular) / 100.0;
+    const double metalness = std::clamp(
+        static_cast<double>(surface.metalness) / 100.0,
+        0.0,
+        1.0);
     const double alpha = static_cast<double>(pixel.alpha);
     const auto shade = [&](auto channel, double diffuse, double specular) {
+        const double base = static_cast<double>(channel);
+        const double specular_tint =
+            alpha * (1.0 - metalness) + base * metalness;
         const double value =
-            static_cast<double>(channel) * diffuse * diffuse_coefficient +
-            alpha * specular * specular_coefficient;
+            base * diffuse * diffuse_coefficient * (1.0 - metalness) +
+            specular_tint * specular * specular_coefficient;
         return QuantizePixelChannel<Pixel>(std::clamp(
             value,
             0.0,
@@ -3342,7 +3349,7 @@ PF_Err CheckoutSmartRenderParameters(
          surface < kSurfaceCount;
         ++surface) {
         for (PF_ParamIndex offset = kSurfaceSourceOffset;
-             offset <= kSurfaceRoughnessOffset;
+             offset <= kSurfaceMetalnessOffset;
              ++offset) {
             const PF_Err error = CheckoutSmartParameter(
                 in_data,
@@ -3735,6 +3742,7 @@ std::vector<double> BuildExternalStateDigest(
         digest.push_back(surface.opacity);
         digest.push_back(surface.diffuse);
         digest.push_back(surface.specular);
+        digest.push_back(surface.metalness);
         digest.push_back(surface.shininess);
         digest.push_back(
             surface.root_transform_enabled != 0 ? 1.0 : 0.0);

@@ -418,6 +418,11 @@ SceneData ResolveSceneForFrame(
                 ->u.fs_d.value,
             0.0,
             100.0));
+        surface.metalness = static_cast<float>(std::clamp(
+            params[SurfaceParam(index, kSurfaceMetalnessOffset)]
+                ->u.fs_d.value,
+            0.0,
+            100.0));
         const double roughness = std::clamp(
             params[SurfaceParam(index, kSurfaceRoughnessOffset)]
                 ->u.fs_d.value,

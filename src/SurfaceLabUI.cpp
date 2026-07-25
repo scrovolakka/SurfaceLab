@@ -1083,16 +1083,11 @@ PF_Err PublishRigBridge(
                 row,
                 static_cast<std::uint16_t>(column))];
         }
-        const std::array<double, 3> coordinates = {
-            point.x,
-            point.y,
-            point.z};
-        for (std::uint32_t axis = 0; axis < coordinates.size(); ++axis) {
-            PF_ParamDef* output =
-                params[RigPointCoordinateParam(column, axis)];
-            output->u.fs_d.value = coordinates[axis];
-            MarkChanged(output);
-        }
+        PF_ParamDef* output = params[RigPointParam(column)];
+        output->u.point3d_d.x_value = point.x;
+        output->u.point3d_d.y_value = point.y;
+        output->u.point3d_d.z_value = point.z;
+        MarkChanged(output);
     }
     return PF_Err_NONE;
 }
@@ -1341,6 +1336,19 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
             SurfaceDiskId(surface, kSurfaceRoughnessOffset));
 
         AEFX_CLR_STRUCT(def);
+        PF_ADD_FLOAT_SLIDERX(
+            "Metalness",
+            0.0,
+            100.0,
+            0.0,
+            100.0,
+            0.0,
+            PF_Precision_TENTHS,
+            PF_ValueDisplayFlag_PERCENT,
+            PF_ParamFlag_NONE,
+            SurfaceDiskId(surface, kSurfaceMetalnessOffset));
+
+        AEFX_CLR_STRUCT(def);
         PF_END_TOPIC(
             SurfaceDiskId(surface, kSurfaceTopicEndOffset));
     }
@@ -1418,29 +1426,23 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
     for (std::uint32_t column = 0;
          column < kMaximumLatticeAxisPoints;
          ++column) {
-        const char* axis_names[] = {"X", "Y", "Z"};
-        for (std::uint32_t axis = 0; axis < 3; ++axis) {
-            char coordinate_name[32]{};
-            std::snprintf(
-                coordinate_name,
-                sizeof(coordinate_name),
-                "Rig Point %u %s",
-                column,
-                axis_names[axis]);
-            AEFX_CLR_STRUCT(def);
-            def.ui_flags = PF_PUI_DISABLED;
-            PF_ADD_FLOAT_SLIDERX(
-                coordinate_name,
-                -1000000.0,
-                1000000.0,
-                -1000000.0,
-                1000000.0,
-                0.0,
-                PF_Precision_THOUSANDTHS,
-                PF_ValueDisplayFlag_NONE,
-                PF_ParamFlag_NONE,
-                kDiskRigPointsStart +
-                    static_cast<A_long>(column * 3U + axis));
+        char point_name[32]{};
+        std::snprintf(
+            point_name,
+            sizeof(point_name),
+            "Rig Point %u",
+            column);
+        error = AddPoint3D(
+            in_data,
+            def,
+            point_name,
+            0.0,
+            0.0,
+            0.0,
+            kDiskRigPointsStart + static_cast<A_long>(column),
+            PF_PUI_DISABLED);
+        if (error != PF_Err_NONE) {
+            return error;
         }
     }
     AEFX_CLR_STRUCT(def);
