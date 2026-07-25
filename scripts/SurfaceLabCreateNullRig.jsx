@@ -469,7 +469,7 @@
 
     function encodedRootMarker(identityComment, bindWorld, bindFrame) {
         return identityComment +
-            "|rootv=3" +
+            "|rootv=4" +
             "|bindx=" + Math.round(bindWorld[0] * 1000.0) +
             "|bindy=" + Math.round(bindWorld[1] * 1000.0) +
             "|bindz=" + Math.round(bindWorld[2] * 1000.0) +
@@ -524,6 +524,45 @@
         transform.property("ADBE Scale").setValue([100, 100, 100]);
     }
 
+    function sampleLayerWorldTransform(layer) {
+        var effects = layer.property("ADBE Effect Parade");
+        var probe = effects.addProperty("ADBE Point3D Control");
+        if (!probe) {
+            throw new Error(
+                "After Effects could not sample the Surface Root transform.");
+        }
+        var value = probe.property(1);
+        function sample(expression) {
+            value.expression = expression;
+            var result = value.value;
+            return [
+                Number(result[0]),
+                Number(result[1]),
+                Number(result[2])
+            ];
+        }
+        var origin;
+        var xAxis;
+        var yAxis;
+        var zAxis;
+        try {
+            origin = sample("toWorld([0, 0, 0])");
+            xAxis = sample("toWorldVec([1, 0, 0])");
+            yAxis = sample("toWorldVec([0, 1, 0])");
+            zAxis = sample("toWorldVec([0, 0, 1])");
+        } finally {
+            probe.remove();
+        }
+        return {
+            world: origin,
+            frame: {
+                x: xAxis,
+                y: yAxis,
+                z: zAxis
+            }
+        };
+    }
+
     function getOrCreateRoot(
         comp,
         identityComment,
@@ -539,17 +578,18 @@
             prepareNull(root);
         } else {
             needsUpgrade =
-                markerComment(root).indexOf("|rootv=3|") < 0;
+                markerComment(root).indexOf("|rootv=4|") < 0;
         }
         if (needsUpgrade) {
             prepareNull(root);
             resetRootTransform(root, bindWorld, bindFrame);
+            var sampledBind = sampleLayerWorldTransform(root);
             setMarker(
                 root,
                 encodedRootMarker(
                     identityComment,
-                    bindWorld,
-                    bindFrame));
+                    sampledBind.world,
+                    sampledBind.frame));
         }
         if (parent && root.parent !== parent) {
             root.parent = parent;
@@ -713,7 +753,7 @@
             var rootsNeedUpgrade =
                 !existingSurfaceRoot ||
                 markerComment(existingSurfaceRoot)
-                    .indexOf("|rootv=3|") < 0;
+                    .indexOf("|rootv=4|") < 0;
             if (rootsNeedUpgrade) {
                 detachedPointNulls = findMarkedLayers(
                     comp,

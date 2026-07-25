@@ -78,7 +78,7 @@ PF_Err About(PF_OutData* out_data) {
 }
 
 PF_Err GlobalSetup(PF_InData* in_data, PF_OutData* out_data) {
-    out_data->my_version = PF_VERSION(1, 1, 5, PF_Stage_DEVELOP, 1);
+    out_data->my_version = PF_VERSION(1, 1, 6, PF_Stage_DEVELOP, 1);
     out_data->out_flags =
         PF_OutFlag_DEEP_COLOR_AWARE |
         PF_OutFlag_CUSTOM_UI |

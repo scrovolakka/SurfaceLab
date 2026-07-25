@@ -1650,7 +1650,9 @@ bool ParseRootControllerMarker(
     std::int64_t bind_y = 0;
     std::int64_t bind_z = 0;
     if (!ParseUnsignedField(marker, "rootv", root_version) ||
-        (root_version != 2 && root_version != 3) ||
+        (root_version != 2 &&
+         root_version != 3 &&
+         root_version != 4) ||
         !ParseUnsignedField(
             marker, "host", controller.host_layer_id) ||
         !ParseSignedField(marker, "bindx", bind_x) ||
@@ -1667,7 +1669,7 @@ bool ParseRootControllerMarker(
     controller.bind_transform.tx = controller.bind_world.x;
     controller.bind_transform.ty = controller.bind_world.y;
     controller.bind_transform.tz = controller.bind_world.z;
-    if (root_version == 3) {
+    if (root_version >= 3) {
         constexpr std::array<std::string_view, 9> kBasisFields{
             "bxx", "bxy", "bxz",
             "byx", "byy", "byz",

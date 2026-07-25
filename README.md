@@ -3,7 +3,7 @@
 SurfaceLab is an After Effects native effect for placing and deforming flat
 sources in 3D with an interpolating control-point lattice.
 
-Current version: **1.1.5** (v1 architecture).  
+Current version: **1.1.6** (v1 architecture).
 Match name: `XPK SurfaceLab` · Effect menu: **SurfaceLab > SurfaceLab**.
 
 v1 is a clean break from the 0.x prototype. Older projects are not migrated.
@@ -71,9 +71,10 @@ from `File > Scripts > Run Script File…`. Choose a surface and issue all
 points, the perimeter, one row, one column, or one point.
 
 - Optional **Surface Root** is created at the evaluated cage center and aligned
-  to the surface’s current world-space frame. Its bind transform is stored so
-  the initial orientation is neutral and later Root motion stays a rigid
-  whole-surface transform. SurfaceLab does not create a Scene Root.
+  to the surface’s current world-space frame. Its exact AE world transform is
+  sampled and stored as the bind frame, so the initial orientation is neutral
+  and later Root motion stays a rigid whole-surface transform. SurfaceLab does
+  not create a Scene Root.
 - Each 3D Point Null is linked by a **layer marker** containing the host layer
   ID, the persistent 64-bit Surface ID, and the lattice row/column. Layer names
   and timeline order are for readability only.
@@ -156,4 +157,6 @@ transform inversion, and shutter-subframe timing.
 Marker-identified Null issuance and live 3D point overrides have been
 integration-tested in After Effects 2026. Motion blur was verified with a
 marker-linked Null animated across two frames at a 360° shutter and 16 samples
-per frame, including an explicit Motion Blur OFF/ON comparison.
+per frame, including an explicit Motion Blur OFF/ON comparison. Oriented Point
+Null and Surface Root issuance, Scene Root removal, and rigid Root
+translation/rotation were also verified in AE 2026.
