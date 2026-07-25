@@ -177,3 +177,29 @@ Point3 EvaluateLatticeNormal(
     const LatticeData& lattice,
     double u,
     double v);
+
+// Procedural paper-roll deform in cage-local space. angle_degrees == 0 is an
+// identity. Positive angle rolls the +X side (after tilt) onto +Z. radius is
+// the base cylinder radius; expand_per_turn grows the radius each full turn
+// for spiral packing. origin_x is the roll-start edge in the tilted frame.
+struct SurfaceRollParams {
+    double angle_degrees{};
+    double tilt_degrees{};
+    double radius{200.0};
+    double expand_per_turn{};
+    double origin_x{};
+};
+
+bool LatticeCageBounds(
+    const LatticeData& lattice,
+    Point3& minimum,
+    Point3& maximum);
+
+// origin_x for a given tilt: minimum of tilted-frame X over lattice corners.
+double RollOriginXForLattice(
+    const LatticeData& lattice,
+    double tilt_degrees);
+
+Point3 ApplySurfaceRoll(
+    Point3 cage_point,
+    const SurfaceRollParams& roll);

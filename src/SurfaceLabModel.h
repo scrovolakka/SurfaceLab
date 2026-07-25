@@ -128,6 +128,11 @@ struct SurfaceData {
     float diffuse{100.0F};
     float specular{};
     float shininess{32.0F};
+    // Procedural roll layer (degrees / cage units). Not part of lattice wire.
+    float roll_angle{};
+    float roll_tilt{};
+    float roll_radius{200.0F};
+    float roll_expand{};
     LatticeData lattice{};
     std::uint16_t mesh_quality{4};
     std::uint16_t reserved{};

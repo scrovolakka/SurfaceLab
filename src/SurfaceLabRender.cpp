@@ -836,6 +836,21 @@ SurfaceEvaluationState BuildSurfaceEvaluationState(
     state.deform_extent_x = std::max(1.0e-6, maximum_x - minimum_x);
     state.deform_extent_y = std::max(1.0e-6, maximum_y - minimum_y);
     state.half_thickness = 0.0;
+    // Roll is a cage-local evaluation layer applied after lattice sampling and
+    // before surface scale/rotate. Origin is measured on the already-centered
+    // evaluation lattice so gizmo and render share one frame.
+    state.roll.angle_degrees = surface.roll_angle;
+    state.roll.tilt_degrees = surface.roll_tilt;
+    state.roll.radius = std::max(
+        1.0e-6,
+        static_cast<double>(surface.roll_radius) *
+            std::max(1.0e-6, render_scale_x));
+    state.roll.expand_per_turn =
+        static_cast<double>(surface.roll_expand) *
+        std::max(1.0e-6, render_scale_x);
+    state.roll.origin_x = RollOriginXForLattice(
+        state.lattice,
+        surface.roll_tilt);
     return state;
 }
 
@@ -845,6 +860,7 @@ Point3 EvaluateTransformedPoint(
     double u,
     double v) {
     Point3 point = EvaluateLattice(state.lattice, u, v);
+    point = ApplySurfaceRoll(point, state.roll);
     point = ScaleSurfaceCagePoint(point, state.coordinate_transform);
     point = RotateSurfaceWorldPoint(point, state.coordinate_transform);
     if (state.root_transform_enabled) {

@@ -12,7 +12,7 @@
 #include <cstdint>
 
 constexpr std::uint32_t kSurfaceCount = 8;
-constexpr PF_ParamIndex kSurfaceParameterStride = 14;
+constexpr PF_ParamIndex kSurfaceParameterStride = 18;
 constexpr PF_ParamIndex kRigBridgeCoordinateCount = 17 * 3;
 
 enum SurfaceParamOffset : PF_ParamIndex {
@@ -28,6 +28,10 @@ enum SurfaceParamOffset : PF_ParamIndex {
     kSurfaceDivisionsXOffset,
     kSurfaceDivisionsYOffset,
     kSurfaceMeshQualityOffset,
+    kSurfaceRollAngleOffset,
+    kSurfaceRollTiltOffset,
+    kSurfaceRollRadiusOffset,
+    kSurfaceRollExpandOffset,
     kSurfaceLatticeOffset,
     kSurfaceTopicEndOffset
 };

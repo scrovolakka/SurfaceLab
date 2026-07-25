@@ -1096,6 +1096,41 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
             4,
             SurfaceDiskId(surface, kSurfaceMeshQualityOffset));
 
+        AEFX_CLR_STRUCT(def);
+        PF_ADD_ANGLE(
+            "Roll Angle",
+            0.0,
+            SurfaceDiskId(surface, kSurfaceRollAngleOffset));
+        AEFX_CLR_STRUCT(def);
+        PF_ADD_ANGLE(
+            "Roll Tilt",
+            0.0,
+            SurfaceDiskId(surface, kSurfaceRollTiltOffset));
+        AEFX_CLR_STRUCT(def);
+        PF_ADD_FLOAT_SLIDERX(
+            "Roll Radius",
+            1.0,
+            10000.0,
+            10.0,
+            2000.0,
+            200.0,
+            PF_Precision_TENTHS,
+            PF_ValueDisplayFlag_NONE,
+            PF_ParamFlag_NONE,
+            SurfaceDiskId(surface, kSurfaceRollRadiusOffset));
+        AEFX_CLR_STRUCT(def);
+        PF_ADD_FLOAT_SLIDERX(
+            "Roll Expand / Turn",
+            0.0,
+            10000.0,
+            0.0,
+            1000.0,
+            0.0,
+            PF_Precision_TENTHS,
+            PF_ValueDisplayFlag_NONE,
+            PF_ParamFlag_NONE,
+            SurfaceDiskId(surface, kSurfaceRollExpandOffset));
+
         PF_ArbitraryH default_lattice = nullptr;
         error = CreateLatticeHandle(
             in_data,

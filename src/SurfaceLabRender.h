@@ -46,6 +46,7 @@ struct SurfaceEvaluationState {
     double rotation_y{};
     double rotation_z{};
     double half_thickness{};
+    SurfaceRollParams roll{};
 };
 
 SurfaceEvaluationState BuildSurfaceEvaluationState(

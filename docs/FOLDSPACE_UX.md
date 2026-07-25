@@ -48,8 +48,8 @@ Priority key:
 | Multi-point → one Null | Line attach | Script row/col issue | Partial | A |
 | Surface Root rigid motion | Surface attach | Surface Root bind v4 | Partial | — |
 | Attach time offset | Yes | No | Nice | B |
-| Roll / spiral procedural bend | Core demo feature | Removed in v1 | **Must** | **B** |
-| Roll control Null animation | Create control layer | No | **Must** | B |
+| Roll / spiral procedural bend | Core demo feature | Per-surface Angle/Tilt/Radius/Expand | **Must** | B (done core) |
+| Roll control Null animation | Create control layer | No (keyframe params directly) | Nice | B later |
 | Front/back materials | Yes | Single source | **Must** | C |
 | Thickness + side faces | Yes | Fields unused | Nice | C |
 | Image fit / UV offset | Fit/Fill/Original + transform | Stretch only path | **Must** | C |
@@ -131,9 +131,9 @@ Make the lattice feel editable like a real tool.
 | **A1** | Docs + multi-select / multi-drag / selection draw | Done |
 | **A2** | Box select + line hit | Done |
 | **A3** | Translate gizmo at selection centroid | Done (rotate/scale later) |
-| **B1** | Attach relative offsets in render/gizmo | High |
-| **B2** | Roll model + tests | Med |
-| **B3** | Roll UI + control Null script | Med |
+| **B1** | Attach relative offsets in render/gizmo | Pending |
+| **B2** | Roll model + tests | Done |
+| **B3** | Roll UI params (control Null later) | Done (params) |
 | **C1** | Back material + image modes | Med |
 
 Do not land B/C on top of half-finished A gizmos without golden-scene smoke.

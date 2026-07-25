@@ -78,7 +78,7 @@ PF_Err About(PF_OutData* out_data) {
 }
 
 PF_Err GlobalSetup(PF_InData* in_data, PF_OutData* out_data) {
-    out_data->my_version = PF_VERSION(1, 1, 6, PF_Stage_DEVELOP, 1);
+    out_data->my_version = PF_VERSION(1, 2, 0, PF_Stage_DEVELOP, 1);
     out_data->out_flags =
         PF_OutFlag_DEEP_COLOR_AWARE |
         PF_OutFlag_CUSTOM_UI |
@@ -417,6 +417,20 @@ SceneData ResolveSceneForFrame(
                     ->u.sd.value,
                 kMinimumMeshQuality,
                 kMaximumMeshQuality));
+        surface.roll_angle = static_cast<float>(FIX_2_FLOAT(
+            params[SurfaceParam(index, kSurfaceRollAngleOffset)]
+                ->u.ad.value));
+        surface.roll_tilt = static_cast<float>(FIX_2_FLOAT(
+            params[SurfaceParam(index, kSurfaceRollTiltOffset)]
+                ->u.ad.value));
+        surface.roll_radius = static_cast<float>(std::max(
+            1.0,
+            params[SurfaceParam(index, kSurfaceRollRadiusOffset)]
+                ->u.fs_d.value));
+        surface.roll_expand = static_cast<float>(std::max(
+            0.0,
+            params[SurfaceParam(index, kSurfaceRollExpandOffset)]
+                ->u.fs_d.value));
         const PF_Handle handle =
             params[SurfaceLatticeParam(index)]->u.arb_d.value;
         if (handle) {

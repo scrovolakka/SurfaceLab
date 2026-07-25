@@ -374,6 +374,43 @@ void TestSubframeSampleTimes() {
     CHECK(BuildSubframeSampleTimes(100, 1, 0.5, -0.25, 32).size() == 1);
 }
 
+void TestSurfaceRollIdentityAndCylinder() {
+    LatticeData lattice{};
+    InitializeLattice(lattice, 4, 1, 400.0, 100.0, 9);
+    const double origin = RollOriginXForLattice(lattice, 0.0);
+    CHECK(Near(origin, 0.0, 1.0e-4));
+
+    SurfaceRollParams identity{
+        0.0,
+        0.0,
+        100.0,
+        0.0,
+        origin};
+    const Point3 flat = ApplySurfaceRoll({200.0, 50.0, 0.0}, identity);
+    CHECK(Near(flat.x, 200.0));
+    CHECK(Near(flat.y, 50.0));
+    CHECK(Near(flat.z, 0.0));
+
+    // One quarter turn of a radius-100 cylinder maps arc 50pi/2? 
+    // rolled_length for 90deg = radius * pi/2 ≈ 157.08
+    // Point at arc 0 stays put; point at arc = radius*(pi/2) sits at top.
+    SurfaceRollParams quarter{
+        90.0,
+        0.0,
+        100.0,
+        0.0,
+        origin};
+    const Point3 start = ApplySurfaceRoll({0.0, 25.0, 0.0}, quarter);
+    CHECK(Near(start.x, 0.0, 1.0e-4));
+    CHECK(Near(start.z, 0.0, 1.0e-4));
+    const double arc_top = 100.0 * 0.5 * 3.14159265358979323846;
+    const Point3 top =
+        ApplySurfaceRoll({arc_top, 25.0, 0.0}, quarter);
+    CHECK(Near(top.x, 100.0, 1.0e-3));
+    CHECK(Near(top.y, 25.0, 1.0e-3));
+    CHECK(Near(top.z, 100.0, 1.0e-3));
+}
+
 }  // namespace
 
 int main() {
@@ -391,6 +428,7 @@ int main() {
     TestRootTransformConjugatesThroughScene();
     TestSurfacePositionIsNotDownsampledTwice();
     TestSubframeSampleTimes();
+    TestSurfaceRollIdentityAndCylinder();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

@@ -3,7 +3,7 @@
 SurfaceLab is an After Effects native effect for placing and deforming flat
 sources in 3D with an interpolating control-point lattice.
 
-Current version: **1.1.6** (v1 architecture).
+Current version: **1.2.0** (v1 architecture).
 Match name: `XPK SurfaceLab` · Effect menu: **SurfaceLab > SurfaceLab**.
 
 v1 is a clean break from the 0.x prototype. Older projects are not migrated.
@@ -46,6 +46,9 @@ to issue 3D Null point controllers for a surface.
   explicit big-endian, active-points-only wire format (`SLV1` schema).
 - Mesh Quality only changes tessellation density per lattice interval; it never
   rewrites lattice data.
+- Each Surface has a procedural **Roll** layer (Angle, Tilt, Radius,
+  Expand/Turn) applied at evaluation time. Angle `0` is flat; animate Angle for
+  unroll-style motion without rewriting lattice keyframes.
 - Rendering uses the CPU SmartFX path for 8/16/32-bpc output, perspective-
   correct bilinear sampling, per-pixel depth, and **Render View** modes:
   Finish, Depth, UV, Normal.
