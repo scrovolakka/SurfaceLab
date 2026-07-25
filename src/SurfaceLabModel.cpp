@@ -438,12 +438,15 @@ bool IsValidScene(const SceneData& scene) {
             surface.image_border_mode < kImageBorderClamp ||
             surface.image_border_mode > kImageBorderTransparent ||
             !std::isfinite(surface.opacity) ||
+            !std::isfinite(surface.thickness) ||
             !std::isfinite(surface.diffuse) ||
             !std::isfinite(surface.specular) ||
             !std::isfinite(surface.metalness) ||
             !std::isfinite(surface.shininess) ||
             surface.opacity < 0.0F ||
             surface.opacity > 100.0F ||
+            surface.thickness < 0.0F ||
+            surface.thickness > 1000.0F ||
             surface.diffuse < 0.0F ||
             surface.diffuse > 100.0F ||
             surface.specular < 0.0F ||

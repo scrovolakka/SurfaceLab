@@ -433,7 +433,11 @@ SceneData ResolveSceneForFrame(
         // Blinn-Phong exponent. Roughness 50 preserves the v1.2 look.
         surface.shininess = static_cast<float>(
             1.0 + std::pow(1.0 - roughness, 3.0) * 248.0);
-        surface.thickness = 0.0F;
+        surface.thickness = static_cast<float>(std::clamp(
+            params[SurfaceParam(index, kSurfaceThicknessOffset)]
+                ->u.fs_d.value,
+            0.0,
+            1000.0));
         surface.transform_mode = 1;
         const PF_Point3DDef& position =
             params[SurfaceParam(index, kSurfacePositionOffset)]

@@ -1093,7 +1093,11 @@ SurfaceEvaluationState BuildSurfaceEvaluationState(
     state.rotation_origin_z = transform.rotation_origin.z;
     state.deform_extent_x = std::max(1.0e-6, maximum_x - minimum_x);
     state.deform_extent_y = std::max(1.0e-6, maximum_y - minimum_y);
-    state.half_thickness = 0.0;
+    state.half_thickness =
+        std::max(0.0, static_cast<double>(surface.thickness)) *
+        std::max(1.0e-6, render_scale_z) *
+        std::abs(transform.scale.z) *
+        0.5;
     // Roll is a cage-local evaluation layer applied after lattice sampling and
     // before surface scale/rotate. Origin is measured on the already-centered
     // evaluation lattice so gizmo and render share one frame.
@@ -1280,9 +1284,13 @@ ShadowScene BuildShadowScene(
         const int divisions_y =
             std::max<int>(1, surface.lattice.divisions_y * quality);
         const int stride = divisions_x + 1;
-        std::vector<Point3> vertices(
+        const bool has_thickness =
+            evaluation.half_thickness > 1.0e-6;
+        std::vector<Point3> front_vertices(
             static_cast<std::size_t>(divisions_x + 1) *
             static_cast<std::size_t>(divisions_y + 1));
+        std::vector<Point3> back_vertices(
+            has_thickness ? front_vertices.size() : 0U);
         for (int row = 0; row <= divisions_y; ++row) {
             const double v =
                 static_cast<double>(row) / divisions_y;
@@ -1294,37 +1302,132 @@ ShadowScene BuildShadowScene(
                     evaluation,
                     u,
                     v);
-                vertices[static_cast<std::size_t>(
-                    row * stride + column)] =
+                Point3 front_point = point;
+                Point3 back_point = point;
+                if (has_thickness) {
+                    const Point3 normal = EvaluateSurfaceNormal(
+                        surface,
+                        evaluation,
+                        u,
+                        v);
+                    front_point.x -=
+                        normal.x * evaluation.half_thickness;
+                    front_point.y -=
+                        normal.y * evaluation.half_thickness;
+                    front_point.z -=
+                        normal.z * evaluation.half_thickness;
+                    back_point.x +=
+                        normal.x * evaluation.half_thickness;
+                    back_point.y +=
+                        normal.y * evaluation.half_thickness;
+                    back_point.z +=
+                        normal.z * evaluation.half_thickness;
+                }
+                const std::size_t vertex_index =
+                    static_cast<std::size_t>(
+                        row * stride + column);
+                front_vertices[vertex_index] =
                     ApplyScenePointTransform(
-                        point,
+                        front_point,
                         camera.scene_transform);
+                if (has_thickness) {
+                    back_vertices[vertex_index] =
+                        ApplyScenePointTransform(
+                            back_point,
+                            camera.scene_transform);
+                }
             }
         }
-        for (int row = 0; row < divisions_y; ++row) {
-            for (int column = 0; column < divisions_x; ++column) {
-                const Point3& top_left =
-                    vertices[static_cast<std::size_t>(
-                        row * stride + column)];
-                const Point3& top_right =
-                    vertices[static_cast<std::size_t>(
-                        row * stride + column + 1)];
-                const Point3& bottom_left =
-                    vertices[static_cast<std::size_t>(
-                        (row + 1) * stride + column)];
-                const Point3& bottom_right =
-                    vertices[static_cast<std::size_t>(
-                        (row + 1) * stride + column + 1)];
-                AddShadowTriangle(
-                    shadow_scene,
-                    top_left,
-                    top_right,
-                    bottom_right);
-                AddShadowTriangle(
-                    shadow_scene,
-                    top_left,
-                    bottom_right,
-                    bottom_left);
+
+        const auto add_quad = [&](const Point3& top_left,
+                                  const Point3& top_right,
+                                  const Point3& bottom_right,
+                                  const Point3& bottom_left) {
+            AddShadowTriangle(
+                shadow_scene,
+                top_left,
+                top_right,
+                bottom_right);
+            AddShadowTriangle(
+                shadow_scene,
+                top_left,
+                bottom_right,
+                bottom_left);
+        };
+        const auto add_grid =
+            [&](const std::vector<Point3>& vertices) {
+                for (int row = 0; row < divisions_y; ++row) {
+                    for (int column = 0;
+                         column < divisions_x;
+                         ++column) {
+                        const Point3& top_left =
+                            vertices[static_cast<std::size_t>(
+                                row * stride + column)];
+                        const Point3& top_right =
+                            vertices[static_cast<std::size_t>(
+                                row * stride + column + 1)];
+                        const Point3& bottom_left =
+                            vertices[static_cast<std::size_t>(
+                                (row + 1) * stride + column)];
+                        const Point3& bottom_right =
+                            vertices[static_cast<std::size_t>(
+                                (row + 1) * stride + column + 1)];
+                        add_quad(
+                            top_left,
+                            top_right,
+                            bottom_right,
+                            bottom_left);
+                    }
+                }
+            };
+        add_grid(front_vertices);
+        if (has_thickness) {
+            add_grid(back_vertices);
+            for (int column = 0;
+                 column < divisions_x;
+                 ++column) {
+                const std::size_t top_left =
+                    static_cast<std::size_t>(column);
+                const std::size_t top_right = top_left + 1U;
+                add_quad(
+                    front_vertices[top_left],
+                    front_vertices[top_right],
+                    back_vertices[top_right],
+                    back_vertices[top_left]);
+
+                const std::size_t bottom_left =
+                    static_cast<std::size_t>(
+                        divisions_y * stride + column);
+                const std::size_t bottom_right = bottom_left + 1U;
+                add_quad(
+                    front_vertices[bottom_left],
+                    back_vertices[bottom_left],
+                    back_vertices[bottom_right],
+                    front_vertices[bottom_right]);
+            }
+            for (int row = 0; row < divisions_y; ++row) {
+                const std::size_t left_top =
+                    static_cast<std::size_t>(row * stride);
+                const std::size_t left_bottom =
+                    static_cast<std::size_t>(
+                        (row + 1) * stride);
+                add_quad(
+                    front_vertices[left_top],
+                    back_vertices[left_top],
+                    back_vertices[left_bottom],
+                    front_vertices[left_bottom]);
+
+                const std::size_t right_top =
+                    static_cast<std::size_t>(
+                        row * stride + divisions_x);
+                const std::size_t right_bottom =
+                    static_cast<std::size_t>(
+                        (row + 1) * stride + divisions_x);
+                add_quad(
+                    front_vertices[right_top],
+                    front_vertices[right_bottom],
+                    back_vertices[right_bottom],
+                    back_vertices[right_top]);
             }
         }
     }
@@ -3349,7 +3452,7 @@ PF_Err CheckoutSmartRenderParameters(
          surface < kSurfaceCount;
         ++surface) {
         for (PF_ParamIndex offset = kSurfaceSourceOffset;
-             offset <= kSurfaceMetalnessOffset;
+             offset <= kSurfaceThicknessOffset;
              ++offset) {
             const PF_Err error = CheckoutSmartParameter(
                 in_data,
@@ -3740,6 +3843,7 @@ std::vector<double> BuildExternalStateDigest(
         digest.push_back(static_cast<double>(surface.image_size_mode));
         digest.push_back(static_cast<double>(surface.image_border_mode));
         digest.push_back(surface.opacity);
+        digest.push_back(surface.thickness);
         digest.push_back(surface.diffuse);
         digest.push_back(surface.specular);
         digest.push_back(surface.metalness);

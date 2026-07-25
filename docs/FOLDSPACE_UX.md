@@ -50,9 +50,9 @@ Priority key:
 | Attach time offset | Yes | No | Nice | B |
 | Roll / spiral procedural bend | Core demo feature | Per-surface Angle/Tilt/Radius/Expand | **Must** | B (done core) |
 | Roll control Null animation | Create control layer | No (keyframe params directly) | Nice | B later |
-| Front/back materials | Yes | Single source | **Must** | C |
-| Thickness + side faces | Yes | Fields unused | Nice | C |
-| Image fit / UV offset | Fit/Fill/Original + transform | Stretch only path | **Must** | C |
+| Front/back materials | Yes | Separate front/back sources | **Must** | C (done) |
+| Thickness + side faces | Yes | Front/back + perimeter sides | Nice | C (done) |
+| Image fit / UV offset | Fit/Fill/Original + transform | Stretch/Fill/Fit; UV transform later | **Must** | C |
 | Texture time modes | Still / layer / source | Host time only | Nice | C |
 | Ribbon chaining via shared Nulls | Explicit workflow | Manual possible | Nice | D |
 | AE camera + lights | Default + optional internal | AE only | Have / Skip internal | E |
@@ -111,7 +111,7 @@ Make the lattice feel editable like a real tool.
 
 1. Back source (layer; use an AE Solid for color) — done
 2. Image size modes — done; UV/image transform remains
-3. Optional thickness (front/back first; sides next)
+3. Optional thickness (front/back + sides) — done
 4. Specular + roughness + metalness controls — done
 5. AE-light hard shadows (self + cross-surface) — done
 6. Shadow diffusion / soft sampling — done

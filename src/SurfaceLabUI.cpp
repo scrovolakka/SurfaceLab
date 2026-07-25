@@ -1349,6 +1349,19 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
             SurfaceDiskId(surface, kSurfaceMetalnessOffset));
 
         AEFX_CLR_STRUCT(def);
+        PF_ADD_FLOAT_SLIDERX(
+            "Thickness",
+            0.0,
+            1000.0,
+            0.0,
+            500.0,
+            0.0,
+            PF_Precision_TENTHS,
+            PF_ValueDisplayFlag_NONE,
+            PF_ParamFlag_NONE,
+            SurfaceDiskId(surface, kSurfaceThicknessOffset));
+
+        AEFX_CLR_STRUCT(def);
         PF_END_TOPIC(
             SurfaceDiskId(surface, kSurfaceTopicEndOffset));
     }

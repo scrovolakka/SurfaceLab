@@ -14,11 +14,11 @@
 // Keep these in lockstep with CMake project VERSION and SurfaceLabPiPL.r.
 constexpr A_short kSurfaceLabVersionMajor = 1;
 constexpr A_short kSurfaceLabVersionMinor = 3;
-constexpr A_short kSurfaceLabVersionPatch = 3;
-constexpr const char* kSurfaceLabVersionString = "1.3.3";
+constexpr A_short kSurfaceLabVersionPatch = 4;
+constexpr const char* kSurfaceLabVersionString = "1.3.4";
 
 constexpr std::uint32_t kSurfaceCount = 8;
-constexpr PF_ParamIndex kSurfaceParameterStride = 23;
+constexpr PF_ParamIndex kSurfaceParameterStride = 24;
 // The hidden script bridge uses one 3D Point per lattice column. Keeping XYZ
 // in one parameter leaves room under AE's 255-parameter effect limit.
 constexpr PF_ParamIndex kRigBridgePointCount = 17;
@@ -46,6 +46,7 @@ enum SurfaceParamOffset : PF_ParamIndex {
     kSurfaceSpecularOffset,
     kSurfaceRoughnessOffset,
     kSurfaceMetalnessOffset,
+    kSurfaceThicknessOffset,
     kSurfaceTopicEndOffset
 };
 

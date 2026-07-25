@@ -3,7 +3,7 @@
 SurfaceLab is an After Effects native effect for placing and deforming flat
 sources in 3D with an interpolating control-point lattice.
 
-Current version: **1.3.3** (v1 architecture).
+Current version: **1.3.4** (v1 architecture).
 Match name: `XPK SurfaceLab` · Effect menu: **SurfaceLab > SurfaceLab**.
 The installed build is shown in Effect Controls under **About → SurfaceLab Version**.
 
@@ -38,6 +38,7 @@ to issue 3D Null point controllers for a surface.
   - Front Source layer and optional Back Source layer
   - Image Size (Stretch, Fill, Fit)
   - Specular, Roughness, and Metalness
+  - Optional Thickness with front, back, and side faces
   - Position, Rotation XYZ, Scale XYZ
   - Divisions X/Y (1–16 each)
   - Mesh Quality (1–8)
@@ -72,8 +73,8 @@ to issue 3D Null point controllers for a surface.
 - Foldspace-oriented interaction work is tracked in
   [docs/FOLDSPACE_UX.md](docs/FOLDSPACE_UX.md).
 
-Removed from 0.x: internal camera/light, surface list, thickness,
-bend/curl/twist, border modes, rotation-origin modes, output-bounds modes,
+Removed from 0.x: internal camera/light, surface list, bend/curl/twist,
+border modes, rotation-origin modes, output-bounds modes,
 migration chain, and hidden animation banks.
 
 Module boundaries are documented in [docs/DECOMPOSITION.md](docs/DECOMPOSITION.md).
