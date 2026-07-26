@@ -2,6 +2,7 @@
 
 #include "AEGP_SuiteHandler.h"
 #include "AEFX_SuiteHelper.h"
+#include "SurfaceLabMetal.h"
 #include "SurfaceLabRender.h"
 #include <adobesdk/DrawbotSuite.h>
 
@@ -2378,8 +2379,10 @@ PF_Err UserChangedParam(
                 out_data->return_msg,
                 sizeof(out_data->return_msg),
                 "SurfaceLab %s\n3D interpolating control-point lattice\n"
-                "Effect UI and Comp gizmo build identity.",
-                kSurfaceLabVersionString);
+                "Metal device: %s\n"
+                "Frame raster: CPU SmartFX.",
+                kSurfaceLabVersionString,
+                IsMetalDeviceReady(in_data) ? "ready" : "CPU fallback");
             out_data->out_flags |= PF_OutFlag_DISPLAY_ERROR_MESSAGE;
         }
         return PF_Err_NONE;
@@ -2417,6 +2420,50 @@ PF_Err UpdateParameterUi(
     PF_InData* in_data,
     PF_OutData*,
     PF_ParamDef* params[]) {
+    char version_name[32]{};
+#if SURFACELAB_METAL_DIAGNOSTIC_COPY
+    const auto* global =
+        in_data
+            ? reinterpret_cast<const GlobalData*>(
+                  in_data->global_data)
+            : nullptr;
+    const unsigned int gpu_calls =
+        global
+            ? global->metal_gpu_render_calls.load(
+                  std::memory_order_relaxed)
+            : 0U;
+    std::snprintf(
+        version_name,
+        sizeof(version_name),
+        "SurfaceLab %s | Metal G%u",
+        kSurfaceLabVersionString,
+        gpu_calls);
+#else
+    std::snprintf(
+        version_name,
+        sizeof(version_name),
+        "SurfaceLab %s | %s",
+        kSurfaceLabVersionString,
+        IsMetalDeviceReady(in_data) ? "Metal Ready" : "CPU");
+#endif
+    if (std::strncmp(
+            params[kParamAboutVersion]->PF_DEF_NAME,
+            version_name,
+            sizeof(params[kParamAboutVersion]->PF_DEF_NAME)) != 0) {
+        PF_STRNNCPY(
+            params[kParamAboutVersion]->PF_DEF_NAME,
+            version_name,
+            sizeof(params[kParamAboutVersion]->PF_DEF_NAME));
+        AEGP_SuiteHandler suites(in_data->pica_basicP);
+        const PF_Err version_error =
+            suites.ParamUtilsSuite3()->PF_UpdateParamUI(
+                in_data->effect_ref,
+                kParamAboutVersion,
+                params[kParamAboutVersion]);
+        if (version_error != PF_Err_NONE) {
+            return version_error;
+        }
+    }
     for (std::uint32_t surface = 0; surface < kSurfaceCount; ++surface) {
         const PF_Err ui_error =
             UpdateSurfaceSlotUi(in_data, params, surface);

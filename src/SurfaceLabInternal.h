@@ -6,11 +6,14 @@
 #include "SurfaceLabModel.h"
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 
 struct GlobalData {
     AEGP_PluginID plugin_id{};
+    std::atomic_uint metal_devices_ready{};
+    std::atomic_uint metal_gpu_render_calls{};
 };
 
 constexpr A_long kTextureFilterBilinear = 2;

@@ -3,6 +3,7 @@
 #include "AEGP_SuiteHandler.h"
 #include "AEFX_SuiteHelper.h"
 #include "SurfaceLabInternal.h"
+#include "SurfaceLabMetal.h"
 #include "SurfaceLabRender.h"
 #include "SurfaceLabUI.h"
 
@@ -69,12 +70,14 @@ PF_Err CopyLatticeHandle(
     return PF_Err_NONE;
 }
 
-PF_Err About(PF_OutData* out_data) {
+PF_Err About(PF_InData* in_data, PF_OutData* out_data) {
     std::snprintf(
         out_data->return_msg,
         sizeof(out_data->return_msg),
-        "SurfaceLab %s\r3D interpolating control-point lattice",
-        kSurfaceLabVersionString);
+        "SurfaceLab %s\r3D interpolating control-point lattice\r"
+        "Metal device: %s",
+        kSurfaceLabVersionString,
+        IsMetalDeviceReady(in_data) ? "ready" : "CPU fallback");
     return PF_Err_NONE;
 }
 
@@ -98,6 +101,7 @@ PF_Err GlobalSetup(PF_InData* in_data, PF_OutData* out_data) {
         PF_OutFlag2_I_USE_3D_LIGHTS |
         PF_OutFlag2_FLOAT_COLOR_AWARE |
         PF_OutFlag2_SUPPORTS_SMART_RENDER |
+        PF_OutFlag2_SUPPORTS_GPU_RENDER_F32 |
         PF_OutFlag2_I_MIX_GUID_DEPENDENCIES |
         PF_OutFlag2_SUPPORTS_THREADED_RENDERING;
 
@@ -567,13 +571,23 @@ extern "C" DllExport PF_Err EffectMain(
     try {
         switch (cmd) {
             case PF_Cmd_ABOUT:
-                return About(out_data);
+                return About(in_data, out_data);
             case PF_Cmd_GLOBAL_SETUP:
                 return GlobalSetup(in_data, out_data);
             case PF_Cmd_GLOBAL_SETDOWN:
                 return GlobalSetdown(in_data);
             case PF_Cmd_PARAMS_SETUP:
                 return ParamsSetup(in_data, out_data);
+            case PF_Cmd_GPU_DEVICE_SETUP:
+                return SetupMetalDevice(
+                    in_data,
+                    out_data,
+                    static_cast<PF_GPUDeviceSetupExtra*>(extra));
+            case PF_Cmd_GPU_DEVICE_SETDOWN:
+                return SetdownMetalDevice(
+                    in_data,
+                    out_data,
+                    static_cast<PF_GPUDeviceSetdownExtra*>(extra));
             case PF_Cmd_FRAME_SETUP:
                 return FrameSetup(in_data, out_data, params);
             case PF_Cmd_RENDER:
@@ -585,6 +599,11 @@ extern "C" DllExport PF_Err EffectMain(
                     static_cast<PF_PreRenderExtra*>(extra));
             case PF_Cmd_SMART_RENDER:
                 return SmartRender(
+                    in_data,
+                    out_data,
+                    static_cast<PF_SmartRenderExtra*>(extra));
+            case PF_Cmd_SMART_RENDER_GPU:
+                return RenderMetalDiagnosticCopy(
                     in_data,
                     out_data,
                     static_cast<PF_SmartRenderExtra*>(extra));

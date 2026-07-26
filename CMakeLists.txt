@@ -2,13 +2,17 @@ cmake_minimum_required(VERSION 3.25)
 
 set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum supported macOS version")
 
-project(SurfaceLab VERSION 1.5.0 LANGUAGES C CXX)
+project(SurfaceLab VERSION 1.5.1 LANGUAGES C CXX OBJCXX)
 
 # The After Effects plug-in is macOS-only and needs the licensed AE SDK. The
 # scene-model unit tests are host-independent and build anywhere, so they are a
 # separate, opt-in target that does not require the SDK.
 option(SURFACELAB_BUILD_PLUGIN "Build the After Effects plug-in (macOS only)" ON)
 option(SURFACELAB_BUILD_TESTS "Build the host-independent model unit tests" OFF)
+option(
+    SURFACELAB_METAL_DIAGNOSTIC_COPY
+    "Route GPU SmartFX through a visible Metal copy/tint plumbing test"
+    OFF)
 
 if(SURFACELAB_BUILD_PLUGIN)
 
@@ -29,12 +33,14 @@ add_library(SurfaceLab MODULE
     src/SurfaceLab.cpp
     src/SurfaceLabModel.cpp
     src/SurfaceLabGeometry.cpp
+    src/SurfaceLabMetal.mm
     src/SurfaceLabRender.cpp
     src/SurfaceLabUI.cpp
     src/SurfaceLab.h
     src/SurfaceLabModel.h
     src/SurfaceLabGeometry.h
     src/SurfaceLabInternal.h
+    src/SurfaceLabMetal.h
     src/SurfaceLabRender.h
     src/SurfaceLabUI.h
     "${AE_EXAMPLES_ROOT}/Util/AEFX_SuiteHelper.c"
@@ -48,6 +54,9 @@ set_property(SOURCE src/SurfaceLab.cpp APPEND PROPERTY OBJECT_DEPENDS
 
 target_compile_features(SurfaceLab PRIVATE cxx_std_17)
 target_compile_definitions(SurfaceLab PRIVATE __MACH__=1)
+target_compile_definitions(
+    SurfaceLab PRIVATE
+    SURFACELAB_METAL_DIAGNOSTIC_COPY=$<BOOL:${SURFACELAB_METAL_DIAGNOSTIC_COPY}>)
 target_compile_options(SurfaceLab PRIVATE
     -fvisibility=hidden
     -Wall
@@ -58,7 +67,9 @@ target_include_directories(SurfaceLab PRIVATE
     "${AE_EXAMPLES_ROOT}/Headers/SP"
     "${AE_EXAMPLES_ROOT}/Util"
     "${AE_EXAMPLES_ROOT}/Resources")
-target_link_libraries(SurfaceLab PRIVATE "-framework Cocoa")
+target_link_libraries(SurfaceLab PRIVATE
+    "-framework Cocoa"
+    "-framework Metal")
 
 set_target_properties(SurfaceLab PROPERTIES
     PREFIX ""

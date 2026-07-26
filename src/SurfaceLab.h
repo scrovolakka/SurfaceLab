@@ -14,14 +14,14 @@
 // Keep these in lockstep with CMake project VERSION and SurfaceLabPiPL.r.
 constexpr A_short kSurfaceLabVersionMajor = 1;
 constexpr A_short kSurfaceLabVersionMinor = 5;
-constexpr A_short kSurfaceLabVersionPatch = 0;
-constexpr const char* kSurfaceLabVersionString = "1.5.0";
+constexpr A_short kSurfaceLabVersionPatch = 1;
+constexpr const char* kSurfaceLabVersionString = "1.5.1";
 
 constexpr std::uint32_t kSurfaceCount = 8;
 constexpr PF_ParamIndex kSurfaceParameterStride = 26;
 // The hidden script bridge uses one 3D Point per lattice column. Request and
-// metadata are packed into two more Point3D streams so the whole effect stays
-// below AE's 255-parameter limit without touching authored Surface streams.
+// metadata are packed into two more Point3D streams to keep the internal
+// transport compact without touching authored Surface streams.
 constexpr PF_ParamIndex kRigBridgePointCount = 17;
 
 enum SurfaceParamOffset : PF_ParamIndex {
@@ -157,10 +157,9 @@ constexpr A_long SurfaceDiskId(
            persisted_offset;
 }
 
-static_assert(kParamCount <= 255, "After Effects supports at most 255 params");
 static_assert(
     kParamCount == 245,
-    "The v1.5 compact Bridge should leave ten AE parameter slots free");
+    "Update the documented parameter layout after changing the schema");
 // SurfaceLabCreateNullRig.jsx addresses the hidden bridge by AE effect
 // property index. Keep these assertions beside the parameter layout so a
 // future UI addition cannot silently desynchronise the script.

@@ -1,6 +1,7 @@
 #include "SurfaceLab.h"
 #include "AEGP_SuiteHandler.h"
 #include "AEFX_SuiteHelper.h"
+#include "SurfaceLabMetal.h"
 
 #include <algorithm>
 #include <array>
@@ -3966,6 +3967,12 @@ PF_Err SmartPreRender(
     PF_PreRenderExtra* extra) {
     if (!in_data || !extra || !extra->input || !extra->output || !extra->cb) {
         return PF_Err_BAD_CALLBACK_PARAM;
+    }
+    if (MetalDiagnosticCopyEnabled(extra)) {
+        // Match the SDK GPU SmartFX contract: advertise before any layer
+        // checkout so AE can allocate GPU worlds for the whole render plan.
+        extra->output->flags |=
+            PF_RenderOutputFlag_GPU_RENDER_POSSIBLE;
     }
 
     PF_RenderRequest texture_request = extra->input->output_request;

@@ -125,7 +125,7 @@ Make the lattice feel editable like a real tool.
 ### Phase E — Performance / polish
 
 1. AA options — done (Off / 2 Samples / 4 Samples)
-2. Optional GPU path
+2. Optional GPU path — Metal device bootstrap done; frame raster port pending
 3. Internal camera/light only if AE defaults prove insufficient
 
 ## PR plan (branch `feature/foldspace-ux`)

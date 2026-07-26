@@ -1,7 +1,8 @@
 # SurfaceLab parameter layout
 
-SurfaceLab v1.5 registers **245** After Effects parameters, leaving ten slots
-under AE's 255-parameter limit.
+SurfaceLab v1.5 registers **245** After Effects parameters. Modern After
+Effects does not impose a 255-parameter limit; this exact count is documented
+for script indexing and saved-project compatibility, not as a capacity ceiling.
 
 | Block | Indices | Count |
 |---|---:|---:|

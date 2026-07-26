@@ -3,7 +3,7 @@
 SurfaceLab is an After Effects native effect for placing and deforming flat
 sources in 3D with an interpolating control-point lattice.
 
-Current version: **1.5.0** (v1 architecture).
+Current version: **1.5.1** (v1 architecture).
 Match name: `XPK SurfaceLab` · Effect menu: **SurfaceLab > SurfaceLab**.
 The installed build is shown in Effect Controls under **About → SurfaceLab Version**.
 
@@ -68,6 +68,13 @@ Additional workflow scripts:
 - Rendering uses the CPU SmartFX path for 8/16/32-bpc output, perspective-
   correct bilinear sampling, per-pixel depth, and **Render View** modes:
   Finish, Depth, UV, Normal.
+- On macOS, AE's Metal device setup now compiles and dispatch-validates a
+  device-local SurfaceLab pipeline. Frame rasterization intentionally remains
+  on the CPU SmartFX path until the Metal renderer reaches visual parity; AE
+  therefore keeps the existing CPU fallback for every frame.
+  Developers can configure `SURFACELAB_METAL_DIAGNOSTIC_COPY=ON` to route
+  GPU SmartFX through a visible copy/tint kernel that verifies GPU-world
+  buffers and padded `rowbytes`; this diagnostic is off in release builds.
 - Projection uses AE’s active camera layer, or AE’s implicit default camera
   when none exists. Lighting reads composition lights (up to 8). A light with
   **Casts Shadows** enabled produces self-shadows and shadows between
@@ -120,8 +127,10 @@ points, the perimeter, one row, one column, or one point.
   linked lattice point at the current frame.
 - The compact **Null Rig Bridge** is fully hidden internal script transport.
   v1.5 packs its request and metadata into two 3D Point streams, reducing the
-  effect from 255 to 245 parameters while leaving all authored Surface disk
-  IDs and property indices unchanged.
+  internal schema from 255 to 245 parameters while leaving all authored
+  Surface disk IDs and property indices unchanged. Modern After Effects does
+  not impose a 255-parameter limit; the compact form is retained because it is
+  simpler to maintain.
 
 ### Roll controller
 
