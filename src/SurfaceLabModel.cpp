@@ -405,6 +405,7 @@ void InitializeFlatSurface(
     surface.scale_x = 100.0F;
     surface.scale_y = 100.0F;
     surface.scale_z = 100.0F;
+    surface.image_scale = 100.0F;
     surface.opacity = 100.0F;
     surface.diffuse = 100.0F;
     surface.shininess = 32.0F;
@@ -438,12 +439,18 @@ bool IsValidScene(const SceneData& scene) {
             surface.image_size_mode > kImageSizeFit ||
             surface.image_border_mode < kImageBorderClamp ||
             surface.image_border_mode > kImageBorderTransparent ||
+            !std::isfinite(surface.image_position_x) ||
+            !std::isfinite(surface.image_position_y) ||
+            !std::isfinite(surface.image_rotation) ||
+            !std::isfinite(surface.image_scale) ||
             !std::isfinite(surface.opacity) ||
             !std::isfinite(surface.thickness) ||
             !std::isfinite(surface.diffuse) ||
             !std::isfinite(surface.specular) ||
             !std::isfinite(surface.metalness) ||
             !std::isfinite(surface.shininess) ||
+            surface.image_scale < 1.0F ||
+            surface.image_scale > 1000.0F ||
             surface.opacity < 0.0F ||
             surface.opacity > 100.0F ||
             surface.thickness < 0.0F ||
@@ -459,6 +466,42 @@ bool IsValidScene(const SceneData& scene) {
         }
     }
     return true;
+}
+
+Point2 TransformImageCoordinates(
+    const SurfaceData& surface,
+    double u,
+    double v) {
+    if (!std::isfinite(u) || !std::isfinite(v) ||
+        !std::isfinite(surface.image_position_x) ||
+        !std::isfinite(surface.image_position_y) ||
+        !std::isfinite(surface.image_rotation) ||
+        !std::isfinite(surface.image_scale) ||
+        surface.image_scale < 1.0F) {
+        return {
+            std::numeric_limits<double>::quiet_NaN(),
+            std::numeric_limits<double>::quiet_NaN()};
+    }
+    constexpr double kDegreesToRadians =
+        3.14159265358979323846 / 180.0;
+    const double radians =
+        static_cast<double>(surface.image_rotation) *
+        kDegreesToRadians;
+    const double cosine = std::cos(radians);
+    const double sine = std::sin(radians);
+    const double scale =
+        static_cast<double>(surface.image_scale) / 100.0;
+    const double translated_x =
+        u - 0.5 -
+        static_cast<double>(surface.image_position_x) / 100.0;
+    const double translated_y =
+        v - 0.5 -
+        static_cast<double>(surface.image_position_y) / 100.0;
+    // Inverse-map the authored image transform into source sampling space.
+    // AE's positive Z rotation is clockwise in screen coordinates (Y down).
+    return {
+        0.5 + (cosine * translated_x + sine * translated_y) / scale,
+        0.5 + (-sine * translated_x + cosine * translated_y) / scale};
 }
 
 std::vector<std::int64_t> BuildSubframeSampleTimes(

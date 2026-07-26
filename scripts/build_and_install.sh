@@ -25,7 +25,8 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
 fi
 
 if pgrep -x "After Effects" >/dev/null 2>&1 || \
-   pgrep -f "Adobe After Effects" >/dev/null 2>&1; then
+   pgrep -f '/Contents/MacOS/After Effects([[:space:]]|$)' \
+       >/dev/null 2>&1; then
     echo "error: After Effects is running. Quit it before installing," >&2
     echo "       or AE will keep the old bundle loaded." >&2
     exit 1

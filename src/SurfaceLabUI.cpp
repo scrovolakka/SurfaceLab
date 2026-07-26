@@ -1381,6 +1381,33 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
             PF_ParamFlag_NONE,
             SurfaceDiskId(surface, kSurfaceThicknessOffset));
 
+        error = AddPoint3D(
+            in_data,
+            def,
+            "Image Transform (X% Y% Z deg)",
+            0.0,
+            0.0,
+            0.0,
+            SurfaceDiskId(
+                surface,
+                kSurfaceImageTransformOffset));
+        if (error != PF_Err_NONE) {
+            return error;
+        }
+
+        AEFX_CLR_STRUCT(def);
+        PF_ADD_FLOAT_SLIDERX(
+            "Image Scale",
+            1.0,
+            1000.0,
+            1.0,
+            400.0,
+            100.0,
+            PF_Precision_TENTHS,
+            PF_ValueDisplayFlag_PERCENT,
+            PF_ParamFlag_NONE,
+            SurfaceDiskId(surface, kSurfaceImageScaleOffset));
+
         AEFX_CLR_STRUCT(def);
         PF_END_TOPIC(
             SurfaceDiskId(surface, kSurfaceTopicEndOffset));

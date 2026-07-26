@@ -52,7 +52,7 @@ Priority key:
 | Roll control Null animation | Create control layer | No (keyframe params directly) | Nice | B later |
 | Front/back materials | Yes | Separate front/back sources | **Must** | C (done) |
 | Thickness + side faces | Yes | Front/back + perimeter sides | Nice | C (done) |
-| Image fit / UV offset | Fit/Fill/Original + transform | Stretch/Fill/Fit; UV transform later | **Must** | C |
+| Image fit / UV offset | Fit/Fill/Original + transform | Stretch/Fill/Fit + position/rotation/scale | **Must** | C (done) |
 | Texture time modes | Still / layer / source | Host time only | Nice | C |
 | Ribbon chaining via shared Nulls | Explicit workflow | Manual possible | Nice | D |
 | AE camera + lights | Default + optional internal | AE only | Have / Skip internal | E |
@@ -110,7 +110,7 @@ Make the lattice feel editable like a real tool.
 ### Phase C — Materials / presentation
 
 1. Back source (layer; use an AE Solid for color) — done
-2. Image size modes — done; UV/image transform remains
+2. Image size modes + UV/image position, rotation, and scale — done
 3. Optional thickness (front/back + sides) — done
 4. Specular + roughness + metalness controls — done
 5. AE-light hard shadows (self + cross-surface) — done

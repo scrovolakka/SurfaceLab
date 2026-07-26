@@ -124,6 +124,10 @@ struct SurfaceData {
     std::uint32_t divisions_y{3};
     std::uint32_t image_size_mode{kImageSizeStretch};
     std::uint32_t image_border_mode{kImageBorderClamp};
+    float image_position_x{};
+    float image_position_y{};
+    float image_rotation{};
+    float image_scale{100.0F};
     float opacity{100.0F};
     float thickness{};
     float diffuse{100.0F};
@@ -207,6 +211,11 @@ void InitializeFlatSurface(
 void InitializeScene(SceneData& scene, double width, double height);
 
 bool IsValidScene(const SceneData& scene);
+
+Point2 TransformImageCoordinates(
+    const SurfaceData& surface,
+    double u,
+    double v);
 
 std::vector<std::int64_t> BuildSubframeSampleTimes(
     std::int64_t current_time,

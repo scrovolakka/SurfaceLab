@@ -142,7 +142,7 @@ Point2 MapImageCoordinates(
             u = 0.5 + (u - 0.5) / std::max(1.0e-6, content_width);
         }
     }
-    return {u, v};
+    return TransformImageCoordinates(surface, u, v);
 }
 
 bool ResolveBorderCoordinate(double& coordinate, std::uint32_t border_mode) {
@@ -865,12 +865,17 @@ void RasterizeTriangle(
                     continue;
                 }
                 if (render_view == kRenderViewUv) {
+                    const Point2 mapped_uv = MapImageCoordinates(
+                        surface,
+                        use_back_texture ? back_input : front_input,
+                        u,
+                        v);
                     depth_buffer[depth_index] =
                         static_cast<float>(inverse_depth);
                     output_row[x] = MakeOpaqueViewPixel<Pixel>(
-                        u,
-                        v,
-                        1.0 - u);
+                        mapped_uv.x,
+                        mapped_uv.y,
+                        1.0 - mapped_uv.x);
                     continue;
                 }
                 if (render_view == kRenderViewNormalsViewSpace) {
@@ -3465,7 +3470,7 @@ PF_Err CheckoutSmartRenderParameters(
          surface < kSurfaceCount;
         ++surface) {
         for (PF_ParamIndex offset = kSurfaceSourceOffset;
-             offset <= kSurfaceThicknessOffset;
+             offset <= kSurfaceImageScaleOffset;
              ++offset) {
             const PF_Err error = CheckoutSmartParameter(
                 in_data,
@@ -3913,6 +3918,10 @@ std::vector<double> BuildExternalStateDigest(
         digest.push_back(static_cast<double>(surface.back_source_slot));
         digest.push_back(static_cast<double>(surface.image_size_mode));
         digest.push_back(static_cast<double>(surface.image_border_mode));
+        digest.push_back(surface.image_position_x);
+        digest.push_back(surface.image_position_y);
+        digest.push_back(surface.image_rotation);
+        digest.push_back(surface.image_scale);
         digest.push_back(surface.opacity);
         digest.push_back(surface.thickness);
         digest.push_back(surface.diffuse);

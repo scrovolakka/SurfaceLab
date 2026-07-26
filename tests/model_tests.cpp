@@ -75,6 +75,45 @@ void TestMaterialValidation() {
     CHECK(!IsValidScene(scene));
 }
 
+void TestImageTransform() {
+    SceneData scene{};
+    InitializeScene(scene, 1920.0, 1080.0);
+    SurfaceData& surface = scene.surfaces[0];
+
+    Point2 mapped =
+        TransformImageCoordinates(surface, 0.25, 0.75);
+    CHECK(Near(mapped.x, 0.25));
+    CHECK(Near(mapped.y, 0.75));
+
+    // Positive position moves the visible image right/down, so inverse
+    // sampling reads from lower source coordinates.
+    surface.image_position_x = 10.0F;
+    surface.image_position_y = 20.0F;
+    mapped = TransformImageCoordinates(surface, 0.5, 0.5);
+    CHECK(Near(mapped.x, 0.4));
+    CHECK(Near(mapped.y, 0.3));
+
+    surface.image_position_x = 0.0F;
+    surface.image_position_y = 0.0F;
+    surface.image_scale = 200.0F;
+    mapped = TransformImageCoordinates(surface, 0.75, 0.5);
+    CHECK(Near(mapped.x, 0.625));
+    CHECK(Near(mapped.y, 0.5));
+
+    surface.image_scale = 100.0F;
+    surface.image_rotation = 90.0F;
+    mapped = TransformImageCoordinates(surface, 0.75, 0.5);
+    CHECK(Near(mapped.x, 0.5));
+    CHECK(Near(mapped.y, 0.25));
+    CHECK(IsValidScene(scene));
+
+    surface.image_scale = 0.0F;
+    CHECK(!IsValidScene(scene));
+    mapped = TransformImageCoordinates(surface, 0.5, 0.5);
+    CHECK(!std::isfinite(mapped.x));
+    CHECK(!std::isfinite(mapped.y));
+}
+
 void TestShadowRayIntersections() {
     const Point3 triangle_a{-1.0, -1.0, 5.0};
     const Point3 triangle_b{1.0, -1.0, 5.0};
@@ -623,6 +662,7 @@ void TestSurfaceRollIdentityAndCylinder() {
 int main() {
     TestInitialization();
     TestMaterialValidation();
+    TestImageTransform();
     TestShadowRayIntersections();
     TestDeferredInputSizedInitialization();
     TestFixedCageCenterUsesRenderSpaceOnce();

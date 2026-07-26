@@ -411,6 +411,37 @@ SceneData ResolveSceneForFrame(
             surface.image_size_mode == kImageSizeFit
                 ? kImageBorderTransparent
                 : kImageBorderClamp;
+        const PF_Point3DDef& image_transform =
+            params[SurfaceParam(
+                index,
+                kSurfaceImageTransformOffset)]
+                ->u.point3d_d;
+        surface.image_position_x = static_cast<float>(
+            std::isfinite(image_transform.x_value)
+                ? std::clamp(
+                      image_transform.x_value,
+                      -10000.0,
+                      10000.0)
+                : 0.0);
+        surface.image_position_y = static_cast<float>(
+            std::isfinite(image_transform.y_value)
+                ? std::clamp(
+                      image_transform.y_value,
+                      -10000.0,
+                      10000.0)
+                : 0.0);
+        surface.image_rotation = static_cast<float>(
+            std::isfinite(image_transform.z_value)
+                ? std::clamp(
+                      image_transform.z_value,
+                      -100000.0,
+                      100000.0)
+                : 0.0);
+        surface.image_scale = static_cast<float>(std::clamp(
+            params[SurfaceParam(index, kSurfaceImageScaleOffset)]
+                ->u.fs_d.value,
+            1.0,
+            1000.0));
         surface.opacity = 100.0F;
         surface.diffuse = 100.0F;
         surface.specular = static_cast<float>(std::clamp(
