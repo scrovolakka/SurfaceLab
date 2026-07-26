@@ -43,7 +43,7 @@ Priority key:
 | Object/surface selection mode | Yes | Vertex/Edge/Face/Surface | Nice | A (done) |
 | PRS transform gizmos | Pos/Rot/Scale | Move/Rotate/Scale | **Must** | A (done) |
 | Gizmo local / world space | Yes | Local/World | Nice | A (done) |
-| Active-surface-driven UI | Selected surface params | All 8 always visible | Nice | A |
+| Active-surface-driven UI | Selected surface params | Active cage highlight | Nice | A (partial) |
 | Point → Null attach (relative) | Parent-like attach | Root-relative marker rig | **Must** | B (done) |
 | Multi-point → one Null | Line attach | Script row/col issue | Partial | A |
 | Surface Root rigid motion | Surface attach | Surface Root bind v4 | Partial | — |
@@ -87,7 +87,7 @@ Make the lattice feel editable like a real tool.
 6. Move/Rotate/Scale gizmo at selection centroid — **done (A3)**
 7. Vertex/Edge/Face/Surface entity modes; Shift multi-select — **done (A4)**
 8. Local/World transform-space toggle — **done (A5)**
-9. Later A: active surface highlight + optional param focus
+9. Active surface highlight — **done (A6)**; parameter focus remains optional
 
 **Exit criteria**
 
@@ -137,6 +137,7 @@ Make the lattice feel editable like a real tool.
 | **A3** | Move/Rotate/Scale gizmo at selection centroid | Done |
 | **A4** | Vertex/Edge/Face/Surface entity selection | Done |
 | **A5** | Local/World transform-space toggle | Done |
+| **A6** | Active Surface cage highlight | Done |
 | **B1** | Attach relative offsets in render/gizmo | Done |
 | **B2** | Roll model + tests | Done |
 | **B3** | Roll UI params (control Null later) | Done (params) |

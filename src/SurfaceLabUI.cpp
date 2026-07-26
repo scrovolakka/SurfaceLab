@@ -2461,23 +2461,70 @@ PF_Err HandleSurfaceGizmoEvent(
             return error;
         }
 
-        const DRAWBOT_ColorRGBA grid_color{
-            0.12F, 0.78F, 1.0F, 0.82F};
-        const DRAWBOT_ColorRGBA point_color{
-            0.93F, 0.98F, 1.0F, 1.0F};
         const DRAWBOT_ColorRGBA selected_point_color{
             1.0F, 0.86F, 0.20F, 1.0F};
-        const DRAWBOT_ColorRGBA controlled_point_color{
-            1.0F, 0.63F, 0.12F, 1.0F};
+        const bool has_active_surface =
+            !g_selection.points.empty() &&
+            g_selection.primary.surface < scene.surface_count;
+        const std::uint32_t active_surface =
+            has_active_surface
+                ? g_selection.primary.surface
+                : scene.surface_count;
+        // Draw the active surface last so its cage is never buried by another
+        // overlapping surface. With no selection, preserve numeric order and
+        // the original equal-emphasis display.
+        std::array<std::uint32_t, kMaximumSurfaces> draw_order{};
+        std::uint32_t draw_count = 0;
         for (std::uint32_t surface_index = 0;
              surface_index < scene.surface_count;
              ++surface_index) {
+            if (surface_index != active_surface) {
+                draw_order[draw_count++] = surface_index;
+            }
+        }
+        if (has_active_surface) {
+            draw_order[draw_count++] = active_surface;
+        }
+        for (std::uint32_t draw_index = 0;
+             draw_index < draw_count;
+             ++draw_index) {
+            const std::uint32_t surface_index =
+                draw_order[draw_index];
             const SurfaceData& surface =
                 scene.surfaces[surface_index];
             if (surface.enabled == 0 ||
                 !IsValidLattice(surface.lattice)) {
                 continue;
             }
+            const bool active =
+                has_active_surface &&
+                surface_index == active_surface;
+            const bool inactive =
+                has_active_surface && !active;
+            const DRAWBOT_ColorRGBA grid_color =
+                active
+                    ? DRAWBOT_ColorRGBA{
+                          0.08F, 0.86F, 1.0F, 1.0F}
+                    : inactive
+                          ? DRAWBOT_ColorRGBA{
+                                0.22F, 0.52F, 0.62F, 0.34F}
+                          : DRAWBOT_ColorRGBA{
+                                0.12F, 0.78F, 1.0F, 0.82F};
+            const DRAWBOT_ColorRGBA point_color =
+                active
+                    ? DRAWBOT_ColorRGBA{
+                          0.94F, 0.99F, 1.0F, 1.0F}
+                    : inactive
+                          ? DRAWBOT_ColorRGBA{
+                                0.62F, 0.72F, 0.75F, 0.50F}
+                          : DRAWBOT_ColorRGBA{
+                                0.93F, 0.98F, 1.0F, 1.0F};
+            const DRAWBOT_ColorRGBA controlled_point_color =
+                inactive
+                    ? DRAWBOT_ColorRGBA{
+                          0.82F, 0.46F, 0.10F, 0.55F}
+                    : DRAWBOT_ColorRGBA{
+                          1.0F, 0.63F, 0.12F, 1.0F};
             DRAWBOT_PathP grid(
                 drawbot.supplier_suiteP,
                 supplier);
@@ -2556,7 +2603,7 @@ PF_Err HandleSurfaceGizmoEvent(
                 drawbot.supplier_suiteP,
                 supplier,
                 &grid_color,
-                1.0F);
+                active ? 1.75F : 1.0F);
             drawbot.surface_suiteP->StrokePath(
                 drawing_surface,
                 pen,
@@ -2714,7 +2761,11 @@ PF_Err HandleSurfaceGizmoEvent(
                         point_index);
                     const bool selected =
                         !controlled && SelectionContains(ref);
-                    const float half = selected ? 5.0F : 3.5F;
+                    const float half =
+                        selected ? 5.0F
+                        : active ? 4.0F
+                        : inactive ? 2.75F
+                                   : 3.5F;
                     DRAWBOT_RectF32 rect{
                         static_cast<float>(point.x - half),
                         static_cast<float>(point.y - half),
