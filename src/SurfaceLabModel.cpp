@@ -214,6 +214,7 @@ bool ResizeLattice(
     std::uint16_t divisions_y,
     LatticeData& destination) {
     if (!IsValidLattice(source) ||
+        NeedsInputSizedInitialization(source) ||
         divisions_x < kMinimumLatticeDivisions ||
         divisions_x > kMaximumLatticeDivisions ||
         divisions_y < kMinimumLatticeDivisions ||

@@ -743,7 +743,8 @@ void RasterizeTriangle(
     const LightingState& lighting,
     const ShadowScene* shadow_scene,
     A_long render_view,
-    TextureFace texture_face) {
+    TextureFace texture_face,
+    const Point2& raster_sample) {
     if (!a.visible || !b.visible || !c.visible ||
         !IsFiniteRasterVertex(a) ||
         !IsFiniteRasterVertex(b) ||
@@ -781,8 +782,10 @@ void RasterizeTriangle(
             static_cast<std::ptrdiff_t>(y) *
                 static_cast<std::ptrdiff_t>(output.rowbytes));
         for (int x = min_x; x <= max_x; ++x) {
-            const double px = static_cast<double>(x) + 0.5;
-            const double py = static_cast<double>(y) + 0.5;
+            const double px =
+                static_cast<double>(x) + raster_sample.x;
+            const double py =
+                static_cast<double>(y) + raster_sample.y;
             const double w0 = Edge(b, c, px, py) / area;
             const double w1 = Edge(c, a, px, py) / area;
             const double w2 = Edge(a, b, px, py) / area;
@@ -1458,7 +1461,8 @@ void RasterizeSurface(
     double scale_y,
     double scale_z,
     bool wireframe,
-    A_long render_view) {
+    A_long render_view,
+    const Point2& raster_sample) {
     const SurfaceEvaluationState evaluation = BuildSurfaceEvaluationState(
         surface,
         camera,
@@ -1538,7 +1542,8 @@ void RasterizeSurface(
             lighting,
             shadow_scene,
             render_view,
-            texture_face);
+            texture_face,
+            raster_sample);
         RasterizeTriangle<Pixel>(
             top_left,
             bottom_right,
@@ -1553,7 +1558,8 @@ void RasterizeSurface(
             lighting,
             shadow_scene,
             render_view,
-            texture_face);
+            texture_face,
+            raster_sample);
     };
 
     const auto raster_side_quad = [&](Vertex top_left,
@@ -3143,6 +3149,7 @@ struct RenderFrameSnapshot {
     double scale_z{1.0};
     bool wireframe{};
     A_long render_view{kRenderViewFinish};
+    A_long antialiasing{kAntialiasing2Samples};
     std::array<bool, kMaximumSurfaces> source_slots{};
     std::array<bool, kMaximumSurfaces> back_source_slots{};
     ShadowScene shadow_scene{};
@@ -3169,6 +3176,10 @@ RenderFrameSnapshot BuildRenderFrameSnapshot(
         params[kParamRenderView]->u.pd.value,
         kRenderViewFinish,
         kRenderViewNormalsViewSpace);
+    snapshot.antialiasing = std::clamp<A_long>(
+        params[kParamAntialiasing]->u.pd.value,
+        kAntialiasingOff,
+        kAntialiasing4Samples);
     snapshot.camera = BuildResolvedCameraState(
         in_data,
         params,
@@ -3321,7 +3332,8 @@ PF_Err RenderSurface(PF_InData* in_data, PF_ParamDef* params[], PF_LayerDef* out
             snapshot.scale_y,
             snapshot.scale_z,
             snapshot.wireframe,
-            snapshot.render_view);
+            snapshot.render_view,
+            {0.5, 0.5});
 
         if (separate_back_checkout) {
             const PF_Err back_checkin_error = back_checkout.Checkin();
@@ -3432,7 +3444,7 @@ PF_Err CheckoutSmartParameter(
 PF_Err CheckoutSmartRenderParameters(
     PF_InData* in_data,
     SmartParameterSet& parameters) {
-    constexpr std::array<PF_ParamIndex, 8> kFrameParameters = {
+    constexpr std::array<PF_ParamIndex, 9> kFrameParameters = {
         kParamScenePosition,
         kParamSceneRotationX,
         kParamSceneRotationY,
@@ -3440,7 +3452,8 @@ PF_Err CheckoutSmartRenderParameters(
         kParamSceneScaleX,
         kParamSceneScaleY,
         kParamSceneScaleZ,
-        kParamRenderView};
+        kParamRenderView,
+        kParamAntialiasing};
     for (PF_ParamIndex index : kFrameParameters) {
         const PF_Err error =
             CheckoutSmartParameter(in_data, parameters, index);
@@ -3539,7 +3552,8 @@ PF_Err RenderSmartFrame(
     const std::array<const PF_LayerDef*, kMaximumSurfaces>& source_worlds,
     const std::array<const PF_LayerDef*, kMaximumSurfaces>&
         back_source_worlds,
-    PF_LayerDef& output) {
+    PF_LayerDef& output,
+    const Point2& raster_sample) {
     if (!IsUsableTextureWorld(input) ||
         !output.data ||
         output.width <= 0 ||
@@ -3595,12 +3609,48 @@ PF_Err RenderSmartFrame(
             snapshot.scale_y,
             snapshot.scale_z,
             snapshot.wireframe,
-            snapshot.render_view);
+            snapshot.render_view,
+            raster_sample);
     }
     if (snapshot.render_view == kRenderViewDepth) {
         FinalizeDepthView<Pixel>(output, depth_buffer);
     }
     return PF_Err_NONE;
+}
+
+std::size_t SpatialSampleCount(const RenderFrameSnapshot& snapshot) {
+    if (snapshot.render_view != kRenderViewFinish ||
+        snapshot.wireframe ||
+        snapshot.antialiasing == kAntialiasingOff) {
+        return 1U;
+    }
+    return snapshot.antialiasing == kAntialiasing4Samples
+               ? 4U
+               : 2U;
+}
+
+Point2 SpatialSamplePosition(
+    std::size_t sample_count,
+    std::size_t sample) {
+    if (sample_count == 2U) {
+        constexpr std::array<Point2, 2> kTwoSamplePattern = {{
+            {0.25, 0.75},
+            {0.75, 0.25},
+        }};
+        return kTwoSamplePattern[sample];
+    }
+    if (sample_count == 4U) {
+        // Rotated-grid supersampling covers both axes more evenly than a
+        // regular 2x2 grid while retaining deterministic frame output.
+        constexpr std::array<Point2, 4> kFourSamplePattern = {{
+            {0.375, 0.125},
+            {0.875, 0.375},
+            {0.125, 0.625},
+            {0.625, 0.875},
+        }};
+        return kFourSamplePattern[sample];
+    }
+    return {0.5, 0.5};
 }
 
 template <typename Pixel>
@@ -3621,13 +3671,16 @@ PF_Err RenderMotionSamples(
         back_source_worlds.size() != sample_count) {
         return PF_Err_BAD_CALLBACK_PARAM;
     }
-    if (sample_count == 1) {
+    const std::size_t first_spatial_sample_count =
+        SpatialSampleCount(render_snapshot.samples[0]);
+    if (sample_count == 1 && first_spatial_sample_count == 1U) {
         return RenderSmartFrame<Pixel>(
             render_snapshot.samples[0],
             *inputs[0],
             source_worlds[0],
             back_source_worlds[0],
-            output);
+            output,
+            {0.5, 0.5});
     }
 
     const std::size_t pixel_count =
@@ -3642,28 +3695,46 @@ PF_Err RenderMotionSamples(
         static_cast<A_long>(
             static_cast<std::size_t>(output.width) * sizeof(Pixel));
 
-    for (std::size_t sample = 0;
-         sample < sample_count;
-         ++sample) {
-        const PF_Err error = RenderSmartFrame<Pixel>(
-            render_snapshot.samples[sample],
-            *inputs[sample],
-            source_worlds[sample],
-            back_source_worlds[sample],
-            sample_world);
-        if (error != PF_Err_NONE) {
-            return error;
-        }
-        for (std::size_t index = 0; index < pixel_count; ++index) {
-            const Pixel& pixel = sample_pixels[index];
-            accumulation[index * 4U] +=
-                static_cast<float>(pixel.alpha);
-            accumulation[index * 4U + 1U] +=
-                static_cast<float>(pixel.red);
-            accumulation[index * 4U + 2U] +=
-                static_cast<float>(pixel.green);
-            accumulation[index * 4U + 3U] +=
-                static_cast<float>(pixel.blue);
+    for (std::size_t temporal_sample = 0;
+         temporal_sample < sample_count;
+         ++temporal_sample) {
+        const std::size_t spatial_sample_count =
+            SpatialSampleCount(
+                render_snapshot.samples[temporal_sample]);
+        const float spatial_sample_weight =
+            1.0F / static_cast<float>(spatial_sample_count);
+        for (std::size_t spatial_sample = 0;
+             spatial_sample < spatial_sample_count;
+             ++spatial_sample) {
+            const PF_Err error = RenderSmartFrame<Pixel>(
+                render_snapshot.samples[temporal_sample],
+                *inputs[temporal_sample],
+                source_worlds[temporal_sample],
+                back_source_worlds[temporal_sample],
+                sample_world,
+                SpatialSamplePosition(
+                    spatial_sample_count,
+                    spatial_sample));
+            if (error != PF_Err_NONE) {
+                return error;
+            }
+            for (std::size_t index = 0;
+                 index < pixel_count;
+                 ++index) {
+                const Pixel& pixel = sample_pixels[index];
+                accumulation[index * 4U] +=
+                    static_cast<float>(pixel.alpha) *
+                    spatial_sample_weight;
+                accumulation[index * 4U + 1U] +=
+                    static_cast<float>(pixel.red) *
+                    spatial_sample_weight;
+                accumulation[index * 4U + 2U] +=
+                    static_cast<float>(pixel.green) *
+                    spatial_sample_weight;
+                accumulation[index * 4U + 3U] +=
+                    static_cast<float>(pixel.blue) *
+                    spatial_sample_weight;
+            }
         }
     }
 

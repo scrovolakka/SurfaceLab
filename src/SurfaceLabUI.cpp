@@ -242,8 +242,14 @@ bool InitializePendingLatticeForInput(
         !params[kParamInput]) {
         return false;
     }
-    const A_long input_width = params[kParamInput]->u.ld.width;
-    const A_long input_height = params[kParamInput]->u.ld.height;
+    const A_long input_width =
+        params[kParamInput]->u.ld.width > 1
+            ? params[kParamInput]->u.ld.width
+            : in_data->width;
+    const A_long input_height =
+        params[kParamInput]->u.ld.height > 1
+            ? params[kParamInput]->u.ld.height
+            : in_data->height;
     if (input_width <= 1 || input_height <= 1) {
         return false;
     }
@@ -322,7 +328,8 @@ bool CaptureDragSnapshot(
     }
     const auto* lattice =
         static_cast<const LatticeData*>(PF_LOCK_HANDLE(handle));
-    if (!lattice || !IsValidLattice(*lattice)) {
+    if (!lattice || !IsValidLattice(*lattice) ||
+        NeedsInputSizedInitialization(*lattice)) {
         if (lattice) {
             PF_UNLOCK_HANDLE(handle);
         }
@@ -939,6 +946,10 @@ PF_Err ResizeSurfaceLattice(
     PF_OutData* out_data,
     PF_ParamDef* params[],
     std::uint32_t surface) {
+    InitializePendingLatticeForInput(
+        in_data,
+        params,
+        surface);
     const std::uint16_t divisions_x =
         static_cast<std::uint16_t>(std::clamp<A_long>(
             params[SurfaceParam(surface, kSurfaceDivisionsXOffset)]
@@ -959,6 +970,11 @@ PF_Err ResizeSurfaceLattice(
     auto* lattice = static_cast<LatticeData*>(PF_LOCK_HANDLE(handle));
     if (!lattice) {
         return PF_Err_OUT_OF_MEMORY;
+    }
+    if (!IsValidLattice(*lattice) ||
+        NeedsInputSizedInitialization(*lattice)) {
+        PF_UNLOCK_HANDLE(handle);
+        return PF_Err_INTERNAL_STRUCT_DAMAGED;
     }
     const std::uint16_t old_x = lattice->divisions_x;
     const std::uint16_t old_y = lattice->divisions_y;
@@ -1015,6 +1031,10 @@ PF_Err PublishRigBridge(
             params[kParamRigSurface]->u.sd.value,
             1,
             kSurfaceCount) - 1);
+    InitializePendingLatticeForInput(
+        in_data,
+        params,
+        surface_index);
     const PF_Handle handle =
         params[SurfaceLatticeParam(surface_index)]->u.arb_d.value;
     if (!handle) {
@@ -1377,6 +1397,14 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
         kDiskRenderView);
 
     AEFX_CLR_STRUCT(def);
+    PF_ADD_POPUP(
+        "Antialiasing",
+        3,
+        kAntialiasing2Samples,
+        "Off|2 Samples|4 Samples",
+        kDiskAntialiasing);
+
+    AEFX_CLR_STRUCT(def);
     def.flags = PF_ParamFlag_START_COLLAPSED;
     PF_ADD_TOPIC("Null Rig Bridge", kDiskRigBridgeStart);
     AEFX_CLR_STRUCT(def);
@@ -1592,6 +1620,14 @@ PF_Err HandleSurfaceGizmoEvent(
     const A_long height = params[kParamInput]->u.ld.height > 0
                               ? params[kParamInput]->u.ld.height
                               : in_data->height;
+    for (std::uint32_t surface = 0;
+         surface < kSurfaceCount;
+         ++surface) {
+        InitializePendingLatticeForInput(
+            in_data,
+            params,
+            surface);
+    }
     SceneData scene =
         ResolveSceneForFrame(in_data, params, width, height);
     const CameraState camera =

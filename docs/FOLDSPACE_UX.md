@@ -59,7 +59,7 @@ Priority key:
 | Composition-space window host | Toggle | Host is 2D window | Partial / Have | — |
 | Motion blur | Unknown / limited | Strong | **Keep (diverge)** | — |
 | Render debug views | Limited | Finish/Depth/UV/Normal | **Keep** | — |
-| GPU raster + AA | GPU + SS/MS | CPU SmartFX | Nice | E |
+| GPU raster + AA | GPU + SS/MS | CPU SmartFX + spatial AA | Nice | E (AA done) |
 | Variable lattice density | Fixed-feel grid | Dx/Dy 1–16 + Mesh Quality | **Keep (diverge)** | — |
 
 ## Target golden scenes
@@ -123,7 +123,7 @@ Make the lattice feel editable like a real tool.
 
 ### Phase E — Performance / polish
 
-1. AA options
+1. AA options — done (Off / 2 Samples / 4 Samples)
 2. Optional GPU path
 3. Internal camera/light only if AE defaults prove insufficient
 

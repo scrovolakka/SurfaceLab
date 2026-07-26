@@ -136,11 +136,20 @@ void TestDeferredInputSizedInitialization() {
     CHECK(
         (serialized.reserved & kLatticeFlagNeedsInputSize) != 0);
     CHECK(NeedsInputSizedInitialization(serialized));
+    LatticeData rejected_resize{};
+    CHECK(!ResizeLattice(serialized, 4, 4, rejected_resize));
 
     InitializeLattice(serialized, 3, 3, 1920.0, 1080.0, 10);
     CHECK(
         (serialized.reserved & kLatticeFlagNeedsInputSize) == 0);
     CHECK(!NeedsInputSizedInitialization(serialized));
+    CHECK(ResizeLattice(serialized, 4, 4, rejected_resize));
+    CHECK(Near(
+        rejected_resize.points[LatticePointIndex(4, 4, 4)].x,
+        1920.0));
+    CHECK(Near(
+        rejected_resize.points[LatticePointIndex(4, 4, 4)].y,
+        1080.0));
 
     LatticeData broken_v124{};
     InitializeLattice(broken_v124, 3, 3, 1.0, 1.0, 11);
