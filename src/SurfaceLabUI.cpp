@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdint>
+#include <cstring>
 #include <vector>
 
 #if defined(__APPLE__)
@@ -1756,6 +1757,91 @@ void MarkChanged(PF_ParamDef* parameter) {
     }
 }
 
+PF_Err UpdateSurfaceSlotUi(
+    PF_InData* in_data,
+    PF_ParamDef* params[],
+    std::uint32_t surface) {
+    if (!in_data || !params || surface >= kSurfaceCount) {
+        return PF_Err_BAD_CALLBACK_PARAM;
+    }
+    // Surface 1 always has the host input fallback. Later slots are enabled
+    // only by assigning their Source Layer.
+    const bool enabled =
+        surface == 0 ||
+        params[SurfaceSourceParam(surface)]->u.ld.data != nullptr;
+    AEGP_SuiteHandler suites(in_data->pica_basicP);
+    const auto update_parameter =
+        [&](PF_ParamIndex index) -> PF_Err {
+            return suites.ParamUtilsSuite3()->PF_UpdateParamUI(
+                in_data->effect_ref,
+                index,
+                params[index]);
+        };
+
+    const PF_ParamIndex topic =
+        SurfaceParam(surface, kSurfaceTopicStartOffset);
+    char topic_name[32]{};
+    std::snprintf(
+        topic_name,
+        sizeof(topic_name),
+        enabled ? "Surface %u" : "Surface %u (empty)",
+        surface + 1);
+    if (std::strncmp(
+            params[topic]->PF_DEF_NAME,
+            topic_name,
+            sizeof(params[topic]->PF_DEF_NAME)) != 0) {
+        PF_STRNNCPY(
+            params[topic]->PF_DEF_NAME,
+            topic_name,
+            sizeof(params[topic]->PF_DEF_NAME));
+        const PF_Err error = update_parameter(topic);
+        if (error != PF_Err_NONE) {
+            return error;
+        }
+    }
+
+    const PF_ParamIndex source = SurfaceSourceParam(surface);
+    const char* source_name =
+        enabled ? "Source Layer" : "Source Layer (enable)";
+    if (std::strncmp(
+            params[source]->PF_DEF_NAME,
+            source_name,
+            sizeof(params[source]->PF_DEF_NAME)) != 0) {
+        PF_STRNNCPY(
+            params[source]->PF_DEF_NAME,
+            source_name,
+            sizeof(params[source]->PF_DEF_NAME));
+        const PF_Err error = update_parameter(source);
+        if (error != PF_Err_NONE) {
+            return error;
+        }
+    }
+
+    for (PF_ParamIndex offset = kSurfacePositionOffset;
+         offset < kSurfaceTopicEndOffset;
+         ++offset) {
+        if (offset == kSurfaceLatticeOffset) {
+            continue;
+        }
+        const PF_ParamIndex index = SurfaceParam(
+            surface,
+            static_cast<SurfaceParamOffset>(offset));
+        const PF_ParamUIFlags old_flags = params[index]->ui_flags;
+        if (enabled) {
+            params[index]->ui_flags &= ~PF_PUI_INVISIBLE;
+        } else {
+            params[index]->ui_flags |= PF_PUI_INVISIBLE;
+        }
+        if (params[index]->ui_flags != old_flags) {
+            const PF_Err error = update_parameter(index);
+            if (error != PF_Err_NONE) {
+                return error;
+            }
+        }
+    }
+    return PF_Err_NONE;
+}
+
 PF_Err PublishRigBridge(
     PF_InData* in_data,
     PF_ParamDef* params[]) {
@@ -1912,6 +1998,7 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
             SurfaceDiskId(surface, kSurfaceTopicStartOffset));
 
         AEFX_CLR_STRUCT(def);
+        def.flags = PF_ParamFlag_SUPERVISE;
         PF_ADD_LAYER(
             "Source Layer",
             surface == 0
@@ -2353,6 +2440,16 @@ PF_Err UserChangedParam(
             params,
             surface);
     }
+    if (offset == kSurfaceSourceOffset) {
+        const PF_Err error =
+            UpdateSurfaceSlotUi(in_data, params, surface);
+        if (out_data) {
+            out_data->out_flags |=
+                PF_OutFlag_REFRESH_UI |
+                PF_OutFlag_FORCE_RERENDER;
+        }
+        return error;
+    }
     return PF_Err_NONE;
 }
 
@@ -2361,6 +2458,11 @@ PF_Err UpdateParameterUi(
     PF_OutData*,
     PF_ParamDef* params[]) {
     for (std::uint32_t surface = 0; surface < kSurfaceCount; ++surface) {
+        const PF_Err ui_error =
+            UpdateSurfaceSlotUi(in_data, params, surface);
+        if (ui_error != PF_Err_NONE) {
+            return ui_error;
+        }
         InitializePendingLatticeForInput(
             in_data,
             params,

@@ -45,11 +45,11 @@ Priority key:
 | Gizmo local / world space | Yes | Local/World | Nice | A (done) |
 | Active-surface-driven UI | Selected surface params | Active cage highlight | Nice | A (partial) |
 | Point → Null attach (relative) | Parent-like attach | Root-relative marker rig | **Must** | B (done) |
-| Multi-point → one Null | Line attach | Script row/col issue | Partial | A |
+| Multi-point → one Null | Line attach | Shared-edge multi-marker Nulls | Have | D (done) |
 | Surface Root rigid motion | Surface attach | Surface Root bind v4 | Partial | — |
 | Attach time offset | Yes | No | Nice | B |
 | Roll / spiral procedural bend | Core demo feature | Per-surface Angle/Tilt/Radius/Expand | **Must** | B (done core) |
-| Roll control Null animation | Create control layer | No (keyframe params directly) | Nice | B later |
+| Roll control Null animation | Create control layer | Standard AE control Null bridge | Have | B (done) |
 | Front/back materials | Yes | Separate front/back sources | **Must** | C (done) |
 | Thickness + side faces | Yes | Front/back + perimeter sides | Nice | C (done) |
 | Image fit / UV offset | Fit/Fill/Original + transform | Stretch/Fill/Fit + position/rotation/scale | **Must** | C (done) |
@@ -101,7 +101,7 @@ Make the lattice feel editable like a real tool.
 2. Script: “create parent” / line attach with optional move-to-layer
 3. Roll evaluation layer on surface local frame:
    - angle, tilt, radius, radius expand per turn
-4. Roll control Null bridge (animatable params living on a Null)
+4. Roll control Null bridge (animatable params living on a Null) — **done**
 5. Unit tests for roll sampling and attach deltas
 
 **Exit criteria**
@@ -119,8 +119,8 @@ Make the lattice feel editable like a real tool.
 
 ### Phase D — Surface operations
 
-1. Better empty-slot workflow / hide unused surfaces
-2. Chain helper script for shared edge Nulls + UV offset suggestion
+1. Better empty-slot workflow / hide unused surfaces — **done**
+2. Chain helper script for shared edge Nulls + UV offset suggestion — **done**
 
 ### Phase E — Performance / polish
 
@@ -141,7 +141,10 @@ Make the lattice feel editable like a real tool.
 | **B1** | Attach relative offsets in render/gizmo | Done |
 | **B2** | Roll model + tests | Done |
 | **B3** | Roll UI params (control Null later) | Done (params) |
+| **B4** | Roll control Null bridge | Done |
 | **C1** | Back material + image modes + surface response | Done |
+| **D1** | Empty Surface slot UI | Done |
+| **D2** | Shared edge Null + UV helper | Done |
 
 Do not land B/C on top of half-finished A gizmos without golden-scene smoke.
 

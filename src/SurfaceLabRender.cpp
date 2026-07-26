@@ -2389,11 +2389,12 @@ bool ReadMarkerComment(
     return valid && !comment.empty();
 }
 
-bool ReadPointControllerMarker(
+bool ReadPointControllerMarkers(
     AEGP_SuiteHandler& suites,
     AEGP_PluginID plugin_id,
     AEGP_LayerH layer,
-    PointControllerMarker& controller) {
+    std::vector<PointControllerMarker>& controllers) {
+    controllers.clear();
     AEGP_StreamRefH marker_stream = nullptr;
     if (suites.StreamSuite6()->AEGP_GetNewLayerStream(
             plugin_id,
@@ -2404,12 +2405,11 @@ bool ReadPointControllerMarker(
         return false;
     }
     A_long keyframe_count = 0;
-    bool found = false;
     if (suites.KeyframeSuite5()->AEGP_GetStreamNumKFs(
             marker_stream,
             &keyframe_count) == A_Err_NONE) {
         for (A_long index = 0;
-             index < keyframe_count && !found;
+             index < keyframe_count;
              ++index) {
             AEGP_StreamValue2 value{};
             if (suites.KeyframeSuite5()->AEGP_GetNewKeyframeValue(
@@ -2420,18 +2420,20 @@ bool ReadPointControllerMarker(
                 continue;
             }
             std::string comment;
-            found =
-                ReadMarkerComment(
+            PointControllerMarker controller{};
+            if (ReadMarkerComment(
                     suites,
                     plugin_id,
                     value.val.markerP,
                     comment) &&
-                ParsePointControllerMarker(comment, controller);
+                ParsePointControllerMarker(comment, controller)) {
+                controllers.push_back(controller);
+            }
             suites.StreamSuite6()->AEGP_DisposeStreamValue(&value);
         }
     }
     suites.StreamSuite6()->AEGP_DisposeStream(marker_stream);
-    return found;
+    return !controllers.empty();
 }
 
 bool ReadRootControllerMarker(
@@ -2907,31 +2909,12 @@ NullPointOverrideState ResolveNullPointOverrides(
             layer == effect_layer) {
             continue;
         }
-        PointControllerMarker marker{};
-        if (!ReadPointControllerMarker(
+        std::vector<PointControllerMarker> markers;
+        if (!ReadPointControllerMarkers(
                 suites,
                 global->plugin_id,
                 layer,
-                marker) ||
-            marker.host_layer_id !=
-                static_cast<std::uint64_t>(effect_layer_id)) {
-            continue;
-        }
-        const std::uint32_t surface_index =
-            find_surface_index(marker.surface_id);
-        if (surface_index >= scene.surface_count) {
-            continue;
-        }
-        SurfaceData& surface = scene.surfaces[surface_index];
-        if (marker.row > surface.lattice.divisions_y ||
-            marker.column > surface.lattice.divisions_x) {
-            continue;
-        }
-        const std::size_t point_index = LatticePointIndex(
-            surface.lattice.divisions_x,
-            marker.row,
-            marker.column);
-        if (result.IsControlled(surface_index, point_index)) {
+                markers)) {
             continue;
         }
         A_Matrix4 layer_to_world{};
@@ -2948,33 +2931,58 @@ NullPointOverrideState ResolveNullPointOverrides(
                 anchor)) {
             continue;
         }
-        Point3 world =
+        const Point3 controller_world =
             TransformLayerAnchorToWorld(layer_to_world, anchor);
-        const ResolvedRootState* root =
-            effective_roots[surface_index];
-        if (root &&
-            IsDescendantOf(suites, layer, root->layer)) {
-            world = ApplyAffine3D(
-                root->inverse_full_transform,
-                world);
+        for (const PointControllerMarker& marker : markers) {
+            if (marker.host_layer_id !=
+                static_cast<std::uint64_t>(effect_layer_id)) {
+                continue;
+            }
+            const std::uint32_t surface_index =
+                find_surface_index(marker.surface_id);
+            if (surface_index >= scene.surface_count) {
+                continue;
+            }
+            SurfaceData& surface = scene.surfaces[surface_index];
+            if (marker.row > surface.lattice.divisions_y ||
+                marker.column > surface.lattice.divisions_x) {
+                continue;
+            }
+            const std::size_t point_index = LatticePointIndex(
+                surface.lattice.divisions_x,
+                marker.row,
+                marker.column);
+            if (result.IsControlled(surface_index, point_index)) {
+                continue;
+            }
+            Point3 world = controller_world;
+            const ResolvedRootState* root =
+                effective_roots[surface_index];
+            if (root &&
+                IsDescendantOf(suites, layer, root->layer)) {
+                world = ApplyAffine3D(
+                    root->inverse_full_transform,
+                    world);
+            }
+            Point3 lattice_point{};
+            if (!TryResolveControllerLatticePoint(
+                    world,
+                    surface,
+                    camera,
+                    scale_x,
+                    scale_y,
+                    scale_z,
+                    lattice_point)) {
+                continue;
+            }
+            StoredPoint3& stored =
+                surface.lattice.points[point_index];
+            stored.x = static_cast<float>(lattice_point.x);
+            stored.y = static_cast<float>(lattice_point.y);
+            stored.z = static_cast<float>(lattice_point.z);
+            result.controlled[surface_index][point_index] = true;
+            ++result.count;
         }
-        Point3 lattice_point{};
-        if (!TryResolveControllerLatticePoint(
-                world,
-                surface,
-                camera,
-                scale_x,
-                scale_y,
-                scale_z,
-                lattice_point)) {
-            continue;
-        }
-        StoredPoint3& stored = surface.lattice.points[point_index];
-        stored.x = static_cast<float>(lattice_point.x);
-        stored.y = static_cast<float>(lattice_point.y);
-        stored.z = static_cast<float>(lattice_point.z);
-        result.controlled[surface_index][point_index] = true;
-        ++result.count;
     }
     return result;
 }

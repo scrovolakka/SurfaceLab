@@ -3,7 +3,7 @@
 SurfaceLab is an After Effects native effect for placing and deforming flat
 sources in 3D with an interpolating control-point lattice.
 
-Current version: **1.4.2** (v1 architecture).
+Current version: **1.4.3** (v1 architecture).
 Match name: `XPK SurfaceLab` · Effect menu: **SurfaceLab > SurfaceLab**.
 The installed build is shown in Effect Controls under **About → SurfaceLab Version**.
 
@@ -31,10 +31,20 @@ Optional: run
 [scripts/SurfaceLabCreateNullRig.jsx](scripts/SurfaceLabCreateNullRig.jsx)
 to issue 3D Null point controllers for a surface.
 
+Additional workflow scripts:
+
+- [scripts/SurfaceLabCreateRollControl.jsx](scripts/SurfaceLabCreateRollControl.jsx)
+  creates an ordinary AE Null for animating Roll Angle, Tilt, Radius, and
+  Expand/Turn.
+- [scripts/SurfaceLabChainEdges.jsx](scripts/SurfaceLabChainEdges.jsx) merges
+  two previously issued edge-Null rows into shared controllers.
+
 ## Architecture
 
 - **Scene** — shared Position, Rotation XYZ, and Scale XYZ for the whole effect.
-- **Eight static Surface groups**, each with:
+- **Eight static Surface groups**. Empty slots show only
+  **Source Layer (enable)**; assigning a source reveals that Surface's full
+  controls. Each enabled group has:
   - Front Source layer and optional Back Source layer
   - Image Size (Stretch, Fill, Fit)
   - Image Transform (position X/Y and rotation Z) plus Image Scale
@@ -108,6 +118,26 @@ points, the perimeter, one row, one column, or one point.
   linked lattice point at the current frame.
 - The collapsed **Null Rig Bridge** effect group is internal script transport
   and does not need manual editing.
+
+### Roll controller
+
+Run
+[scripts/SurfaceLabCreateRollControl.jsx](scripts/SurfaceLabCreateRollControl.jsx)
+and choose a Surface. The script creates or reuses **SL S# Roll**, adds
+standard AE Angle/Slider controls, copies existing Roll key values on first
+creation, and connects the SurfaceLab Roll parameters through a host Layer
+Control. Renaming or reordering the controller does not break the connection.
+
+### Shared edges
+
+First issue the desired row or column on both surfaces with
+[scripts/SurfaceLabCreateNullRig.jsx](scripts/SurfaceLabCreateNullRig.jsx).
+Then run [scripts/SurfaceLabChainEdges.jsx](scripts/SurfaceLabChainEdges.jsx)
+and choose the two matching edges. Each Surface A Null receives both point
+identities, so one animated Null drives the paired vertices on both surfaces.
+The optional quick UV crop sets complementary two-panel offsets; pre-sliced
+source precomps remain the exact uncropped solution because v1 image scale is
+uniform rather than independent X/Y.
 
 ## Motion blur
 
