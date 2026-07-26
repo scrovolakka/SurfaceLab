@@ -27,7 +27,8 @@ PF_Err AddPoint3D(
     double y,
     double z,
     A_long disk_id,
-    PF_ParamUIFlags ui_flags = PF_PUI_NONE) {
+    PF_ParamUIFlags ui_flags = PF_PUI_NONE,
+    PF_ParamFlags flags = PF_ParamFlag_NONE) {
     AEFX_CLR_STRUCT(def);
     def.param_type = PF_Param_POINT_3D;
     PF_STRNNCPY(def.PF_DEF_NAME, name, sizeof(def.PF_DEF_NAME));
@@ -36,6 +37,7 @@ PF_Err AddPoint3D(
     def.u.point3d_d.z_value = def.u.point3d_d.z_dephault = z;
     def.uu.id = disk_id;
     def.ui_flags = ui_flags;
+    def.flags = flags;
     return PF_ADD_PARAM(in_data, -1, &def);
 }
 
@@ -1848,9 +1850,11 @@ PF_Err PublishRigBridge(
     if (!in_data || !params) {
         return PF_Err_BAD_CALLBACK_PARAM;
     }
+    PF_Point3DDef& request =
+        params[kParamRigRequest]->u.point3d_d;
     const std::uint32_t surface_index =
         static_cast<std::uint32_t>(std::clamp<A_long>(
-            params[kParamRigSurface]->u.sd.value,
+            static_cast<A_long>(std::llround(request.x_value)),
             1,
             kSurfaceCount) - 1);
     InitializePendingLatticeForInput(
@@ -1892,29 +1896,27 @@ PF_Err PublishRigBridge(
     }
     const std::uint16_t row =
         static_cast<std::uint16_t>(std::clamp<A_long>(
-            params[kParamRigRow]->u.sd.value,
+            static_cast<A_long>(std::llround(request.y_value)),
             0,
             published.divisions_y));
-    params[kParamRigRow]->u.sd.value = row;
-    const std::array<PF_ParamIndex, 4> id_parameters = {
-        kParamRigSurfaceId0,
-        kParamRigSurfaceId1,
-        kParamRigSurfaceId2,
-                kParamRigSurfaceId3};
-    for (std::size_t chunk = 0; chunk < id_parameters.size(); ++chunk) {
-        const unsigned shift =
-            static_cast<unsigned>((3U - chunk) * 16U);
-        params[id_parameters[chunk]]->u.sd.value =
-            static_cast<A_long>(
-                (published.surface_id >> shift) & 0xffffU);
-        MarkChanged(params[id_parameters[chunk]]);
-    }
-    params[kParamRigDivisionsX]->u.sd.value =
-        published.divisions_x;
-    params[kParamRigDivisionsY]->u.sd.value =
-        published.divisions_y;
-    MarkChanged(params[kParamRigDivisionsX]);
-    MarkChanged(params[kParamRigDivisionsY]);
+    request.x_value = static_cast<double>(surface_index + 1U);
+    request.y_value = static_cast<double>(row);
+    MarkChanged(params[kParamRigRequest]);
+
+    // Doubles exactly represent every 32-bit integer. Packing the 64-bit ID
+    // into high/low halves and Dx/Dy into one small integer keeps script
+    // transport lossless while replacing six legacy slider streams.
+    PF_Point3DDef& metadata =
+        params[kParamRigMetadata]->u.point3d_d;
+    metadata.x_value = static_cast<double>(
+        static_cast<std::uint32_t>(published.surface_id >> 32U));
+    metadata.y_value = static_cast<double>(
+        static_cast<std::uint32_t>(
+            published.surface_id & 0xffffffffU));
+    metadata.z_value = static_cast<double>(
+        static_cast<std::uint32_t>(published.divisions_x) * 32U +
+        static_cast<std::uint32_t>(published.divisions_y));
+    MarkChanged(params[kParamRigMetadata]);
     for (std::uint32_t column = 0;
          column < kMaximumLatticeAxisPoints;
          ++column) {
@@ -2278,66 +2280,31 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
         "Local|World",
         kDiskTransformSpace);
 
-    AEFX_CLR_STRUCT(def);
-    def.flags = PF_ParamFlag_START_COLLAPSED;
-    PF_ADD_TOPIC("Null Rig Bridge", kDiskRigBridgeStart);
-    AEFX_CLR_STRUCT(def);
-    def.flags = PF_ParamFlag_SUPERVISE;
-    PF_ADD_SLIDER(
-        "Rig Surface",
-        1,
-        kSurfaceCount,
-        1,
-        kSurfaceCount,
-        1,
-        kDiskRigSurface);
-    AEFX_CLR_STRUCT(def);
-    def.flags = PF_ParamFlag_SUPERVISE;
-    PF_ADD_SLIDER(
-        "Rig Row",
-        0,
-        kMaximumLatticeDivisions,
-        0,
-        kMaximumLatticeDivisions,
-        0,
-        kDiskRigRow);
-    const char* id_names[] = {
-        "Rig Surface ID 0",
-        "Rig Surface ID 1",
-        "Rig Surface ID 2",
-        "Rig Surface ID 3"};
-    for (std::size_t chunk = 0; chunk < 4; ++chunk) {
-        AEFX_CLR_STRUCT(def);
-        def.ui_flags = PF_PUI_DISABLED;
-        PF_ADD_SLIDER(
-            id_names[chunk],
-            0,
-            65535,
-            0,
-            65535,
-            0,
-            kDiskRigSurfaceId0 + static_cast<A_long>(chunk));
+    error = AddPoint3D(
+        in_data,
+        def,
+        "Rig Request",
+        0.0,
+        0.0,
+        0.0,
+        kDiskRigRequest,
+        PF_PUI_INVISIBLE,
+        PF_ParamFlag_SUPERVISE);
+    if (error != PF_Err_NONE) {
+        return error;
     }
-    AEFX_CLR_STRUCT(def);
-    def.ui_flags = PF_PUI_DISABLED;
-    PF_ADD_SLIDER(
-        "Rig Divisions X",
-        kMinimumLatticeDivisions,
-        kMaximumLatticeDivisions,
-        kMinimumLatticeDivisions,
-        kMaximumLatticeDivisions,
-        3,
-        kDiskRigDivisionsX);
-    AEFX_CLR_STRUCT(def);
-    def.ui_flags = PF_PUI_DISABLED;
-    PF_ADD_SLIDER(
-        "Rig Divisions Y",
-        kMinimumLatticeDivisions,
-        kMaximumLatticeDivisions,
-        kMinimumLatticeDivisions,
-        kMaximumLatticeDivisions,
-        3,
-        kDiskRigDivisionsY);
+    error = AddPoint3D(
+        in_data,
+        def,
+        "Rig Metadata",
+        0.0,
+        0.0,
+        0.0,
+        kDiskRigMetadata,
+        PF_PUI_INVISIBLE | PF_PUI_DISABLED);
+    if (error != PF_Err_NONE) {
+        return error;
+    }
     for (std::uint32_t column = 0;
          column < kMaximumLatticeAxisPoints;
          ++column) {
@@ -2355,16 +2322,12 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
             0.0,
             0.0,
             kDiskRigPointsStart + static_cast<A_long>(column),
-            PF_PUI_DISABLED);
+            PF_PUI_INVISIBLE | PF_PUI_DISABLED);
         if (error != PF_Err_NONE) {
             return error;
         }
     }
-    AEFX_CLR_STRUCT(def);
-    PF_END_TOPIC(kDiskRigBridgeEnd);
 
-    AEFX_CLR_STRUCT(def);
-    PF_ADD_TOPIC("About", kDiskAboutStart);
     AEFX_CLR_STRUCT(def);
     def.flags = PF_ParamFlag_SUPERVISE;
     {
@@ -2381,8 +2344,6 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
             PF_ParamFlag_SUPERVISE,
             kDiskAboutVersion);
     }
-    AEFX_CLR_STRUCT(def);
-    PF_END_TOPIC(kDiskAboutEnd);
 
     PF_CustomUIInfo custom_ui;
     AEFX_CLR_STRUCT(custom_ui);
@@ -2398,8 +2359,8 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
     out_data->num_params = kParamCount;
     // Catch layout drift early: last registered index must be kParamCount - 1.
     static_assert(
-        kParamAboutEnd + 1 == kParamCount,
-        "About block must terminate immediately before kParamCount");
+        kParamAboutVersion + 1 == kParamCount,
+        "About button must terminate immediately before kParamCount");
     return PF_Err_NONE;
 }
 
@@ -2423,8 +2384,7 @@ PF_Err UserChangedParam(
         }
         return PF_Err_NONE;
     }
-    if (extra->param_index == kParamRigSurface ||
-        extra->param_index == kParamRigRow) {
+    if (extra->param_index == kParamRigRequest) {
         return PublishRigBridge(in_data, params);
     }
     std::uint32_t surface{};

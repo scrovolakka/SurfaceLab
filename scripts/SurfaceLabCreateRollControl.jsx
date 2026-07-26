@@ -14,9 +14,8 @@
     var SURFACE_ROLL_TILT_OFFSET = 13;
     var SURFACE_ROLL_RADIUS_OFFSET = 14;
     var SURFACE_ROLL_EXPAND_OFFSET = 15;
-    var RIG_SURFACE = 226;
-    var RIG_ROW = 227;
-    var RIG_SURFACE_ID_0 = 228;
+    var RIG_REQUEST = 225;
+    var RIG_METADATA = 226;
 
     function surfacePropertyIndex(surfaceIndex, offset) {
         return SURFACE_PARAMETERS_START +
@@ -71,23 +70,34 @@
     }
 
     function surfaceIdentity(effect, surfaceIndex) {
-        var rigSurface = effect.property(RIG_SURFACE);
-        var rigRow = effect.property(RIG_ROW);
-        if (!rigSurface || !rigRow ||
-            !effect.property(RIG_SURFACE_ID_0 + 3)) {
+        var rigRequest = effect.property(RIG_REQUEST);
+        var rigMetadata = effect.property(RIG_METADATA);
+        if (!rigRequest || !rigMetadata) {
             throw new Error(
                 "The loaded SurfaceLab build has no Null Rig Bridge. " +
                 "Install the current plug-in build and restart After Effects.");
         }
-        rigSurface.setValue(surfaceIndex + 1);
-        rigRow.setValue(1);
-        rigRow.setValue(0);
+        rigRequest.setValue([surfaceIndex + 1, 1, 0]);
+        rigRequest.setValue([surfaceIndex + 1, 0, 0]);
+        var metadata = rigMetadata.value;
+        var idHigh = Math.round(Number(metadata[0]));
+        var idLow = Math.round(Number(metadata[1]));
+        if (!isFinite(idHigh) || !isFinite(idLow) ||
+            idHigh < 0 || idHigh > 4294967295 ||
+            idLow < 0 || idLow > 4294967295) {
+            throw new Error(
+                "SurfaceLab did not publish valid surface metadata.");
+        }
+        var chunks = [
+            Math.floor(idHigh / 65536),
+            idHigh % 65536,
+            Math.floor(idLow / 65536),
+            idLow % 65536
+        ];
         var identity = "";
         var chunk;
         for (chunk = 0; chunk < 4; chunk += 1) {
-            identity += "|id" + chunk + "=" + parseInt(
-                effect.property(RIG_SURFACE_ID_0 + chunk).value,
-                10);
+            identity += "|id" + chunk + "=" + chunks[chunk];
         }
         return identity;
     }

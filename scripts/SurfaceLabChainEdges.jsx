@@ -14,11 +14,8 @@
     var SURFACE_SOURCE_OFFSET = 1;
     var SURFACE_IMAGE_TRANSFORM_OFFSET = 23;
     var SURFACE_IMAGE_SCALE_OFFSET = 24;
-    var RIG_SURFACE = 226;
-    var RIG_ROW = 227;
-    var RIG_SURFACE_ID_0 = 228;
-    var RIG_DIVISIONS_X = 232;
-    var RIG_DIVISIONS_Y = 233;
+    var RIG_REQUEST = 225;
+    var RIG_METADATA = 226;
 
     function surfacePropertyIndex(surfaceIndex, offset) {
         return SURFACE_PARAMETERS_START +
@@ -73,34 +70,34 @@
     }
 
     function surfaceInfo(effect, surfaceIndex) {
-        var rigSurface = effect.property(RIG_SURFACE);
-        var rigRow = effect.property(RIG_ROW);
-        if (!rigSurface || !rigRow ||
-            !effect.property(RIG_DIVISIONS_Y)) {
+        var rigRequest = effect.property(RIG_REQUEST);
+        var rigMetadata = effect.property(RIG_METADATA);
+        if (!rigRequest || !rigMetadata) {
             throw new Error(
                 "The loaded SurfaceLab build has no Null Rig Bridge. " +
                 "Install the current plug-in build and restart After Effects.");
         }
-        rigSurface.setValue(surfaceIndex + 1);
-        rigRow.setValue(1);
-        rigRow.setValue(0);
-        var chunks = [];
-        var index;
-        for (index = 0; index < 4; index += 1) {
-            chunks.push(parseInt(
-                effect.property(RIG_SURFACE_ID_0 + index).value,
-                10));
-        }
-        var dx = parseInt(
-            effect.property(RIG_DIVISIONS_X).value,
-            10);
-        var dy = parseInt(
-            effect.property(RIG_DIVISIONS_Y).value,
-            10);
-        if (isNaN(dx) || isNaN(dy) ||
+        rigRequest.setValue([surfaceIndex + 1, 1, 0]);
+        rigRequest.setValue([surfaceIndex + 1, 0, 0]);
+        var metadata = rigMetadata.value;
+        var idHigh = Math.round(Number(metadata[0]));
+        var idLow = Math.round(Number(metadata[1]));
+        var packedDimensions = Math.round(Number(metadata[2]));
+        var chunks = [
+            Math.floor(idHigh / 65536),
+            idHigh % 65536,
+            Math.floor(idLow / 65536),
+            idLow % 65536
+        ];
+        var dx = Math.floor(packedDimensions / 32);
+        var dy = packedDimensions % 32;
+        if (!isFinite(idHigh) || !isFinite(idLow) ||
+            idHigh < 0 || idHigh > 4294967295 ||
+            idLow < 0 || idLow > 4294967295 ||
+            isNaN(dx) || isNaN(dy) ||
             dx < 1 || dx > 16 || dy < 1 || dy > 16) {
             throw new Error(
-                "SurfaceLab did not publish valid lattice dimensions.");
+                "SurfaceLab did not publish valid lattice metadata.");
         }
         return {
             chunks: chunks,

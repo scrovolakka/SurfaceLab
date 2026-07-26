@@ -13,14 +13,15 @@
 
 // Keep these in lockstep with CMake project VERSION and SurfaceLabPiPL.r.
 constexpr A_short kSurfaceLabVersionMajor = 1;
-constexpr A_short kSurfaceLabVersionMinor = 4;
-constexpr A_short kSurfaceLabVersionPatch = 3;
-constexpr const char* kSurfaceLabVersionString = "1.4.3";
+constexpr A_short kSurfaceLabVersionMinor = 5;
+constexpr A_short kSurfaceLabVersionPatch = 0;
+constexpr const char* kSurfaceLabVersionString = "1.5.0";
 
 constexpr std::uint32_t kSurfaceCount = 8;
 constexpr PF_ParamIndex kSurfaceParameterStride = 26;
-// The hidden script bridge uses one 3D Point per lattice column. Keeping XYZ
-// in one parameter leaves room under AE's 255-parameter effect limit.
+// The hidden script bridge uses one 3D Point per lattice column. Request and
+// metadata are packed into two more Point3D streams so the whole effect stays
+// below AE's 255-parameter limit without touching authored Surface streams.
 constexpr PF_ParamIndex kRigBridgePointCount = 17;
 
 enum SurfaceParamOffset : PF_ParamIndex {
@@ -73,23 +74,13 @@ enum ParamIndex : PF_ParamIndex {
     kParamEditMode,
     kParamTransformTool,
     kParamTransformSpace,
-    kParamRigBridgeStart,
-    kParamRigSurface,
-    kParamRigRow,
-    kParamRigSurfaceId0,
-    kParamRigSurfaceId1,
-    kParamRigSurfaceId2,
-    kParamRigSurfaceId3,
-    kParamRigDivisionsX,
-    kParamRigDivisionsY,
+    kParamRigRequest,
+    kParamRigMetadata,
     kParamRigPointsStart,
     kParamRigPointsEnd =
         kParamRigPointsStart +
         kRigBridgePointCount,
-    kParamRigBridgeEnd = kParamRigPointsEnd,
-    kParamAboutStart,
-    kParamAboutVersion,
-    kParamAboutEnd,
+    kParamAboutVersion = kParamRigPointsEnd,
     kParamCount
 };
 
@@ -135,23 +126,18 @@ enum ParamDiskId : A_long {
     kDiskEditMode,
     kDiskTransformTool,
     kDiskTransformSpace,
-    kDiskRigBridgeStart = 700,
-    kDiskRigSurface,
-    kDiskRigRow,
-    kDiskRigSurfaceId0,
-    kDiskRigSurfaceId1,
-    kDiskRigSurfaceId2,
-    kDiskRigSurfaceId3,
-    kDiskRigDivisionsX,
-    kDiskRigDivisionsY,
+    // 700...708 and 799 are the retired v1.4.3 Bridge topic, selectors,
+    // metadata, and end topic streams. Never reuse those persisted IDs.
     // v1.3.2 used 720...770 for separate XYZ float sliders. Allocate the
     // compact 3D Point bridge elsewhere so saved projects never see a disk-ID
     // type change.
     kDiskRigPointsStart = 780,
-    kDiskRigBridgeEnd = 799,
-    kDiskAboutStart = 800,
-    kDiskAboutVersion,
-    kDiskAboutEnd = 809
+    // About v1.4.x used topic IDs 800 and 809. Keep the button's persisted ID
+    // while dropping only its decorative topic wrapper.
+    kDiskAboutVersion = 801,
+    // v1.5 compact Bridge streams use fresh IDs.
+    kDiskRigRequest = 810,
+    kDiskRigMetadata
 };
 
 constexpr A_long SurfaceDiskId(
@@ -173,17 +159,15 @@ constexpr A_long SurfaceDiskId(
 
 static_assert(kParamCount <= 255, "After Effects supports at most 255 params");
 static_assert(
-    kParamCount == 255,
-    "Transform Space intentionally uses the final AE parameter slot");
+    kParamCount == 245,
+    "The v1.5 compact Bridge should leave ten AE parameter slots free");
 // SurfaceLabCreateNullRig.jsx addresses the hidden bridge by AE effect
 // property index. Keep these assertions beside the parameter layout so a
 // future UI addition cannot silently desynchronise the script.
-static_assert(kParamRigSurface == 226, "Update Null Rig bridge indices");
-static_assert(kParamRigRow == 227, "Update Null Rig bridge indices");
-static_assert(kParamRigSurfaceId0 == 228, "Update Null Rig bridge indices");
-static_assert(kParamRigDivisionsX == 232, "Update Null Rig bridge indices");
-static_assert(kParamRigDivisionsY == 233, "Update Null Rig bridge indices");
-static_assert(kParamRigPointsStart == 234, "Update Null Rig bridge indices");
+static_assert(kParamRigRequest == 225, "Update Null Rig bridge indices");
+static_assert(kParamRigMetadata == 226, "Update Null Rig bridge indices");
+static_assert(kParamRigPointsStart == 227, "Update Null Rig bridge indices");
+static_assert(kParamAboutVersion == 244, "Update About parameter index");
 
 extern "C" {
 

@@ -29,12 +29,9 @@
     var SURFACE_SCALE_Z_OFFSET = 8;
     // AE effect property indices (the PF input parameter is omitted). Keep in
     // sync with SurfaceLab.h after any Surface parameter-stride change.
-    var RIG_SURFACE = 226;
-    var RIG_ROW = 227;
-    var RIG_SURFACE_ID_0 = 228;
-    var RIG_DIVISIONS_X = 232;
-    var RIG_DIVISIONS_Y = 233;
-    var RIG_POINTS_START = 234;
+    var RIG_REQUEST = 225;
+    var RIG_METADATA = 226;
+    var RIG_POINTS_START = 227;
 
     function surfacePropertyIndex(surfaceIndex, offset) {
         return SURFACE_PARAMETERS_START +
@@ -99,41 +96,46 @@
     }
 
     function parseLattice(effect, surfaceIndex) {
-        var rigSurface = effect.property(RIG_SURFACE);
-        var rigRow = effect.property(RIG_ROW);
-        if (!rigSurface || !rigRow ||
+        var rigRequest = effect.property(RIG_REQUEST);
+        var rigMetadata = effect.property(RIG_METADATA);
+        if (!rigRequest || !rigMetadata ||
             !effect.property(RIG_POINTS_START)) {
             throw new Error(
                 "The loaded SurfaceLab build has no Null Rig Bridge. " +
                 "Install the current plug-in build and restart After Effects.");
         }
-        rigSurface.setValue(surfaceIndex + 1);
-        rigRow.setValue(1);
-        rigRow.setValue(0);
-        var dx = parseInt(
-            effect.property(RIG_DIVISIONS_X).value,
-            10);
-        var dy = parseInt(
-            effect.property(RIG_DIVISIONS_Y).value,
-            10);
-        if (isNaN(dx) || isNaN(dy) ||
+        rigRequest.setValue([surfaceIndex + 1, 1, 0]);
+        rigRequest.setValue([surfaceIndex + 1, 0, 0]);
+        var metadata = rigMetadata.value;
+        var idHigh = Math.round(Number(metadata[0]));
+        var idLow = Math.round(Number(metadata[1]));
+        var packedDimensions = Math.round(Number(metadata[2]));
+        var dx = Math.floor(packedDimensions / 32);
+        var dy = packedDimensions % 32;
+        if (!isFinite(idHigh) || !isFinite(idLow) ||
+            idHigh < 0 || idHigh > 4294967295 ||
+            idLow < 0 || idLow > 4294967295 ||
+            isNaN(dx) || isNaN(dy) ||
             dx < 1 || dx > 16 || dy < 1 || dy > 16) {
             throw new Error(
-                "SurfaceLab did not publish valid lattice dimensions.");
+                "SurfaceLab did not publish valid lattice metadata.");
         }
-        var idChunks = [];
-        var chunk;
-        for (chunk = 0; chunk < 4; chunk += 1) {
-            idChunks.push(parseInt(
-                effect.property(RIG_SURFACE_ID_0 + chunk).value,
-                10));
-        }
+        var idChunks = [
+            Math.floor(idHigh / 65536),
+            idHigh % 65536,
+            Math.floor(idLow / 65536),
+            idLow % 65536
+        ];
         var points = [];
         var row;
         var column;
         for (row = 0; row <= dy; row += 1) {
-            rigRow.setValue(row === 16 ? 15 : row + 1);
-            rigRow.setValue(row);
+            rigRequest.setValue([
+                surfaceIndex + 1,
+                row === 16 ? 15 : row + 1,
+                0
+            ]);
+            rigRequest.setValue([surfaceIndex + 1, row, 0]);
             for (column = 0; column <= dx; column += 1) {
                 var point = effect.property(
                     RIG_POINTS_START + column).value;

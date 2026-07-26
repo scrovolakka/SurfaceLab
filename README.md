@@ -3,7 +3,7 @@
 SurfaceLab is an After Effects native effect for placing and deforming flat
 sources in 3D with an interpolating control-point lattice.
 
-Current version: **1.4.3** (v1 architecture).
+Current version: **1.5.0** (v1 architecture).
 Match name: `XPK SurfaceLab` · Effect menu: **SurfaceLab > SurfaceLab**.
 The installed build is shown in Effect Controls under **About → SurfaceLab Version**.
 
@@ -95,6 +95,8 @@ border modes, rotation-origin modes, output-bounds modes,
 migration chain, and hidden animation banks.
 
 Module boundaries are documented in [docs/DECOMPOSITION.md](docs/DECOMPOSITION.md).
+The persisted parameter layout and reserved IDs are documented in
+[docs/PARAMETER_LAYOUT.md](docs/PARAMETER_LAYOUT.md).
 
 ## Null point controllers
 
@@ -116,8 +118,10 @@ points, the perimeter, one row, one column, or one point.
   Null world positions.
 - After issuance the data flow is one-way: Null world position overrides its
   linked lattice point at the current frame.
-- The collapsed **Null Rig Bridge** effect group is internal script transport
-  and does not need manual editing.
+- The compact **Null Rig Bridge** is fully hidden internal script transport.
+  v1.5 packs its request and metadata into two 3D Point streams, reducing the
+  effect from 255 to 245 parameters while leaving all authored Surface disk
+  IDs and property indices unchanged.
 
 ### Roll controller
 
