@@ -3,7 +3,7 @@
 SurfaceLab is an After Effects native effect for placing and deforming flat
 sources in 3D with an interpolating control-point lattice.
 
-Current version: **1.4.0** (v1 architecture).
+Current version: **1.4.1** (v1 architecture).
 Match name: `XPK SurfaceLab` · Effect menu: **SurfaceLab > SurfaceLab**.
 The installed build is shown in Effect Controls under **About → SurfaceLab Version**.
 
@@ -70,10 +70,11 @@ to issue 3D Null point controllers for a surface.
   one Edge segment, one Face cell, or the whole Surface. Shift-click toggles
   entities; Edge double-click expands to the full row/column. Cmd/Ctrl-drag
   box-selects free vertices (Shift+Cmd/Ctrl adds). **Transform Tool** provides
-  local Move, Rotate, and Scale gizmos at the resolved selection centroid;
-  shared vertices are transformed once. In Move mode, direct drag edits local
-  X/Y and Option/Alt-drag edits Z. Null-controlled points appear orange and
-  remain read-only.
+  Move, Rotate, and Scale gizmos at the resolved selection centroid, while
+  **Transform Space** switches between the cage’s Local axes and AE World XYZ.
+  Shared vertices are transformed once. In Move mode, direct drag follows the
+  chosen space’s X/Y plane and Option/Alt-drag follows its Z axis.
+  Null-controlled points appear orange and remain read-only.
 - Foldspace-oriented interaction work is tracked in
   [docs/FOLDSPACE_UX.md](docs/FOLDSPACE_UX.md).
 

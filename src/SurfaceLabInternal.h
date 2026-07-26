@@ -29,6 +29,8 @@ constexpr A_long kEditModeSurface = 4;
 constexpr A_long kTransformToolMove = 1;
 constexpr A_long kTransformToolRotate = 2;
 constexpr A_long kTransformToolScale = 3;
+constexpr A_long kTransformSpaceLocal = 1;
+constexpr A_long kTransformSpaceWorld = 2;
 constexpr std::size_t kMaximumRenderLights = 8;
 
 struct Vertex {

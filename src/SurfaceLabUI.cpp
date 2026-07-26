@@ -202,6 +202,7 @@ struct GizmoSelectionState {
     RotateAxis rotate_axis_drag{RotateAxis::None};
     bool uniform_scale_drag{};
     A_long transform_tool_drag{kTransformToolMove};
+    A_long transform_space_drag{kTransformSpaceLocal};
     Point3 selection_centroid{};
     Point3 centroid_down{};
     // Absolute drag base: every DRAG frame restores this then applies total
@@ -251,6 +252,7 @@ void ClearSelection() {
     g_selection.rotate_axis_drag = RotateAxis::None;
     g_selection.uniform_scale_drag = false;
     g_selection.transform_tool_drag = kTransformToolMove;
+    g_selection.transform_space_drag = kTransformSpaceLocal;
     g_selection.selection_centroid = {};
     g_selection.centroid_down = {};
     g_selection.drag_snapshot = {};
@@ -512,28 +514,93 @@ bool ComputeSelectionCentroid(
     return true;
 }
 
-// Project a cage-local lattice coordinate through the same transform chain as
-// EvaluateTransformedPoint, without routing through UV evaluation.
-bool ProjectCageLocalPointToFrame(
-    PF_InData* in_data,
-    PF_EventExtra* event_extra,
+// Build the affine portion of the raw lattice -> AE world transform. The
+// procedural Roll layer is intentionally excluded: Transform Space describes
+// the editable cage frame, while Roll remains a later evaluation layer.
+bool BuildCageToWorldTransform(
     const SurfaceData& surface,
     const CameraState& camera,
-    Point3 local,
-    Point2& frame_point) {
+    Affine3D& cage_to_world) {
+    if (!IsValidLattice(surface.lattice)) {
+        return false;
+    }
     const SurfaceEvaluationState state = BuildSurfaceEvaluationState(
         surface,
         camera,
         1.0,
         1.0,
         1.0);
-    Point3 world = ScaleSurfaceCagePoint(local, state.coordinate_transform);
-    world = RotateSurfaceWorldPoint(world, state.coordinate_transform);
-    if (state.root_transform_enabled) {
-        world = ApplyAffine3D(state.root_pre_scene_transform, world);
+    const StoredPoint3& raw_zero = surface.lattice.points[0];
+    const StoredPoint3& evaluated_zero = state.lattice.points[0];
+    const Point3 recenter_offset{
+        static_cast<double>(evaluated_zero.x) - raw_zero.x,
+        static_cast<double>(evaluated_zero.y) - raw_zero.y,
+        static_cast<double>(evaluated_zero.z) - raw_zero.z};
+    const auto map = [&](Point3 raw) {
+        Point3 pre_scene{
+            raw.x + recenter_offset.x,
+            raw.y + recenter_offset.y,
+            raw.z + recenter_offset.z};
+        pre_scene = ScaleSurfaceCagePoint(
+            pre_scene,
+            state.coordinate_transform);
+        pre_scene = RotateSurfaceWorldPoint(
+            pre_scene,
+            state.coordinate_transform);
+        if (state.root_transform_enabled) {
+            pre_scene = ApplyAffine3D(
+                state.root_pre_scene_transform,
+                pre_scene);
+        }
+        return ApplyScenePointTransform(
+            pre_scene,
+            camera.scene_transform);
+    };
+    const Point3 origin = map({0.0, 0.0, 0.0});
+    const Point3 x_axis = map({1.0, 0.0, 0.0});
+    const Point3 y_axis = map({0.0, 1.0, 0.0});
+    const Point3 z_axis = map({0.0, 0.0, 1.0});
+    const double values[] = {
+        origin.x, origin.y, origin.z,
+        x_axis.x, x_axis.y, x_axis.z,
+        y_axis.x, y_axis.y, y_axis.z,
+        z_axis.x, z_axis.y, z_axis.z};
+    for (double value : values) {
+        if (!std::isfinite(value)) {
+            return false;
+        }
+    }
+    cage_to_world = {
+        x_axis.x - origin.x,
+        x_axis.y - origin.y,
+        x_axis.z - origin.z,
+        y_axis.x - origin.x,
+        y_axis.y - origin.y,
+        y_axis.z - origin.z,
+        z_axis.x - origin.x,
+        z_axis.y - origin.y,
+        z_axis.z - origin.z,
+        origin.x,
+        origin.y,
+        origin.z};
+    return true;
+}
+
+bool ProjectWorldPointToFrame(
+    PF_InData* in_data,
+    PF_EventExtra* event_extra,
+    const CameraState& camera,
+    Point3 world,
+    Point2& frame_point) {
+    Point3 pre_scene;
+    if (!TryInverseScenePointTransform(
+            world,
+            camera.scene_transform,
+            pre_scene)) {
+        return false;
     }
     const Vertex projected = ProjectVertex(
-        world,
+        pre_scene,
         {0.0, 0.0, -1.0},
         0.0,
         0.0,
@@ -543,6 +610,28 @@ bool ProjectCageLocalPointToFrame(
                in_data,
                event_extra,
                {projected.x, projected.y},
+               frame_point);
+}
+
+// Project a raw cage-local lattice coordinate through the affine cage,
+// optional Surface Root, Scene transform, and active AE camera.
+bool ProjectCageLocalPointToFrame(
+    PF_InData* in_data,
+    PF_EventExtra* event_extra,
+    const SurfaceData& surface,
+    const CameraState& camera,
+    Point3 local,
+    Point2& frame_point) {
+    Affine3D cage_to_world;
+    return BuildCageToWorldTransform(
+               surface,
+               camera,
+               cage_to_world) &&
+           ProjectWorldPointToFrame(
+               in_data,
+               event_extra,
+               camera,
+               ApplyAffine3D(cage_to_world, local),
                frame_point);
 }
 
@@ -576,30 +665,55 @@ bool BuildTranslateAxisScreen(
     const CameraState& camera,
     Point3 centroid,
     TranslateAxis axis,
+    A_long transform_space,
     Point2& origin,
     Point2& tip,
     double& pixels_per_unit) {
-    if (!ProjectSelectionCentroidToFrame(
+    if (g_selection.points.empty()) {
+        return false;
+    }
+    const std::uint32_t surface_index =
+        g_selection.points.front().surface;
+    if (surface_index >= scene.surface_count) {
+        return false;
+    }
+    Affine3D cage_to_world;
+    if (!BuildCageToWorldTransform(
+            scene.surfaces[surface_index],
+            camera,
+            cage_to_world)) {
+        return false;
+    }
+    const Point3 world_origin =
+        ApplyAffine3D(cage_to_world, centroid);
+    if (!ProjectWorldPointToFrame(
             in_data,
             event_extra,
-            scene,
             camera,
-            centroid,
+            world_origin,
             origin)) {
         return false;
     }
     const Point3 unit = AxisUnit(axis);
     // Probe far enough for a stable screen direction on shallow projections.
     constexpr double kProbe = 32.0;
+    const Point3 world_probe =
+        transform_space == kTransformSpaceWorld
+            ? Point3{
+                  world_origin.x + unit.x * kProbe,
+                  world_origin.y + unit.y * kProbe,
+                  world_origin.z + unit.z * kProbe}
+            : ApplyAffine3D(
+                  cage_to_world,
+                  {centroid.x + unit.x * kProbe,
+                   centroid.y + unit.y * kProbe,
+                   centroid.z + unit.z * kProbe});
     Point2 probed;
-    if (!ProjectSelectionCentroidToFrame(
+    if (!ProjectWorldPointToFrame(
             in_data,
             event_extra,
-            scene,
             camera,
-            {centroid.x + unit.x * kProbe,
-             centroid.y + unit.y * kProbe,
-             centroid.z + unit.z * kProbe},
+            world_probe,
             probed)) {
         return false;
     }
@@ -625,6 +739,7 @@ TranslateAxis HitTestTranslateAxes(
     const SceneData& scene,
     const CameraState& camera,
     Point3 centroid,
+    A_long transform_space,
     Point2 mouse) {
     const double hit_radius_squared =
         kTranslateAxisHitPixels * kTranslateAxisHitPixels;
@@ -642,6 +757,7 @@ TranslateAxis HitTestTranslateAxes(
                 camera,
                 centroid,
                 axis,
+                transform_space,
                 origin,
                 tip,
                 pixels_per_unit)) {
@@ -664,14 +780,31 @@ bool BuildRotateRingScreen(
     const CameraState& camera,
     Point3 centroid,
     RotateAxis axis,
+    A_long transform_space,
     std::vector<Point2>& ring) {
+    if (g_selection.points.empty()) {
+        return false;
+    }
+    const std::uint32_t surface_index =
+        g_selection.points.front().surface;
+    if (surface_index >= scene.surface_count) {
+        return false;
+    }
+    Affine3D cage_to_world;
+    if (!BuildCageToWorldTransform(
+            scene.surfaces[surface_index],
+            camera,
+            cage_to_world)) {
+        return false;
+    }
+    const Point3 world_origin =
+        ApplyAffine3D(cage_to_world, centroid);
     Point2 origin;
-    if (!ProjectSelectionCentroidToFrame(
+    if (!ProjectWorldPointToFrame(
             in_data,
             event_extra,
-            scene,
             camera,
-            centroid,
+            world_origin,
             origin)) {
         return false;
     }
@@ -679,25 +812,31 @@ bool BuildRotateRingScreen(
     Point3 basis_b;
     RotationPlaneBasis(axis, basis_a, basis_b);
     constexpr double kProbe = 32.0;
+    const auto basis_probe = [&](Point3 basis) {
+        return transform_space == kTransformSpaceWorld
+                   ? Point3{
+                         world_origin.x + basis.x * kProbe,
+                         world_origin.y + basis.y * kProbe,
+                         world_origin.z + basis.z * kProbe}
+                   : ApplyAffine3D(
+                         cage_to_world,
+                         {centroid.x + basis.x * kProbe,
+                          centroid.y + basis.y * kProbe,
+                          centroid.z + basis.z * kProbe});
+    };
     Point2 projected_a;
     Point2 projected_b;
-    if (!ProjectSelectionCentroidToFrame(
+    if (!ProjectWorldPointToFrame(
             in_data,
             event_extra,
-            scene,
             camera,
-            {centroid.x + basis_a.x * kProbe,
-             centroid.y + basis_a.y * kProbe,
-             centroid.z + basis_a.z * kProbe},
+            basis_probe(basis_a),
             projected_a) ||
-        !ProjectSelectionCentroidToFrame(
+        !ProjectWorldPointToFrame(
             in_data,
             event_extra,
-            scene,
             camera,
-            {centroid.x + basis_b.x * kProbe,
-             centroid.y + basis_b.y * kProbe,
-             centroid.z + basis_b.z * kProbe},
+            basis_probe(basis_b),
             projected_b)) {
         return false;
     }
@@ -730,26 +869,27 @@ bool BuildRotateRingScreen(
             6.28318530717958647692;
         const double cosine = std::cos(angle);
         const double sine = std::sin(angle);
+        const Point3 plane{
+            basis_a.x * cosine + basis_b.x * sine,
+            basis_a.y * cosine + basis_b.y * sine,
+            basis_a.z * cosine + basis_b.z * sine};
+        const Point3 world_ring_point =
+            transform_space == kTransformSpaceWorld
+                ? Point3{
+                      world_origin.x + radius * plane.x,
+                      world_origin.y + radius * plane.y,
+                      world_origin.z + radius * plane.z}
+                : ApplyAffine3D(
+                      cage_to_world,
+                      {centroid.x + radius * plane.x,
+                       centroid.y + radius * plane.y,
+                       centroid.z + radius * plane.z});
         Point2 projected;
-        if (!ProjectSelectionCentroidToFrame(
+        if (!ProjectWorldPointToFrame(
                 in_data,
                 event_extra,
-                scene,
                 camera,
-                {
-                    centroid.x +
-                        radius *
-                            (basis_a.x * cosine +
-                             basis_b.x * sine),
-                    centroid.y +
-                        radius *
-                            (basis_a.y * cosine +
-                             basis_b.y * sine),
-                    centroid.z +
-                        radius *
-                            (basis_a.z * cosine +
-                             basis_b.z * sine),
-                },
+                world_ring_point,
                 projected)) {
             return false;
         }
@@ -764,6 +904,7 @@ RotateAxis HitTestRotateRings(
     const SceneData& scene,
     const CameraState& camera,
     Point3 centroid,
+    A_long transform_space,
     Point2 mouse) {
     constexpr double kHitRadiusSquared = 100.0;
     double closest = kHitRadiusSquared;
@@ -778,6 +919,7 @@ RotateAxis HitTestRotateRings(
                 camera,
                 centroid,
                 axis,
+                transform_space,
                 ring)) {
             continue;
         }
@@ -2042,6 +2184,14 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
         kDiskTransformTool);
 
     AEFX_CLR_STRUCT(def);
+    PF_ADD_POPUP(
+        "Transform Space",
+        2,
+        kTransformSpaceLocal,
+        "Local|World",
+        kDiskTransformSpace);
+
+    AEFX_CLR_STRUCT(def);
     def.flags = PF_ParamFlag_START_COLLAPSED;
     PF_ADD_TOPIC("Null Rig Bridge", kDiskRigBridgeStart);
     AEFX_CLR_STRUCT(def);
@@ -2618,6 +2768,10 @@ PF_Err HandleSurfaceGizmoEvent(
                 params[kParamTransformTool]->u.pd.value,
                 kTransformToolMove,
                 kTransformToolScale);
+            const A_long draw_space = std::clamp<A_long>(
+                params[kParamTransformSpace]->u.pd.value,
+                kTransformSpaceLocal,
+                kTransformSpaceWorld);
             const DRAWBOT_ColorRGBA axis_colors[3] = {
                 {0.95F, 0.28F, 0.28F, 0.95F},  // X
                 {0.30F, 0.85F, 0.35F, 0.95F},  // Y
@@ -2639,6 +2793,7 @@ PF_Err HandleSurfaceGizmoEvent(
                             camera,
                             centroid,
                             axes[axis_index],
+                            draw_space,
                             ring)) {
                         continue;
                     }
@@ -2688,6 +2843,7 @@ PF_Err HandleSurfaceGizmoEvent(
                             camera,
                             centroid,
                             axes[axis_index],
+                            draw_space,
                             origin,
                             tip,
                             pixels_per_unit)) {
@@ -2797,6 +2953,10 @@ PF_Err HandleSurfaceGizmoEvent(
         params[kParamTransformTool]->u.pd.value,
         kTransformToolMove,
         kTransformToolScale);
+    const A_long transform_space = std::clamp<A_long>(
+        params[kParamTransformSpace]->u.pd.value,
+        kTransformSpaceLocal,
+        kTransformSpaceWorld);
     if (event_extra->e_type == PF_Event_DO_CLICK) {
         const bool shift =
             (event_extra->u.do_click.modifiers & PF_Mod_SHIFT_KEY) != 0;
@@ -2812,6 +2972,7 @@ PF_Err HandleSurfaceGizmoEvent(
         g_selection.rotate_axis_drag = RotateAxis::None;
         g_selection.uniform_scale_drag = false;
         g_selection.transform_tool_drag = transform_tool;
+        g_selection.transform_space_drag = transform_space;
 
         // Cmd/Ctrl-drag starts a same-surface marquee (Foldspace-style).
         if (command) {
@@ -2848,6 +3009,7 @@ PF_Err HandleSurfaceGizmoEvent(
                     scene,
                     camera,
                     centroid,
+                    transform_space,
                     mouse);
                 gizmo_hit =
                     g_selection.rotate_axis_drag != RotateAxis::None;
@@ -2867,6 +3029,7 @@ PF_Err HandleSurfaceGizmoEvent(
                         scene,
                         camera,
                         centroid,
+                        transform_space,
                         mouse);
                 }
                 gizmo_hit =
@@ -2879,6 +3042,7 @@ PF_Err HandleSurfaceGizmoEvent(
                     scene,
                     camera,
                     centroid,
+                    transform_space,
                     mouse);
                 gizmo_hit =
                     g_selection.axis_drag != TranslateAxis::None;
@@ -3176,6 +3340,27 @@ PF_Err HandleSurfaceGizmoEvent(
         EndCompDragIfFinished(event_extra);
         return PF_Err_NONE;
     }
+    const bool world_space =
+        g_selection.transform_space_drag == kTransformSpaceWorld;
+    Affine3D cage_to_world;
+    Affine3D world_to_cage;
+    Point3 world_centroid{};
+    if (world_space) {
+        if (!BuildCageToWorldTransform(
+                surface,
+                camera,
+                cage_to_world) ||
+            !TryInvertAffine3D(
+                cage_to_world,
+                world_to_cage)) {
+            EndCompDragIfFinished(event_extra);
+            return PF_Err_NONE;
+        }
+        world_centroid = ApplyAffine3D(
+            cage_to_world,
+            g_selection.centroid_down);
+    }
+    Point3 world_apply{};
 
     if (g_selection.transform_tool_drag == kTransformToolRotate) {
         if (g_selection.rotate_axis_drag == RotateAxis::None) {
@@ -3183,13 +3368,21 @@ PF_Err HandleSurfaceGizmoEvent(
             return PF_Err_NONE;
         }
         Point2 center;
-        if (!ProjectSelectionCentroidToFrame(
-                in_data,
-                event_extra,
-                scene,
-                camera,
-                g_selection.centroid_down,
-                center)) {
+        const bool projected_center = world_space
+            ? ProjectWorldPointToFrame(
+                  in_data,
+                  event_extra,
+                  camera,
+                  world_centroid,
+                  center)
+            : ProjectSelectionCentroidToFrame(
+                  in_data,
+                  event_extra,
+                  scene,
+                  camera,
+                  g_selection.centroid_down,
+                  center);
+        if (!projected_center) {
             return PF_Err_NONE;
         }
         const double start_angle = std::atan2(
@@ -3241,6 +3434,7 @@ PF_Err HandleSurfaceGizmoEvent(
                     camera,
                     g_selection.centroid_down,
                     g_selection.axis_drag,
+                    g_selection.transform_space_drag,
                     origin,
                     tip,
                     pixels_per_unit)) {
@@ -3293,6 +3487,7 @@ PF_Err HandleSurfaceGizmoEvent(
                 camera,
                 g_selection.centroid_down,
                 g_selection.axis_drag,
+                g_selection.transform_space_drag,
                 origin,
                 tip,
                 pixels_per_unit) ||
@@ -3310,16 +3505,138 @@ PF_Err HandleSurfaceGizmoEvent(
             (screen_x * dir_x + screen_y * dir_y) /
             (dir_length * pixels_per_unit);
         const Point3 unit = AxisUnit(g_selection.axis_drag);
-        apply_x = static_cast<float>(
-            std::clamp(unit.x * axis_delta, -kMaxCageDelta, kMaxCageDelta));
-        apply_y = static_cast<float>(
-            std::clamp(unit.y * axis_delta, -kMaxCageDelta, kMaxCageDelta));
-        apply_z = static_cast<float>(
-            std::clamp(unit.z * axis_delta, -kMaxCageDelta, kMaxCageDelta));
-        g_selection.selection_centroid = {
-            g_selection.centroid_down.x + apply_x,
-            g_selection.centroid_down.y + apply_y,
-            g_selection.centroid_down.z + apply_z};
+        const Point3 delta{
+            std::clamp(
+                unit.x * axis_delta,
+                -kMaxCageDelta,
+                kMaxCageDelta),
+            std::clamp(
+                unit.y * axis_delta,
+                -kMaxCageDelta,
+                kMaxCageDelta),
+            std::clamp(
+                unit.z * axis_delta,
+                -kMaxCageDelta,
+                kMaxCageDelta)};
+        if (world_space) {
+            world_apply = delta;
+        } else {
+            apply_x = static_cast<float>(delta.x);
+            apply_y = static_cast<float>(delta.y);
+            apply_z = static_cast<float>(delta.z);
+            g_selection.selection_centroid = {
+                g_selection.centroid_down.x + apply_x,
+                g_selection.centroid_down.y + apply_y,
+                g_selection.centroid_down.z + apply_z};
+        }
+    } else if (world_space) {
+        const std::size_t primary_index = LatticePointIndex(
+            surface.lattice.divisions_x,
+            g_selection.primary.row,
+            g_selection.primary.column);
+        if (primary_index >= surface.lattice.point_count ||
+            null_overrides.IsControlled(
+                g_selection.primary.surface,
+                primary_index)) {
+            ClearSelection();
+            return PF_Err_NONE;
+        }
+        const StoredPoint3& primary =
+            g_selection.drag_snapshot.points[primary_index];
+        const Point3 anchor_world = ApplyAffine3D(
+            cage_to_world,
+            {primary.x, primary.y, primary.z});
+        Point2 origin;
+        Point2 projected_x;
+        Point2 projected_y;
+        if (!ProjectWorldPointToFrame(
+                in_data,
+                event_extra,
+                camera,
+                anchor_world,
+                origin) ||
+            !ProjectWorldPointToFrame(
+                in_data,
+                event_extra,
+                camera,
+                {anchor_world.x + 1.0,
+                 anchor_world.y,
+                 anchor_world.z},
+                projected_x) ||
+            !ProjectWorldPointToFrame(
+                in_data,
+                event_extra,
+                camera,
+                {anchor_world.x,
+                 anchor_world.y + 1.0,
+                 anchor_world.z},
+                projected_y)) {
+            return PF_Err_NONE;
+        }
+        const double jxx = projected_x.x - origin.x;
+        const double jyx = projected_x.y - origin.y;
+        const double jxy = projected_y.x - origin.x;
+        const double jyy = projected_y.y - origin.y;
+        const double jx_len = std::hypot(jxx, jyx);
+        const double jy_len = std::hypot(jxy, jyy);
+        const double determinant = jxx * jyy - jxy * jyx;
+        const bool depth_drag =
+            (event_extra->u.do_click.modifiers &
+             PF_Mod_OPT_ALT_KEY) != 0;
+        if (!depth_drag) {
+            const double column_area = jx_len * jy_len;
+            if (jx_len < kMinAxisPixelsPerUnit ||
+                jy_len < kMinAxisPixelsPerUnit ||
+                column_area <= 1.0e-12 ||
+                std::abs(determinant) / column_area <
+                    kMinJacobianSinAngle) {
+                g_selection.last_mouse = mouse;
+                return PF_Err_NONE;
+            }
+        }
+        double delta_z = 0.0;
+        if (depth_drag) {
+            Point2 projected_z;
+            if (!ProjectWorldPointToFrame(
+                    in_data,
+                    event_extra,
+                    camera,
+                    {anchor_world.x,
+                     anchor_world.y,
+                     anchor_world.z + 1.0},
+                    projected_z)) {
+                return PF_Err_NONE;
+            }
+            const double jzx = projected_z.x - origin.x;
+            const double jzy = projected_z.y - origin.y;
+            const double length_squared = jzx * jzx + jzy * jzy;
+            if (length_squared <
+                kMinAxisPixelsPerUnit * kMinAxisPixelsPerUnit) {
+                g_selection.last_mouse = mouse;
+                return PF_Err_NONE;
+            }
+            delta_z =
+                (screen_x * jzx + screen_y * jzy) /
+                length_squared;
+        }
+        const double delta_x = depth_drag
+                                   ? 0.0
+                                   : (screen_x * jyy -
+                                      screen_y * jxy) / determinant;
+        const double delta_y = depth_drag
+                                   ? 0.0
+                                   : (jxx * screen_y -
+                                      jyx * screen_x) / determinant;
+        if (!std::isfinite(delta_x) ||
+            !std::isfinite(delta_y) ||
+            !std::isfinite(delta_z) ||
+            std::abs(delta_x) > kMaxCageDelta ||
+            std::abs(delta_y) > kMaxCageDelta ||
+            std::abs(delta_z) > kMaxCageDelta) {
+            g_selection.last_mouse = mouse;
+            return PF_Err_NONE;
+        }
+        world_apply = {delta_x, delta_y, delta_z};
     } else {
         const std::size_t primary_index = LatticePointIndex(
             surface.lattice.divisions_x,
@@ -3473,7 +3790,45 @@ PF_Err HandleSurfaceGizmoEvent(
             g_selection.drag_snapshot.points[point_index].x,
             g_selection.drag_snapshot.points[point_index].y,
             g_selection.drag_snapshot.points[point_index].z};
-        if (g_selection.transform_tool_drag == kTransformToolRotate) {
+        if (world_space) {
+            Point3 world = ApplyAffine3D(
+                cage_to_world,
+                transformed);
+            if (g_selection.transform_tool_drag ==
+                kTransformToolRotate) {
+                const Point3 axis =
+                    AxisUnit(g_selection.rotate_axis_drag);
+                world = RotatePoint(
+                    world,
+                    world_centroid.x,
+                    world_centroid.y,
+                    world_centroid.z,
+                    axis.x * rotation_angle,
+                    axis.y * rotation_angle,
+                    axis.z * rotation_angle);
+            } else if (
+                g_selection.transform_tool_drag ==
+                kTransformToolScale) {
+                world.x =
+                    world_centroid.x +
+                    (world.x - world_centroid.x) * scale_x;
+                world.y =
+                    world_centroid.y +
+                    (world.y - world_centroid.y) * scale_y;
+                world.z =
+                    world_centroid.z +
+                    (world.z - world_centroid.z) * scale_z;
+            } else {
+                world.x += world_apply.x;
+                world.y += world_apply.y;
+                world.z += world_apply.z;
+            }
+            transformed = ApplyAffine3D(
+                world_to_cage,
+                world);
+        } else if (
+            g_selection.transform_tool_drag ==
+            kTransformToolRotate) {
             const Point3 axis = AxisUnit(g_selection.rotate_axis_drag);
             transformed = RotatePoint(
                 transformed,

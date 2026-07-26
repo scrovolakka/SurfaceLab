@@ -29,12 +29,12 @@
     var SURFACE_SCALE_Z_OFFSET = 8;
     // AE effect property indices (the PF input parameter is omitted). Keep in
     // sync with SurfaceLab.h after any Surface parameter-stride change.
-    var RIG_SURFACE = 225;
-    var RIG_ROW = 226;
-    var RIG_SURFACE_ID_0 = 227;
-    var RIG_DIVISIONS_X = 231;
-    var RIG_DIVISIONS_Y = 232;
-    var RIG_POINTS_START = 233;
+    var RIG_SURFACE = 226;
+    var RIG_ROW = 227;
+    var RIG_SURFACE_ID_0 = 228;
+    var RIG_DIVISIONS_X = 232;
+    var RIG_DIVISIONS_Y = 233;
+    var RIG_POINTS_START = 234;
 
     function surfacePropertyIndex(surfaceIndex, offset) {
         return SURFACE_PARAMETERS_START +
