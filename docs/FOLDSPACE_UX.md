@@ -40,8 +40,8 @@ Priority key:
 | Multi-select points | Shift / box | Shift + multi-drag | **Must** | A (done) |
 | Box select | Cmd/Ctrl drag | Cmd/Ctrl marquee | **Must** | A (done) |
 | Line selection mode | Explicit mode | Click lattice line | **Must** | A (done) |
-| Object/surface selection mode | Yes | No | Nice | A |
-| PRS transform gizmos | Pos/Rot/Scale | Translate axes (local) | **Must** | A (partial) |
+| Object/surface selection mode | Yes | Vertex/Edge/Face/Surface | Nice | A (done) |
+| PRS transform gizmos | Pos/Rot/Scale | Local Move/Rotate/Scale | **Must** | A (done local) |
 | Gizmo local / world space | Yes | No | Nice | A |
 | Active-surface-driven UI | Selected surface params | All 8 always visible | Nice | A |
 | Point → Null attach (relative) | Parent-like attach | Root-relative marker rig | **Must** | B (done) |
@@ -84,9 +84,10 @@ Make the lattice feel editable like a real tool.
 3. Line hit (click grid line → select free row/column) — **done (A2)**
 4. Multi-point drag (same local delta; Option/Alt still depth) — **done (A1)**
 5. Selection drawing (selected / Null-controlled / idle / marquee) — **done (A2)**
-6. Translate gizmo at selection centroid (local X/Y/Z) — **done (A3 partial)**
-7. Later A: rotate/scale gizmos; local/world toggle
-8. Later A: active surface highlight + optional param focus
+6. Move/Rotate/Scale gizmo at selection centroid (local X/Y/Z) — **done (A3)**
+7. Vertex/Edge/Face/Surface entity modes; Shift multi-select — **done (A4)**
+8. Later A: local/world toggle
+9. Later A: active surface highlight + optional param focus
 
 **Exit criteria**
 
@@ -133,7 +134,8 @@ Make the lattice feel editable like a real tool.
 |---|---|---|
 | **A1** | Docs + multi-select / multi-drag / selection draw | Done |
 | **A2** | Box select + line hit | Done |
-| **A3** | Translate gizmo at selection centroid | Done (rotate/scale later) |
+| **A3** | Move/Rotate/Scale gizmo at selection centroid | Done (local) |
+| **A4** | Vertex/Edge/Face/Surface entity selection | Done |
 | **B1** | Attach relative offsets in render/gizmo | Done |
 | **B2** | Roll model + tests | Done |
 | **B3** | Roll UI params (control Null later) | Done (params) |

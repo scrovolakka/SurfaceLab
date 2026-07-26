@@ -3,7 +3,7 @@
 SurfaceLab is an After Effects native effect for placing and deforming flat
 sources in 3D with an interpolating control-point lattice.
 
-Current version: **1.3.6** (v1 architecture).
+Current version: **1.4.0** (v1 architecture).
 Match name: `XPK SurfaceLab` · Effect menu: **SurfaceLab > SurfaceLab**.
 The installed build is shown in Effect Controls under **About → SurfaceLab Version**.
 
@@ -66,12 +66,14 @@ to issue 3D Null point controllers for a surface.
 - Motion blur samples lattice parameters, marker-linked Nulls, camera, lights,
   and sources at AE shutter subframes (capped at 32 samples).
 - Output is always clipped to the 2D host layer rectangle.
-- The Composition panel draws the lattice. Drag a point for local X/Y;
-  Option/Alt-drag for Z. **Shift-click** toggles points; click a grid **line**
-  to select a whole free row/column; **Cmd/Ctrl-drag** box-selects free points
-  on one surface (Shift+Cmd/Ctrl adds). A selected set shows an RGB
-  **translate gizmo** at its cage centroid (local X/Y/Z). Null-controlled
-  points appear orange and are read-only in the gizmo.
+- The Composition panel draws the lattice. **Edit Mode** selects a Vertex,
+  one Edge segment, one Face cell, or the whole Surface. Shift-click toggles
+  entities; Edge double-click expands to the full row/column. Cmd/Ctrl-drag
+  box-selects free vertices (Shift+Cmd/Ctrl adds). **Transform Tool** provides
+  local Move, Rotate, and Scale gizmos at the resolved selection centroid;
+  shared vertices are transformed once. In Move mode, direct drag edits local
+  X/Y and Option/Alt-drag edits Z. Null-controlled points appear orange and
+  remain read-only.
 - Foldspace-oriented interaction work is tracked in
   [docs/FOLDSPACE_UX.md](docs/FOLDSPACE_UX.md).
 

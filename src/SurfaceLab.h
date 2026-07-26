@@ -13,9 +13,9 @@
 
 // Keep these in lockstep with CMake project VERSION and SurfaceLabPiPL.r.
 constexpr A_short kSurfaceLabVersionMajor = 1;
-constexpr A_short kSurfaceLabVersionMinor = 3;
-constexpr A_short kSurfaceLabVersionPatch = 6;
-constexpr const char* kSurfaceLabVersionString = "1.3.6";
+constexpr A_short kSurfaceLabVersionMinor = 4;
+constexpr A_short kSurfaceLabVersionPatch = 0;
+constexpr const char* kSurfaceLabVersionString = "1.4.0";
 
 constexpr std::uint32_t kSurfaceCount = 8;
 constexpr PF_ParamIndex kSurfaceParameterStride = 26;
@@ -70,6 +70,8 @@ enum ParamIndex : PF_ParamIndex {
         kSurfaceCount * kSurfaceParameterStride,
     kParamRenderView,
     kParamAntialiasing,
+    kParamEditMode,
+    kParamTransformTool,
     kParamRigBridgeStart,
     kParamRigSurface,
     kParamRigRow,
@@ -129,6 +131,8 @@ enum ParamDiskId : A_long {
     kDiskSurfacesEnd = 500,
     kDiskRenderView = 600,
     kDiskAntialiasing,
+    kDiskEditMode,
+    kDiskTransformTool,
     kDiskRigBridgeStart = 700,
     kDiskRigSurface,
     kDiskRigRow,
@@ -166,6 +170,15 @@ constexpr A_long SurfaceDiskId(
 }
 
 static_assert(kParamCount <= 255, "After Effects supports at most 255 params");
+// SurfaceLabCreateNullRig.jsx addresses the hidden bridge by AE effect
+// property index. Keep these assertions beside the parameter layout so a
+// future UI addition cannot silently desynchronise the script.
+static_assert(kParamRigSurface == 225, "Update Null Rig bridge indices");
+static_assert(kParamRigRow == 226, "Update Null Rig bridge indices");
+static_assert(kParamRigSurfaceId0 == 227, "Update Null Rig bridge indices");
+static_assert(kParamRigDivisionsX == 231, "Update Null Rig bridge indices");
+static_assert(kParamRigDivisionsY == 232, "Update Null Rig bridge indices");
+static_assert(kParamRigPointsStart == 233, "Update Null Rig bridge indices");
 
 extern "C" {
 

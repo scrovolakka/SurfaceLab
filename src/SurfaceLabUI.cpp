@@ -139,6 +139,23 @@ struct LatticePointRef {
     std::uint16_t column{};
 };
 
+enum class SelectionEntityKind {
+    Vertex,
+    EdgeHorizontal,
+    EdgeVertical,
+    Face,
+    Surface,
+    Row,
+    Column
+};
+
+struct SelectionEntityRef {
+    std::uint32_t surface{};
+    SelectionEntityKind kind{SelectionEntityKind::Vertex};
+    std::uint16_t row{};
+    std::uint16_t column{};
+};
+
 enum class LatticeLineKind {
     Row,
     Column
@@ -157,7 +174,15 @@ enum class TranslateAxis {
     Z
 };
 
+enum class RotateAxis {
+    None,
+    X,
+    Y,
+    Z
+};
+
 struct GizmoSelectionState {
+    std::vector<SelectionEntityRef> entities{};
     std::vector<LatticePointRef> points{};
     bool dragging{};
     bool drag_moved{};
@@ -174,6 +199,9 @@ struct GizmoSelectionState {
     Point2 last_mouse{};
     // Translate gizmo: axis drag moves the whole selection in lattice space.
     TranslateAxis axis_drag{TranslateAxis::None};
+    RotateAxis rotate_axis_drag{RotateAxis::None};
+    bool uniform_scale_drag{};
+    A_long transform_tool_drag{kTransformToolMove};
     Point3 selection_centroid{};
     Point3 centroid_down{};
     // Absolute drag base: every DRAG frame restores this then applies total
@@ -210,6 +238,7 @@ bool SelectionContains(const LatticePointRef& point) {
 }
 
 void ClearSelection() {
+    g_selection.entities.clear();
     g_selection.points.clear();
     g_selection.dragging = false;
     g_selection.drag_moved = false;
@@ -219,6 +248,9 @@ void ClearSelection() {
     g_selection.marquee_additive = false;
     g_selection.primary = {};
     g_selection.axis_drag = TranslateAxis::None;
+    g_selection.rotate_axis_drag = RotateAxis::None;
+    g_selection.uniform_scale_drag = false;
+    g_selection.transform_tool_drag = kTransformToolMove;
     g_selection.selection_centroid = {};
     g_selection.centroid_down = {};
     g_selection.drag_snapshot = {};
@@ -359,6 +391,8 @@ void EndCompDragIfFinished(PF_EventExtra* event_extra) {
     g_selection.drag_origin_seeded = false;
     g_selection.marquee_active = false;
     g_selection.axis_drag = TranslateAxis::None;
+    g_selection.rotate_axis_drag = RotateAxis::None;
+    g_selection.uniform_scale_drag = false;
 }
 
 Point3 AxisUnit(TranslateAxis axis) {
@@ -372,6 +406,45 @@ Point3 AxisUnit(TranslateAxis axis) {
         case TranslateAxis::None:
         default:
             return {};
+    }
+}
+
+Point3 AxisUnit(RotateAxis axis) {
+    switch (axis) {
+        case RotateAxis::X:
+            return {1.0, 0.0, 0.0};
+        case RotateAxis::Y:
+            return {0.0, 1.0, 0.0};
+        case RotateAxis::Z:
+            return {0.0, 0.0, 1.0};
+        case RotateAxis::None:
+        default:
+            return {};
+    }
+}
+
+void RotationPlaneBasis(
+    RotateAxis axis,
+    Point3& first,
+    Point3& second) {
+    switch (axis) {
+        case RotateAxis::X:
+            first = {0.0, 1.0, 0.0};
+            second = {0.0, 0.0, 1.0};
+            break;
+        case RotateAxis::Y:
+            first = {1.0, 0.0, 0.0};
+            second = {0.0, 0.0, 1.0};
+            break;
+        case RotateAxis::Z:
+            first = {1.0, 0.0, 0.0};
+            second = {0.0, 1.0, 0.0};
+            break;
+        case RotateAxis::None:
+        default:
+            first = {};
+            second = {};
+            break;
     }
 }
 
@@ -584,7 +657,341 @@ TranslateAxis HitTestTranslateAxes(
     return best_axis;
 }
 
+bool BuildRotateRingScreen(
+    PF_InData* in_data,
+    PF_EventExtra* event_extra,
+    const SceneData& scene,
+    const CameraState& camera,
+    Point3 centroid,
+    RotateAxis axis,
+    std::vector<Point2>& ring) {
+    Point2 origin;
+    if (!ProjectSelectionCentroidToFrame(
+            in_data,
+            event_extra,
+            scene,
+            camera,
+            centroid,
+            origin)) {
+        return false;
+    }
+    Point3 basis_a;
+    Point3 basis_b;
+    RotationPlaneBasis(axis, basis_a, basis_b);
+    constexpr double kProbe = 32.0;
+    Point2 projected_a;
+    Point2 projected_b;
+    if (!ProjectSelectionCentroidToFrame(
+            in_data,
+            event_extra,
+            scene,
+            camera,
+            {centroid.x + basis_a.x * kProbe,
+             centroid.y + basis_a.y * kProbe,
+             centroid.z + basis_a.z * kProbe},
+            projected_a) ||
+        !ProjectSelectionCentroidToFrame(
+            in_data,
+            event_extra,
+            scene,
+            camera,
+            {centroid.x + basis_b.x * kProbe,
+             centroid.y + basis_b.y * kProbe,
+             centroid.z + basis_b.z * kProbe},
+            projected_b)) {
+        return false;
+    }
+    const double pixels_a = std::hypot(
+        projected_a.x - origin.x,
+        projected_a.y - origin.y) /
+        kProbe;
+    const double pixels_b = std::hypot(
+        projected_b.x - origin.x,
+        projected_b.y - origin.y) /
+        kProbe;
+    const double average_pixels =
+        (pixels_a + pixels_b) * 0.5;
+    if (!std::isfinite(average_pixels) ||
+        average_pixels < 0.05) {
+        return false;
+    }
+    constexpr double kRingPixels = 54.0;
+    const double radius = std::clamp(
+        kRingPixels / average_pixels,
+        1.0,
+        2000.0);
+    constexpr int kRingSegments = 64;
+    ring.clear();
+    ring.reserve(kRingSegments + 1);
+    for (int segment = 0; segment <= kRingSegments; ++segment) {
+        const double angle =
+            static_cast<double>(segment) /
+            kRingSegments *
+            6.28318530717958647692;
+        const double cosine = std::cos(angle);
+        const double sine = std::sin(angle);
+        Point2 projected;
+        if (!ProjectSelectionCentroidToFrame(
+                in_data,
+                event_extra,
+                scene,
+                camera,
+                {
+                    centroid.x +
+                        radius *
+                            (basis_a.x * cosine +
+                             basis_b.x * sine),
+                    centroid.y +
+                        radius *
+                            (basis_a.y * cosine +
+                             basis_b.y * sine),
+                    centroid.z +
+                        radius *
+                            (basis_a.z * cosine +
+                             basis_b.z * sine),
+                },
+                projected)) {
+            return false;
+        }
+        ring.push_back(projected);
+    }
+    return ring.size() > 1;
+}
+
+RotateAxis HitTestRotateRings(
+    PF_InData* in_data,
+    PF_EventExtra* event_extra,
+    const SceneData& scene,
+    const CameraState& camera,
+    Point3 centroid,
+    Point2 mouse) {
+    constexpr double kHitRadiusSquared = 100.0;
+    double closest = kHitRadiusSquared;
+    RotateAxis best = RotateAxis::None;
+    for (RotateAxis axis :
+         {RotateAxis::X, RotateAxis::Y, RotateAxis::Z}) {
+        std::vector<Point2> ring;
+        if (!BuildRotateRingScreen(
+                in_data,
+                event_extra,
+                scene,
+                camera,
+                centroid,
+                axis,
+                ring)) {
+            continue;
+        }
+        for (std::size_t index = 1; index < ring.size(); ++index) {
+            const double distance = PointSegmentDistanceSquared(
+                mouse,
+                ring[index - 1],
+                ring[index]);
+            if (distance <= closest) {
+                closest = distance;
+                best = axis;
+            }
+        }
+    }
+    return best;
+}
+
+bool BuildUniformScaleHandle(
+    PF_InData* in_data,
+    PF_EventExtra* event_extra,
+    const SceneData& scene,
+    const CameraState& camera,
+    Point3 centroid,
+    Point2& origin,
+    Point2& tip) {
+    if (!ProjectSelectionCentroidToFrame(
+            in_data,
+            event_extra,
+            scene,
+            camera,
+            centroid,
+            origin)) {
+        return false;
+    }
+    tip = {origin.x + 42.0, origin.y - 42.0};
+    return true;
+}
+
+bool HitTestUniformScaleHandle(
+    PF_InData* in_data,
+    PF_EventExtra* event_extra,
+    const SceneData& scene,
+    const CameraState& camera,
+    Point3 centroid,
+    Point2 mouse) {
+    Point2 origin;
+    Point2 tip;
+    if (!BuildUniformScaleHandle(
+            in_data,
+            event_extra,
+            scene,
+            camera,
+            centroid,
+            origin,
+            tip)) {
+        return false;
+    }
+    const double dx = mouse.x - tip.x;
+    const double dy = mouse.y - tip.y;
+    return dx * dx + dy * dy <= 100.0;
+}
+
+bool SameSelectionEntity(
+    const SelectionEntityRef& a,
+    const SelectionEntityRef& b) {
+    return a.surface == b.surface &&
+           a.kind == b.kind &&
+           a.row == b.row &&
+           a.column == b.column;
+}
+
+std::vector<LatticePointRef> CollectEntityPoints(
+    const SceneData& scene,
+    const NullPointOverrideState& null_overrides,
+    const SelectionEntityRef& entity) {
+    std::vector<LatticePointRef> points;
+    if (entity.surface >= scene.surface_count) {
+        return points;
+    }
+    const SurfaceData& surface = scene.surfaces[entity.surface];
+    if (surface.enabled == 0 || !IsValidLattice(surface.lattice)) {
+        return points;
+    }
+    const std::uint16_t divisions_x = surface.lattice.divisions_x;
+    const std::uint16_t divisions_y = surface.lattice.divisions_y;
+    const auto add = [&](std::uint16_t row, std::uint16_t column) {
+        if (row > divisions_y || column > divisions_x) {
+            return;
+        }
+        const std::size_t point_index = LatticePointIndex(
+            divisions_x,
+            row,
+            column);
+        if (null_overrides.IsControlled(entity.surface, point_index)) {
+            return;
+        }
+        points.push_back({entity.surface, row, column});
+    };
+    switch (entity.kind) {
+        case SelectionEntityKind::Vertex:
+            add(entity.row, entity.column);
+            break;
+        case SelectionEntityKind::EdgeHorizontal:
+            if (entity.column < divisions_x) {
+                add(entity.row, entity.column);
+                add(entity.row, entity.column + 1);
+            }
+            break;
+        case SelectionEntityKind::EdgeVertical:
+            if (entity.row < divisions_y) {
+                add(entity.row, entity.column);
+                add(entity.row + 1, entity.column);
+            }
+            break;
+        case SelectionEntityKind::Face:
+            if (entity.row < divisions_y &&
+                entity.column < divisions_x) {
+                add(entity.row, entity.column);
+                add(entity.row, entity.column + 1);
+                add(entity.row + 1, entity.column);
+                add(entity.row + 1, entity.column + 1);
+            }
+            break;
+        case SelectionEntityKind::Surface:
+            for (std::uint16_t row = 0; row <= divisions_y; ++row) {
+                for (std::uint16_t column = 0;
+                     column <= divisions_x;
+                     ++column) {
+                    add(row, column);
+                }
+            }
+            break;
+        case SelectionEntityKind::Row:
+            if (entity.row <= divisions_y) {
+                for (std::uint16_t column = 0;
+                     column <= divisions_x;
+                     ++column) {
+                    add(entity.row, column);
+                }
+            }
+            break;
+        case SelectionEntityKind::Column:
+            if (entity.column <= divisions_x) {
+                for (std::uint16_t row = 0;
+                     row <= divisions_y;
+                     ++row) {
+                    add(row, entity.column);
+                }
+            }
+            break;
+    }
+    return points;
+}
+
+void RebuildSelectionPoints(
+    const SceneData& scene,
+    const NullPointOverrideState& null_overrides) {
+    std::vector<LatticePointRef> points;
+    for (const SelectionEntityRef& entity : g_selection.entities) {
+        const std::vector<LatticePointRef> entity_points =
+            CollectEntityPoints(scene, null_overrides, entity);
+        for (const LatticePointRef& point : entity_points) {
+            const bool duplicate = std::any_of(
+                points.begin(),
+                points.end(),
+                [&](const LatticePointRef& candidate) {
+                    return SameLatticePoint(candidate, point);
+                });
+            if (!duplicate) {
+                points.push_back(point);
+            }
+        }
+    }
+    g_selection.points = std::move(points);
+    g_selection.primary =
+        g_selection.points.empty() ? LatticePointRef{}
+                                   : g_selection.points.front();
+}
+
+void SetSelectionEntity(
+    const SceneData& scene,
+    const NullPointOverrideState& null_overrides,
+    const SelectionEntityRef& entity) {
+    g_selection.entities = {entity};
+    RebuildSelectionPoints(scene, null_overrides);
+    g_selection.dragging = false;
+}
+
+void ToggleSelectionEntity(
+    const SceneData& scene,
+    const NullPointOverrideState& null_overrides,
+    const SelectionEntityRef& entity) {
+    if (!g_selection.entities.empty() &&
+        g_selection.entities.front().surface != entity.surface) {
+        SetSelectionEntity(scene, null_overrides, entity);
+        return;
+    }
+    const auto existing = std::find_if(
+        g_selection.entities.begin(),
+        g_selection.entities.end(),
+        [&](const SelectionEntityRef& candidate) {
+            return SameSelectionEntity(candidate, entity);
+        });
+    if (existing == g_selection.entities.end()) {
+        g_selection.entities.push_back(entity);
+    } else {
+        g_selection.entities.erase(existing);
+    }
+    RebuildSelectionPoints(scene, null_overrides);
+    g_selection.dragging = false;
+}
+
 void SetSelectionPoints(const std::vector<LatticePointRef>& points) {
+    g_selection.entities.clear();
     g_selection.points = points;
     g_selection.primary =
         points.empty() ? LatticePointRef{} : points.front();
@@ -607,83 +1014,10 @@ void AddPointToSelection(const LatticePointRef& point) {
     g_selection.primary = point;
 }
 
-void ToggleSelection(const LatticePointRef& point) {
-    if (!g_selection.points.empty() &&
-        g_selection.points.front().surface != point.surface) {
-        SetSelection(point);
-        return;
-    }
-    const auto existing = std::find_if(
-        g_selection.points.begin(),
-        g_selection.points.end(),
-        [&](const LatticePointRef& candidate) {
-            return SameLatticePoint(candidate, point);
-        });
-    if (existing != g_selection.points.end()) {
-        g_selection.points.erase(existing);
-        if (SameLatticePoint(g_selection.primary, point)) {
-            g_selection.primary =
-                g_selection.points.empty() ? LatticePointRef{}
-                                           : g_selection.points.front();
-        }
-        return;
-    }
-    g_selection.points.push_back(point);
-    g_selection.primary = point;
-}
-
 void MergePointsIntoSelection(const std::vector<LatticePointRef>& points) {
     for (const LatticePointRef& point : points) {
         AddPointToSelection(point);
     }
-}
-
-std::vector<LatticePointRef> CollectFreeLinePoints(
-    const SceneData& scene,
-    const NullPointOverrideState& null_overrides,
-    const LatticeLineRef& line) {
-    std::vector<LatticePointRef> points;
-    if (line.surface >= scene.surface_count) {
-        return points;
-    }
-    const SurfaceData& surface = scene.surfaces[line.surface];
-    if (surface.enabled == 0 || !IsValidLattice(surface.lattice)) {
-        return points;
-    }
-    if (line.kind == LatticeLineKind::Row) {
-        if (line.index > surface.lattice.divisions_y) {
-            return points;
-        }
-        for (std::uint16_t column = 0;
-             column <= surface.lattice.divisions_x;
-             ++column) {
-            const std::size_t point_index = LatticePointIndex(
-                surface.lattice.divisions_x,
-                line.index,
-                column);
-            if (null_overrides.IsControlled(line.surface, point_index)) {
-                continue;
-            }
-            points.push_back({line.surface, line.index, column});
-        }
-        return points;
-    }
-    if (line.index > surface.lattice.divisions_x) {
-        return points;
-    }
-    for (std::uint16_t row = 0;
-         row <= surface.lattice.divisions_y;
-         ++row) {
-        const std::size_t point_index = LatticePointIndex(
-            surface.lattice.divisions_x,
-            row,
-            line.index);
-        if (null_overrides.IsControlled(line.surface, point_index)) {
-            continue;
-        }
-        points.push_back({line.surface, row, line.index});
-    }
-    return points;
 }
 
 bool HitTestLatticeLine(
@@ -776,6 +1110,266 @@ bool HitTestLatticeLine(
                 }
                 previous = projected;
                 have_previous = true;
+            }
+        }
+    }
+    return found;
+}
+
+bool ProjectControlPointToFrame(
+    PF_InData* in_data,
+    PF_EventExtra* event_extra,
+    const SurfaceData& surface,
+    const CameraState& camera,
+    std::uint16_t row,
+    std::uint16_t column,
+    Point2& projected) {
+    if (row > surface.lattice.divisions_y ||
+        column > surface.lattice.divisions_x) {
+        return false;
+    }
+    return ProjectSurfacePointToFrame(
+        in_data,
+        event_extra,
+        surface,
+        camera,
+        static_cast<double>(column) /
+            surface.lattice.divisions_x,
+        static_cast<double>(row) /
+            surface.lattice.divisions_y,
+        projected);
+}
+
+bool HitTestEdgeEntity(
+    PF_InData* in_data,
+    PF_EventExtra* event_extra,
+    const SceneData& scene,
+    const CameraState& camera,
+    Point2 mouse,
+    double max_distance_squared,
+    SelectionEntityRef& hit) {
+    double closest = max_distance_squared;
+    bool found = false;
+    for (std::uint32_t surface_index = 0;
+         surface_index < scene.surface_count;
+         ++surface_index) {
+        const SurfaceData& surface = scene.surfaces[surface_index];
+        if (surface.enabled == 0 || !IsValidLattice(surface.lattice)) {
+            continue;
+        }
+        for (std::uint16_t row = 0;
+             row <= surface.lattice.divisions_y;
+             ++row) {
+            for (std::uint16_t column = 0;
+                 column < surface.lattice.divisions_x;
+                 ++column) {
+                constexpr int kEdgeSamples = 12;
+                Point2 previous;
+                bool have_previous = false;
+                for (int sample = 0; sample <= kEdgeSamples; ++sample) {
+                    Point2 projected;
+                    const double u =
+                        (static_cast<double>(column) +
+                         static_cast<double>(sample) / kEdgeSamples) /
+                        surface.lattice.divisions_x;
+                    const double v =
+                        static_cast<double>(row) /
+                        surface.lattice.divisions_y;
+                    if (!ProjectSurfacePointToFrame(
+                            in_data,
+                            event_extra,
+                            surface,
+                            camera,
+                            u,
+                            v,
+                            projected)) {
+                        have_previous = false;
+                        continue;
+                    }
+                    if (have_previous) {
+                        const double distance =
+                            PointSegmentDistanceSquared(
+                                mouse,
+                                previous,
+                                projected);
+                        if (distance <= closest) {
+                            closest = distance;
+                            hit = {
+                                surface_index,
+                                SelectionEntityKind::EdgeHorizontal,
+                                row,
+                                column};
+                            found = true;
+                        }
+                    }
+                    previous = projected;
+                    have_previous = true;
+                }
+            }
+        }
+        for (std::uint16_t row = 0;
+             row < surface.lattice.divisions_y;
+             ++row) {
+            for (std::uint16_t column = 0;
+                 column <= surface.lattice.divisions_x;
+                 ++column) {
+                constexpr int kEdgeSamples = 12;
+                Point2 previous;
+                bool have_previous = false;
+                for (int sample = 0; sample <= kEdgeSamples; ++sample) {
+                    Point2 projected;
+                    const double u =
+                        static_cast<double>(column) /
+                        surface.lattice.divisions_x;
+                    const double v =
+                        (static_cast<double>(row) +
+                         static_cast<double>(sample) / kEdgeSamples) /
+                        surface.lattice.divisions_y;
+                    if (!ProjectSurfacePointToFrame(
+                            in_data,
+                            event_extra,
+                            surface,
+                            camera,
+                            u,
+                            v,
+                            projected)) {
+                        have_previous = false;
+                        continue;
+                    }
+                    if (have_previous) {
+                        const double distance =
+                            PointSegmentDistanceSquared(
+                                mouse,
+                                previous,
+                                projected);
+                        if (distance <= closest) {
+                            closest = distance;
+                            hit = {
+                                surface_index,
+                                SelectionEntityKind::EdgeVertical,
+                                row,
+                                column};
+                            found = true;
+                        }
+                    }
+                    previous = projected;
+                    have_previous = true;
+                }
+            }
+        }
+    }
+    return found;
+}
+
+double TriangleSign(Point2 point, Point2 a, Point2 b) {
+    return (point.x - b.x) * (a.y - b.y) -
+           (a.x - b.x) * (point.y - b.y);
+}
+
+bool PointInTriangle(Point2 point, Point2 a, Point2 b, Point2 c) {
+    const double d1 = TriangleSign(point, a, b);
+    const double d2 = TriangleSign(point, b, c);
+    const double d3 = TriangleSign(point, c, a);
+    constexpr double kEpsilon = 1.0e-6;
+    const bool has_negative =
+        d1 < -kEpsilon || d2 < -kEpsilon || d3 < -kEpsilon;
+    const bool has_positive =
+        d1 > kEpsilon || d2 > kEpsilon || d3 > kEpsilon;
+    return !(has_negative && has_positive);
+}
+
+bool HitTestFaceEntity(
+    PF_InData* in_data,
+    PF_EventExtra* event_extra,
+    const SceneData& scene,
+    const CameraState& camera,
+    Point2 mouse,
+    SelectionEntityRef& hit) {
+    double closest_centroid_distance =
+        std::numeric_limits<double>::infinity();
+    bool found = false;
+    for (std::uint32_t surface_index = 0;
+         surface_index < scene.surface_count;
+         ++surface_index) {
+        const SurfaceData& surface = scene.surfaces[surface_index];
+        if (surface.enabled == 0 || !IsValidLattice(surface.lattice)) {
+            continue;
+        }
+        for (std::uint16_t row = 0;
+             row < surface.lattice.divisions_y;
+             ++row) {
+            for (std::uint16_t column = 0;
+                 column < surface.lattice.divisions_x;
+                 ++column) {
+                Point2 top_left;
+                Point2 top_right;
+                Point2 bottom_left;
+                Point2 bottom_right;
+                if (!ProjectControlPointToFrame(
+                        in_data,
+                        event_extra,
+                        surface,
+                        camera,
+                        row,
+                        column,
+                        top_left) ||
+                    !ProjectControlPointToFrame(
+                        in_data,
+                        event_extra,
+                        surface,
+                        camera,
+                        row,
+                        column + 1,
+                        top_right) ||
+                    !ProjectControlPointToFrame(
+                        in_data,
+                        event_extra,
+                        surface,
+                        camera,
+                        row + 1,
+                        column,
+                        bottom_left) ||
+                    !ProjectControlPointToFrame(
+                        in_data,
+                        event_extra,
+                        surface,
+                        camera,
+                        row + 1,
+                        column + 1,
+                        bottom_right)) {
+                    continue;
+                }
+                if (!PointInTriangle(
+                        mouse,
+                        top_left,
+                        top_right,
+                        bottom_right) &&
+                    !PointInTriangle(
+                        mouse,
+                        top_left,
+                        bottom_right,
+                        bottom_left)) {
+                    continue;
+                }
+                const Point2 centroid{
+                    (top_left.x + top_right.x +
+                     bottom_left.x + bottom_right.x) /
+                        4.0,
+                    (top_left.y + top_right.y +
+                     bottom_left.y + bottom_right.y) /
+                        4.0};
+                const double dx = mouse.x - centroid.x;
+                const double dy = mouse.y - centroid.y;
+                const double distance = dx * dx + dy * dy;
+                if (distance <= closest_centroid_distance) {
+                    closest_centroid_distance = distance;
+                    hit = {
+                        surface_index,
+                        SelectionEntityKind::Face,
+                        row,
+                        column};
+                    found = true;
+                }
             }
         }
     }
@@ -1432,6 +2026,22 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
         kDiskAntialiasing);
 
     AEFX_CLR_STRUCT(def);
+    PF_ADD_POPUP(
+        "Edit Mode",
+        4,
+        kEditModeVertex,
+        "Vertex|Edge|Face|Surface",
+        kDiskEditMode);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_POPUP(
+        "Transform Tool",
+        3,
+        kTransformToolMove,
+        "Move|Rotate|Scale",
+        kDiskTransformTool);
+
+    AEFX_CLR_STRUCT(def);
     def.flags = PF_ParamFlag_START_COLLAPSED;
     PF_ADD_TOPIC("Null Rig Bridge", kDiskRigBridgeStart);
     AEFX_CLR_STRUCT(def);
@@ -1667,6 +2277,10 @@ PF_Err HandleSurfaceGizmoEvent(
             1.0,
             1.0,
             1.0);
+    if (!g_selection.dragging &&
+        !g_selection.entities.empty()) {
+        RebuildSelectionPoints(scene, null_overrides);
+    }
 
     if (event_extra->e_type == PF_Event_DRAW) {
         DRAWBOT_Suites drawbot{};
@@ -1798,6 +2412,126 @@ PF_Err HandleSurfaceGizmoEvent(
                 pen,
                 grid);
 
+            DRAWBOT_PathP selected_entities(
+                drawbot.supplier_suiteP,
+                supplier);
+            bool have_selected_entity_path = false;
+            const auto append_selected_curve =
+                [&](double u0,
+                    double v0,
+                    double u1,
+                    double v1,
+                    int samples) {
+                    bool started = false;
+                    for (int sample = 0; sample <= samples; ++sample) {
+                        const double t =
+                            static_cast<double>(sample) / samples;
+                        Point2 point;
+                        if (!ProjectSurfacePointToFrame(
+                                in_data,
+                                event_extra,
+                                surface,
+                                camera,
+                                u0 + (u1 - u0) * t,
+                                v0 + (v1 - v0) * t,
+                                point)) {
+                            started = false;
+                            continue;
+                        }
+                        if (!started) {
+                            drawbot.path_suiteP->MoveTo(
+                                selected_entities,
+                                static_cast<float>(point.x),
+                                static_cast<float>(point.y));
+                            started = true;
+                        } else {
+                            drawbot.path_suiteP->LineTo(
+                                selected_entities,
+                                static_cast<float>(point.x),
+                                static_cast<float>(point.y));
+                            have_selected_entity_path = true;
+                        }
+                    }
+                };
+            for (const SelectionEntityRef& entity :
+                 g_selection.entities) {
+                if (entity.surface != surface_index) {
+                    continue;
+                }
+                if (CollectEntityPoints(
+                        scene,
+                        null_overrides,
+                        entity).empty()) {
+                    continue;
+                }
+                const double u0 =
+                    static_cast<double>(entity.column) /
+                    surface.lattice.divisions_x;
+                const double v0 =
+                    static_cast<double>(entity.row) /
+                    surface.lattice.divisions_y;
+                const double u1 =
+                    static_cast<double>(entity.column + 1) /
+                    surface.lattice.divisions_x;
+                const double v1 =
+                    static_cast<double>(entity.row + 1) /
+                    surface.lattice.divisions_y;
+                switch (entity.kind) {
+                    case SelectionEntityKind::EdgeHorizontal:
+                        append_selected_curve(
+                            u0, v0, u1, v0, 12);
+                        break;
+                    case SelectionEntityKind::EdgeVertical:
+                        append_selected_curve(
+                            u0, v0, u0, v1, 12);
+                        break;
+                    case SelectionEntityKind::Face:
+                        append_selected_curve(
+                            u0, v0, u1, v0, 12);
+                        append_selected_curve(
+                            u1, v0, u1, v1, 12);
+                        append_selected_curve(
+                            u1, v1, u0, v1, 12);
+                        append_selected_curve(
+                            u0, v1, u0, v0, 12);
+                        break;
+                    case SelectionEntityKind::Surface:
+                        append_selected_curve(
+                            0.0, 0.0, 1.0, 0.0, kCurveSamples);
+                        append_selected_curve(
+                            1.0, 0.0, 1.0, 1.0, kCurveSamples);
+                        append_selected_curve(
+                            1.0, 1.0, 0.0, 1.0, kCurveSamples);
+                        append_selected_curve(
+                            0.0, 1.0, 0.0, 0.0, kCurveSamples);
+                        break;
+                    case SelectionEntityKind::Row:
+                        append_selected_curve(
+                            0.0, v0, 1.0, v0, kCurveSamples);
+                        break;
+                    case SelectionEntityKind::Column:
+                        append_selected_curve(
+                            u0, 0.0, u0, 1.0, kCurveSamples);
+                        break;
+                    case SelectionEntityKind::Vertex:
+                    default:
+                        break;
+                }
+            }
+            if (have_selected_entity_path) {
+                const DRAWBOT_ColorRGBA selected_entity_color{
+                    1.0F, 0.86F, 0.20F, 0.95F};
+                DRAWBOT_PenP selected_entity_pen(
+                    drawbot.supplier_suiteP,
+                    supplier,
+                    &selected_entity_color,
+                    3.0F);
+                drawbot.surface_suiteP->StrokePath(
+                    drawing_surface,
+                    selected_entity_pen,
+                    selected_entities);
+            }
+
             for (std::uint16_t row = 0;
                  row <= surface.lattice.divisions_y;
                  ++row) {
@@ -1880,63 +2614,168 @@ PF_Err HandleSurfaceGizmoEvent(
         if (!g_selection.points.empty() &&
             !g_selection.marquee_active &&
             ComputeSelectionCentroid(scene, centroid)) {
+            const A_long draw_tool = std::clamp<A_long>(
+                params[kParamTransformTool]->u.pd.value,
+                kTransformToolMove,
+                kTransformToolScale);
             const DRAWBOT_ColorRGBA axis_colors[3] = {
                 {0.95F, 0.28F, 0.28F, 0.95F},  // X
                 {0.30F, 0.85F, 0.35F, 0.95F},  // Y
                 {0.30F, 0.55F, 1.0F, 0.95F},   // Z
             };
-            const TranslateAxis axes[3] = {
-                TranslateAxis::X,
-                TranslateAxis::Y,
-                TranslateAxis::Z};
-            for (int axis_index = 0; axis_index < 3; ++axis_index) {
+            if (draw_tool == kTransformToolRotate) {
+                const RotateAxis axes[3] = {
+                    RotateAxis::X,
+                    RotateAxis::Y,
+                    RotateAxis::Z};
+                for (int axis_index = 0;
+                     axis_index < 3;
+                     ++axis_index) {
+                    std::vector<Point2> ring;
+                    if (!BuildRotateRingScreen(
+                            in_data,
+                            event_extra,
+                            scene,
+                            camera,
+                            centroid,
+                            axes[axis_index],
+                            ring)) {
+                        continue;
+                    }
+                    DRAWBOT_PathP ring_path(
+                        drawbot.supplier_suiteP,
+                        supplier);
+                    drawbot.path_suiteP->MoveTo(
+                        ring_path,
+                        static_cast<float>(ring.front().x),
+                        static_cast<float>(ring.front().y));
+                    for (std::size_t index = 1;
+                         index < ring.size();
+                         ++index) {
+                        drawbot.path_suiteP->LineTo(
+                            ring_path,
+                            static_cast<float>(ring[index].x),
+                            static_cast<float>(ring[index].y));
+                    }
+                    const float stroke =
+                        g_selection.rotate_axis_drag ==
+                                axes[axis_index]
+                            ? 3.0F
+                            : 1.5F;
+                    DRAWBOT_PenP ring_pen(
+                        drawbot.supplier_suiteP,
+                        supplier,
+                        &axis_colors[axis_index],
+                        stroke);
+                    drawbot.surface_suiteP->StrokePath(
+                        drawing_surface,
+                        ring_pen,
+                        ring_path);
+                }
+            } else {
+                const TranslateAxis axes[3] = {
+                    TranslateAxis::X,
+                    TranslateAxis::Y,
+                    TranslateAxis::Z};
+                for (int axis_index = 0; axis_index < 3; ++axis_index) {
+                    Point2 origin;
+                    Point2 tip;
+                    double pixels_per_unit = 0.0;
+                    if (!BuildTranslateAxisScreen(
+                            in_data,
+                            event_extra,
+                            scene,
+                            camera,
+                            centroid,
+                            axes[axis_index],
+                            origin,
+                            tip,
+                            pixels_per_unit)) {
+                        continue;
+                    }
+                    DRAWBOT_PathP axis_path(
+                        drawbot.supplier_suiteP,
+                        supplier);
+                    drawbot.path_suiteP->MoveTo(
+                        axis_path,
+                        static_cast<float>(origin.x),
+                        static_cast<float>(origin.y));
+                    drawbot.path_suiteP->LineTo(
+                        axis_path,
+                        static_cast<float>(tip.x),
+                        static_cast<float>(tip.y));
+                    const float stroke =
+                        g_selection.axis_drag == axes[axis_index]
+                            ? 3.0F
+                            : 2.0F;
+                    DRAWBOT_PenP axis_pen(
+                        drawbot.supplier_suiteP,
+                        supplier,
+                        &axis_colors[axis_index],
+                        stroke);
+                    drawbot.surface_suiteP->StrokePath(
+                        drawing_surface,
+                        axis_pen,
+                        axis_path);
+                    const float half =
+                        draw_tool == kTransformToolScale ? 4.0F
+                                                        : 3.0F;
+                    DRAWBOT_RectF32 tip_rect{
+                        static_cast<float>(tip.x - half),
+                        static_cast<float>(tip.y - half),
+                        half * 2.0F,
+                        half * 2.0F};
+                    suites.SurfaceSuiteCurrent()->PaintRect(
+                        drawing_surface,
+                        &axis_colors[axis_index],
+                        &tip_rect);
+                }
+            }
+            if (draw_tool == kTransformToolScale) {
                 Point2 origin;
                 Point2 tip;
-                double pixels_per_unit = 0.0;
-                if (!BuildTranslateAxisScreen(
+                if (BuildUniformScaleHandle(
                         in_data,
                         event_extra,
                         scene,
                         camera,
                         centroid,
-                        axes[axis_index],
                         origin,
-                        tip,
-                        pixels_per_unit)) {
-                    continue;
+                        tip)) {
+                    const DRAWBOT_ColorRGBA uniform_color{
+                        0.95F, 0.95F, 0.95F, 0.95F};
+                    DRAWBOT_PathP uniform_path(
+                        drawbot.supplier_suiteP,
+                        supplier);
+                    drawbot.path_suiteP->MoveTo(
+                        uniform_path,
+                        static_cast<float>(origin.x),
+                        static_cast<float>(origin.y));
+                    drawbot.path_suiteP->LineTo(
+                        uniform_path,
+                        static_cast<float>(tip.x),
+                        static_cast<float>(tip.y));
+                    DRAWBOT_PenP uniform_pen(
+                        drawbot.supplier_suiteP,
+                        supplier,
+                        &uniform_color,
+                        g_selection.uniform_scale_drag
+                            ? 3.0F
+                            : 1.5F);
+                    drawbot.surface_suiteP->StrokePath(
+                        drawing_surface,
+                        uniform_pen,
+                        uniform_path);
+                    DRAWBOT_RectF32 uniform_tip{
+                        static_cast<float>(tip.x - 4.0),
+                        static_cast<float>(tip.y - 4.0),
+                        8.0F,
+                        8.0F};
+                    suites.SurfaceSuiteCurrent()->PaintRect(
+                        drawing_surface,
+                        &uniform_color,
+                        &uniform_tip);
                 }
-                DRAWBOT_PathP axis_path(
-                    drawbot.supplier_suiteP,
-                    supplier);
-                drawbot.path_suiteP->MoveTo(
-                    axis_path,
-                    static_cast<float>(origin.x),
-                    static_cast<float>(origin.y));
-                drawbot.path_suiteP->LineTo(
-                    axis_path,
-                    static_cast<float>(tip.x),
-                    static_cast<float>(tip.y));
-                const float stroke =
-                    g_selection.axis_drag == axes[axis_index] ? 3.0F
-                                                              : 2.0F;
-                DRAWBOT_PenP axis_pen(
-                    drawbot.supplier_suiteP,
-                    supplier,
-                    &axis_colors[axis_index],
-                    stroke);
-                drawbot.surface_suiteP->StrokePath(
-                    drawing_surface,
-                    axis_pen,
-                    axis_path);
-                DRAWBOT_RectF32 tip_rect{
-                    static_cast<float>(tip.x - 3.0),
-                    static_cast<float>(tip.y - 3.0),
-                    6.0F,
-                    6.0F};
-                suites.SurfaceSuiteCurrent()->PaintRect(
-                    drawing_surface,
-                    &axis_colors[axis_index],
-                    &tip_rect);
             }
         }
 
@@ -1950,6 +2789,14 @@ PF_Err HandleSurfaceGizmoEvent(
             event_extra->u.do_click.screen_point.h),
         static_cast<double>(
             event_extra->u.do_click.screen_point.v)};
+    const A_long edit_mode = std::clamp<A_long>(
+        params[kParamEditMode]->u.pd.value,
+        kEditModeVertex,
+        kEditModeSurface);
+    const A_long transform_tool = std::clamp<A_long>(
+        params[kParamTransformTool]->u.pd.value,
+        kTransformToolMove,
+        kTransformToolScale);
     if (event_extra->e_type == PF_Event_DO_CLICK) {
         const bool shift =
             (event_extra->u.do_click.modifiers & PF_Mod_SHIFT_KEY) != 0;
@@ -1962,6 +2809,9 @@ PF_Err HandleSurfaceGizmoEvent(
         g_selection.drag_origin_seeded = false;
         g_selection.marquee_active = false;
         g_selection.axis_drag = TranslateAxis::None;
+        g_selection.rotate_axis_drag = RotateAxis::None;
+        g_selection.uniform_scale_drag = false;
+        g_selection.transform_tool_drag = transform_tool;
 
         // Cmd/Ctrl-drag starts a same-surface marquee (Foldspace-style).
         if (command) {
@@ -1970,6 +2820,7 @@ PF_Err HandleSurfaceGizmoEvent(
             g_selection.marquee_start = mouse;
             g_selection.marquee_end = mouse;
             if (!shift) {
+                g_selection.entities.clear();
                 g_selection.points.clear();
                 g_selection.primary = {};
             }
@@ -1989,26 +2840,62 @@ PF_Err HandleSurfaceGizmoEvent(
         Point3 centroid{};
         if (!g_selection.points.empty() &&
             ComputeSelectionCentroid(scene, centroid)) {
-            const TranslateAxis axis = HitTestTranslateAxes(
-                in_data,
-                event_extra,
-                scene,
-                camera,
-                centroid,
-                mouse);
-            if (axis != TranslateAxis::None) {
-                g_selection.axis_drag = axis;
-                g_selection.dragging = true;
-                if (CaptureDragSnapshot(
+            bool gizmo_hit = false;
+            if (transform_tool == kTransformToolRotate) {
+                g_selection.rotate_axis_drag = HitTestRotateRings(
+                    in_data,
+                    event_extra,
+                    scene,
+                    camera,
+                    centroid,
+                    mouse);
+                gizmo_hit =
+                    g_selection.rotate_axis_drag != RotateAxis::None;
+            } else if (transform_tool == kTransformToolScale) {
+                g_selection.uniform_scale_drag =
+                    HitTestUniformScaleHandle(
                         in_data,
-                        params,
-                        g_selection.points.front().surface,
-                        mouse,
-                        centroid)) {
+                        event_extra,
+                        scene,
+                        camera,
+                        centroid,
+                        mouse);
+                if (!g_selection.uniform_scale_drag) {
+                    g_selection.axis_drag = HitTestTranslateAxes(
+                        in_data,
+                        event_extra,
+                        scene,
+                        camera,
+                        centroid,
+                        mouse);
+                }
+                gizmo_hit =
+                    g_selection.uniform_scale_drag ||
+                    g_selection.axis_drag != TranslateAxis::None;
+            } else {
+                g_selection.axis_drag = HitTestTranslateAxes(
+                    in_data,
+                    event_extra,
+                    scene,
+                    camera,
+                    centroid,
+                    mouse);
+                gizmo_hit =
+                    g_selection.axis_drag != TranslateAxis::None;
+            }
+            if (gizmo_hit) {
+                g_selection.dragging = CaptureDragSnapshot(
+                    in_data,
+                    params,
+                    g_selection.points.front().surface,
+                    mouse,
+                    centroid);
+                if (g_selection.dragging) {
                     BeginCompDrag(event_extra);
                 } else {
-                    g_selection.dragging = false;
                     g_selection.axis_drag = TranslateAxis::None;
+                    g_selection.rotate_axis_drag = RotateAxis::None;
+                    g_selection.uniform_scale_drag = false;
                 }
                 event_extra->evt_out_flags =
                     static_cast<PF_EventOutFlags>(
@@ -2018,123 +2905,167 @@ PF_Err HandleSurfaceGizmoEvent(
         }
 
         constexpr double kPointHitRadiusSquared = 100.0;
-        constexpr double kLineHitRadiusSquared = 64.0;
-        double closest = kPointHitRadiusSquared;
-        LatticePointRef point_hit{};
-        bool found_point = false;
-        for (std::uint32_t surface_index = 0;
-             surface_index < scene.surface_count;
-             ++surface_index) {
-            const SurfaceData& surface =
-                scene.surfaces[surface_index];
-            if (surface.enabled == 0) {
-                continue;
-            }
-            for (std::uint16_t row = 0;
-                 row <= surface.lattice.divisions_y;
-                 ++row) {
-                for (std::uint16_t column = 0;
-                     column <= surface.lattice.divisions_x;
-                     ++column) {
-                    const std::size_t point_index = LatticePointIndex(
-                        surface.lattice.divisions_x,
-                        row,
-                        column);
-                    if (null_overrides.IsControlled(
-                            surface_index,
-                            point_index)) {
-                        continue;
-                    }
-                    Point2 point;
-                    if (!ProjectSurfacePointToFrame(
-                            in_data,
-                            event_extra,
-                            surface,
-                            camera,
-                            static_cast<double>(column) /
+        constexpr double kEdgeHitRadiusSquared = 64.0;
+        SelectionEntityRef entity_hit{};
+        bool found_entity = false;
+
+        if (edit_mode == kEditModeVertex) {
+            double closest = kPointHitRadiusSquared;
+            for (std::uint32_t surface_index = 0;
+                 surface_index < scene.surface_count;
+                 ++surface_index) {
+                const SurfaceData& surface =
+                    scene.surfaces[surface_index];
+                if (surface.enabled == 0) {
+                    continue;
+                }
+                for (std::uint16_t row = 0;
+                     row <= surface.lattice.divisions_y;
+                     ++row) {
+                    for (std::uint16_t column = 0;
+                         column <= surface.lattice.divisions_x;
+                         ++column) {
+                        const std::size_t point_index =
+                            LatticePointIndex(
                                 surface.lattice.divisions_x,
-                            static_cast<double>(row) /
-                                surface.lattice.divisions_y,
-                            point)) {
-                        continue;
-                    }
-                    const double dx = mouse.x - point.x;
-                    const double dy = mouse.y - point.y;
-                    const double distance = dx * dx + dy * dy;
-                    if (distance <= closest) {
-                        closest = distance;
-                        point_hit = {surface_index, row, column};
-                        found_point = true;
+                                row,
+                                column);
+                        if (null_overrides.IsControlled(
+                                surface_index,
+                                point_index)) {
+                            continue;
+                        }
+                        Point2 point;
+                        if (!ProjectControlPointToFrame(
+                                in_data,
+                                event_extra,
+                                surface,
+                                camera,
+                                row,
+                                column,
+                                point)) {
+                            continue;
+                        }
+                        const double dx = mouse.x - point.x;
+                        const double dy = mouse.y - point.y;
+                        const double distance = dx * dx + dy * dy;
+                        if (distance <= closest) {
+                            closest = distance;
+                            entity_hit = {
+                                surface_index,
+                                SelectionEntityKind::Vertex,
+                                row,
+                                column};
+                            found_entity = true;
+                        }
                     }
                 }
             }
-        }
-
-        if (found_point) {
-            if (shift) {
-                ToggleSelection(point_hit);
-            } else if (!SelectionContains(point_hit)) {
-                SetSelection(point_hit);
-            } else {
-                g_selection.primary = point_hit;
-            }
-            if (!g_selection.points.empty()) {
-                Point3 point_centroid{};
-                ComputeSelectionCentroid(scene, point_centroid);
-                g_selection.dragging = CaptureDragSnapshot(
-                    in_data,
-                    params,
-                    g_selection.primary.surface,
-                    mouse,
-                    point_centroid);
-                if (g_selection.dragging) {
-                    BeginCompDrag(event_extra);
+            if (!found_entity) {
+                LatticeLineRef line_hit{};
+                if (HitTestLatticeLine(
+                        in_data,
+                        event_extra,
+                        scene,
+                        camera,
+                        mouse,
+                        kEdgeHitRadiusSquared,
+                        line_hit)) {
+                    entity_hit = {
+                        line_hit.surface,
+                        line_hit.kind == LatticeLineKind::Row
+                            ? SelectionEntityKind::Row
+                            : SelectionEntityKind::Column,
+                        static_cast<std::uint16_t>(
+                            line_hit.kind == LatticeLineKind::Row
+                                ? line_hit.index
+                                : 0),
+                        static_cast<std::uint16_t>(
+                            line_hit.kind == LatticeLineKind::Column
+                                ? line_hit.index
+                                : 0)};
+                    found_entity = true;
                 }
-                event_extra->evt_out_flags =
-                    static_cast<PF_EventOutFlags>(
-                        PF_EO_HANDLED_EVENT | PF_EO_ALWAYS_UPDATE);
-            } else {
-                event_extra->evt_out_flags = PF_EO_HANDLED_EVENT;
             }
-            return PF_Err_NONE;
-        }
-
-        LatticeLineRef line_hit{};
-        if (HitTestLatticeLine(
+        } else if (edit_mode == kEditModeEdge) {
+            found_entity = HitTestEdgeEntity(
                 in_data,
                 event_extra,
                 scene,
                 camera,
                 mouse,
-                kLineHitRadiusSquared,
-                line_hit)) {
-            const std::vector<LatticePointRef> line_points =
-                CollectFreeLinePoints(
+                kEdgeHitRadiusSquared,
+                entity_hit);
+            if (found_entity &&
+                event_extra->u.do_click.num_clicks >= 2) {
+                if (entity_hit.kind ==
+                    SelectionEntityKind::EdgeHorizontal) {
+                    entity_hit.kind = SelectionEntityKind::Row;
+                    entity_hit.column = 0;
+                } else {
+                    entity_hit.kind = SelectionEntityKind::Column;
+                    entity_hit.row = 0;
+                }
+            }
+        } else {
+            SelectionEntityRef face_hit{};
+            found_entity = HitTestFaceEntity(
+                in_data,
+                event_extra,
+                scene,
+                camera,
+                mouse,
+                face_hit);
+            if (found_entity) {
+                entity_hit = face_hit;
+                if (edit_mode == kEditModeSurface) {
+                    entity_hit.kind = SelectionEntityKind::Surface;
+                    entity_hit.row = 0;
+                    entity_hit.column = 0;
+                }
+            }
+        }
+
+        if (found_entity) {
+            if (shift) {
+                ToggleSelectionEntity(
                     scene,
                     null_overrides,
-                    line_hit);
-            if (!line_points.empty()) {
-                if (shift) {
-                    MergePointsIntoSelection(line_points);
-                } else {
-                    SetSelectionPoints(line_points);
+                    entity_hit);
+            } else {
+                const bool already_selected = std::any_of(
+                    g_selection.entities.begin(),
+                    g_selection.entities.end(),
+                    [&](const SelectionEntityRef& candidate) {
+                        return SameSelectionEntity(
+                            candidate,
+                            entity_hit);
+                    });
+                if (!already_selected) {
+                    SetSelectionEntity(
+                        scene,
+                        null_overrides,
+                        entity_hit);
                 }
-                Point3 line_centroid{};
-                ComputeSelectionCentroid(scene, line_centroid);
+            }
+            if (!g_selection.points.empty() &&
+                transform_tool == kTransformToolMove) {
+                Point3 entity_centroid{};
+                ComputeSelectionCentroid(scene, entity_centroid);
                 g_selection.dragging = CaptureDragSnapshot(
                     in_data,
                     params,
                     g_selection.primary.surface,
                     mouse,
-                    line_centroid);
+                    entity_centroid);
                 if (g_selection.dragging) {
                     BeginCompDrag(event_extra);
                 }
-                event_extra->evt_out_flags =
-                    static_cast<PF_EventOutFlags>(
-                        PF_EO_HANDLED_EVENT | PF_EO_ALWAYS_UPDATE);
-                return PF_Err_NONE;
             }
+            event_extra->evt_out_flags =
+                static_cast<PF_EventOutFlags>(
+                    PF_EO_HANDLED_EVENT | PF_EO_ALWAYS_UPDATE);
+            return PF_Err_NONE;
         }
 
         if (!shift && !g_selection.points.empty()) {
@@ -2177,17 +3108,22 @@ PF_Err HandleSurfaceGizmoEvent(
         return PF_Err_NONE;
     }
 
-    // 1) Seed origin on the first DRAG sample. DO_CLICK and the first DRAG
-    // often disagree by hundreds of pixels in AE; treating that as motion
-    // wrote multi-thousand cage deltas and looked like a total collapse.
+    // 1) AE can report a different coordinate space between DO_CLICK and the
+    // first DRAG. Only re-seed when that first step is an actual teleport;
+    // a normal short gesture may contain just one DRAG sample and must still
+    // transform the selection.
     if (!g_selection.drag_origin_seeded) {
-        g_selection.mouse_down = mouse;
-        g_selection.last_mouse = mouse;
         g_selection.drag_origin_seeded = true;
-        event_extra->evt_out_flags = static_cast<PF_EventOutFlags>(
-            PF_EO_HANDLED_EVENT | PF_EO_ALWAYS_UPDATE);
-        EndCompDragIfFinished(event_extra);
-        return PF_Err_NONE;
+        const double first_x = mouse.x - g_selection.mouse_down.x;
+        const double first_y = mouse.y - g_selection.mouse_down.y;
+        if (std::hypot(first_x, first_y) > kMaxDragStepPixels) {
+            g_selection.mouse_down = mouse;
+            g_selection.last_mouse = mouse;
+            event_extra->evt_out_flags = static_cast<PF_EventOutFlags>(
+                PF_EO_HANDLED_EVENT | PF_EO_ALWAYS_UPDATE);
+            EndCompDragIfFinished(event_extra);
+            return PF_Err_NONE;
+        }
     }
 
     // 2) Reject mid-drag teleports. last_mouse alone is not enough: absolute
@@ -2228,6 +3164,10 @@ PF_Err HandleSurfaceGizmoEvent(
     float apply_x = 0.0F;
     float apply_y = 0.0F;
     float apply_z = 0.0F;
+    double rotation_angle = 0.0;
+    double scale_x = 1.0;
+    double scale_y = 1.0;
+    double scale_z = 1.0;
 
     // Evaluate Jacobian against the pre-drag snapshot so the mapping is stable.
     SurfaceData surface = scene.surfaces[g_selection.primary.surface];
@@ -2237,7 +3177,112 @@ PF_Err HandleSurfaceGizmoEvent(
         return PF_Err_NONE;
     }
 
-    if (g_selection.axis_drag != TranslateAxis::None) {
+    if (g_selection.transform_tool_drag == kTransformToolRotate) {
+        if (g_selection.rotate_axis_drag == RotateAxis::None) {
+            EndCompDragIfFinished(event_extra);
+            return PF_Err_NONE;
+        }
+        Point2 center;
+        if (!ProjectSelectionCentroidToFrame(
+                in_data,
+                event_extra,
+                scene,
+                camera,
+                g_selection.centroid_down,
+                center)) {
+            return PF_Err_NONE;
+        }
+        const double start_angle = std::atan2(
+            g_selection.mouse_down.y - center.y,
+            g_selection.mouse_down.x - center.x);
+        const double current_angle = std::atan2(
+            mouse.y - center.y,
+            mouse.x - center.x);
+        rotation_angle = current_angle - start_angle;
+        constexpr double kTwoPi = 6.28318530717958647692;
+        constexpr double kPi = 3.14159265358979323846;
+        while (rotation_angle > kPi) {
+            rotation_angle -= kTwoPi;
+        }
+        while (rotation_angle < -kPi) {
+            rotation_angle += kTwoPi;
+        }
+    } else if (g_selection.transform_tool_drag == kTransformToolScale) {
+        double handle_delta = 0.0;
+        if (g_selection.uniform_scale_drag) {
+            Point2 origin;
+            Point2 tip;
+            if (!BuildUniformScaleHandle(
+                    in_data,
+                    event_extra,
+                    scene,
+                    camera,
+                    g_selection.centroid_down,
+                    origin,
+                    tip)) {
+                return PF_Err_NONE;
+            }
+            const double dir_x = tip.x - origin.x;
+            const double dir_y = tip.y - origin.y;
+            const double dir_length = std::hypot(dir_x, dir_y);
+            if (dir_length <= 1.0e-8) {
+                return PF_Err_NONE;
+            }
+            handle_delta =
+                (screen_x * dir_x + screen_y * dir_y) / dir_length;
+        } else if (g_selection.axis_drag != TranslateAxis::None) {
+            Point2 origin;
+            Point2 tip;
+            double pixels_per_unit = 0.0;
+            if (!BuildTranslateAxisScreen(
+                    in_data,
+                    event_extra,
+                    scene,
+                    camera,
+                    g_selection.centroid_down,
+                    g_selection.axis_drag,
+                    origin,
+                    tip,
+                    pixels_per_unit)) {
+                return PF_Err_NONE;
+            }
+            const double dir_x = tip.x - origin.x;
+            const double dir_y = tip.y - origin.y;
+            const double dir_length = std::hypot(dir_x, dir_y);
+            if (dir_length <= 1.0e-8) {
+                return PF_Err_NONE;
+            }
+            handle_delta =
+                (screen_x * dir_x + screen_y * dir_y) / dir_length;
+        } else {
+            EndCompDragIfFinished(event_extra);
+            return PF_Err_NONE;
+        }
+        const double factor = std::clamp(
+            std::exp(handle_delta / 100.0),
+            0.01,
+            100.0);
+        if (g_selection.uniform_scale_drag) {
+            scale_x = factor;
+            scale_y = factor;
+            scale_z = factor;
+        } else {
+            switch (g_selection.axis_drag) {
+                case TranslateAxis::X:
+                    scale_x = factor;
+                    break;
+                case TranslateAxis::Y:
+                    scale_y = factor;
+                    break;
+                case TranslateAxis::Z:
+                    scale_z = factor;
+                    break;
+                case TranslateAxis::None:
+                default:
+                    break;
+            }
+        }
+    } else if (g_selection.axis_drag != TranslateAxis::None) {
         Point2 origin;
         Point2 tip;
         double pixels_per_unit = 0.0;
@@ -2424,12 +3469,42 @@ PF_Err HandleSurfaceGizmoEvent(
             null_overrides.IsControlled(ref.surface, point_index)) {
             continue;
         }
+        Point3 transformed{
+            g_selection.drag_snapshot.points[point_index].x,
+            g_selection.drag_snapshot.points[point_index].y,
+            g_selection.drag_snapshot.points[point_index].z};
+        if (g_selection.transform_tool_drag == kTransformToolRotate) {
+            const Point3 axis = AxisUnit(g_selection.rotate_axis_drag);
+            transformed = RotatePoint(
+                transformed,
+                g_selection.centroid_down.x,
+                g_selection.centroid_down.y,
+                g_selection.centroid_down.z,
+                axis.x * rotation_angle,
+                axis.y * rotation_angle,
+                axis.z * rotation_angle);
+        } else if (
+            g_selection.transform_tool_drag == kTransformToolScale) {
+            transformed.x =
+                g_selection.centroid_down.x +
+                (transformed.x - g_selection.centroid_down.x) * scale_x;
+            transformed.y =
+                g_selection.centroid_down.y +
+                (transformed.y - g_selection.centroid_down.y) * scale_y;
+            transformed.z =
+                g_selection.centroid_down.z +
+                (transformed.z - g_selection.centroid_down.z) * scale_z;
+        } else {
+            transformed.x += apply_x;
+            transformed.y += apply_y;
+            transformed.z += apply_z;
+        }
         lattice->points[point_index].x =
-            g_selection.drag_snapshot.points[point_index].x + apply_x;
+            static_cast<float>(transformed.x);
         lattice->points[point_index].y =
-            g_selection.drag_snapshot.points[point_index].y + apply_y;
+            static_cast<float>(transformed.y);
         lattice->points[point_index].z =
-            g_selection.drag_snapshot.points[point_index].z + apply_z;
+            static_cast<float>(transformed.z);
     }
     PF_UNLOCK_HANDLE(handle);
     params[SurfaceLatticeParam(g_selection.primary.surface)]

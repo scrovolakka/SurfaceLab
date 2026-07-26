@@ -22,6 +22,13 @@ constexpr A_long kRenderViewNormalsViewSpace = 4;
 constexpr A_long kAntialiasingOff = 1;
 constexpr A_long kAntialiasing2Samples = 2;
 constexpr A_long kAntialiasing4Samples = 3;
+constexpr A_long kEditModeVertex = 1;
+constexpr A_long kEditModeEdge = 2;
+constexpr A_long kEditModeFace = 3;
+constexpr A_long kEditModeSurface = 4;
+constexpr A_long kTransformToolMove = 1;
+constexpr A_long kTransformToolRotate = 2;
+constexpr A_long kTransformToolScale = 3;
 constexpr std::size_t kMaximumRenderLights = 8;
 
 struct Vertex {
