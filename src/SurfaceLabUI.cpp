@@ -307,6 +307,9 @@ struct GizmoSelectionState {
     TranslateAxis axis_drag{TranslateAxis::None};
     RotateAxis rotate_axis_drag{RotateAxis::None};
     bool uniform_scale_drag{};
+    TranslateAxis axis_hover{TranslateAxis::None};
+    RotateAxis rotate_axis_hover{RotateAxis::None};
+    bool uniform_scale_hover{};
     A_long transform_tool_drag{kTransformToolMove};
     A_long transform_space_drag{kTransformSpaceLocal};
     Point3 selection_centroid{};
@@ -318,8 +321,8 @@ struct GizmoSelectionState {
 
 GizmoSelectionState g_selection;
 
-constexpr double kTranslateAxisPixels = 56.0;
-constexpr double kTranslateAxisHitPixels = 10.0;
+constexpr double kTranslateAxisPixels = 68.0;
+constexpr double kTranslateAxisHitPixels = 12.0;
 // Reject axes that project to nearly a point (depth-parallel / edge-on).
 constexpr double kMinAxisPixelsPerUnit = 0.25;
 // |det(J)| / (|col0|*|col1|) = |sin theta|; reject near-parallel cage axes.
@@ -357,6 +360,9 @@ void ClearSelection() {
     g_selection.axis_drag = TranslateAxis::None;
     g_selection.rotate_axis_drag = RotateAxis::None;
     g_selection.uniform_scale_drag = false;
+    g_selection.axis_hover = TranslateAxis::None;
+    g_selection.rotate_axis_hover = RotateAxis::None;
+    g_selection.uniform_scale_hover = false;
     g_selection.transform_tool_drag = kTransformToolMove;
     g_selection.transform_space_drag = kTransformSpaceLocal;
     g_selection.selection_centroid = {};
@@ -2970,7 +2976,9 @@ PF_Err HandleSurfaceGizmoEvent(
     }
     if (event_extra->e_type != PF_Event_DRAW &&
         event_extra->e_type != PF_Event_DO_CLICK &&
-        event_extra->e_type != PF_Event_DRAG) {
+        event_extra->e_type != PF_Event_DRAG &&
+        event_extra->e_type != PF_Event_ADJUST_CURSOR &&
+        event_extra->e_type != PF_Event_MOUSE_EXITED) {
         return PF_Err_NONE;
     }
 
@@ -3003,6 +3011,88 @@ PF_Err HandleSurfaceGizmoEvent(
     if (!g_selection.dragging &&
         !g_selection.entities.empty()) {
         RebuildSelectionPoints(scene, null_overrides);
+    }
+
+    if (event_extra->e_type == PF_Event_MOUSE_EXITED) {
+        g_selection.axis_hover = TranslateAxis::None;
+        g_selection.rotate_axis_hover = RotateAxis::None;
+        g_selection.uniform_scale_hover = false;
+        event_extra->evt_out_flags = static_cast<PF_EventOutFlags>(
+            PF_EO_HANDLED_EVENT | PF_EO_ALWAYS_UPDATE);
+        return PF_Err_NONE;
+    }
+
+    if (event_extra->e_type == PF_Event_ADJUST_CURSOR) {
+        g_selection.axis_hover = TranslateAxis::None;
+        g_selection.rotate_axis_hover = RotateAxis::None;
+        g_selection.uniform_scale_hover = false;
+        Point3 centroid{};
+        if (!g_selection.points.empty() &&
+            !g_selection.marquee_active &&
+            ComputeSelectionCentroid(scene, centroid)) {
+            const Point2 hover_mouse{
+                static_cast<double>(
+                    event_extra->u.adjust_cursor.screen_point.h),
+                static_cast<double>(
+                    event_extra->u.adjust_cursor.screen_point.v)};
+            const A_long hover_tool = std::clamp<A_long>(
+                params[kParamTransformTool]->u.pd.value,
+                kTransformToolMove,
+                kTransformToolScale);
+            const A_long hover_space = std::clamp<A_long>(
+                params[kParamTransformSpace]->u.pd.value,
+                kTransformSpaceLocal,
+                kTransformSpaceWorld);
+            if (hover_tool == kTransformToolRotate) {
+                g_selection.rotate_axis_hover = HitTestRotateRings(
+                    in_data,
+                    event_extra,
+                    scene,
+                    camera,
+                    centroid,
+                    hover_space,
+                    hover_mouse);
+            } else if (hover_tool == kTransformToolScale) {
+                g_selection.uniform_scale_hover =
+                    HitTestUniformScaleHandle(
+                        in_data,
+                        event_extra,
+                        scene,
+                        camera,
+                        centroid,
+                        hover_mouse);
+                if (!g_selection.uniform_scale_hover) {
+                    g_selection.axis_hover = HitTestTranslateAxes(
+                        in_data,
+                        event_extra,
+                        scene,
+                        camera,
+                        centroid,
+                        hover_space,
+                        hover_mouse);
+                }
+            } else {
+                g_selection.axis_hover = HitTestTranslateAxes(
+                    in_data,
+                    event_extra,
+                    scene,
+                    camera,
+                    centroid,
+                    hover_space,
+                    hover_mouse);
+            }
+        }
+        const bool over_gizmo =
+            g_selection.axis_hover != TranslateAxis::None ||
+            g_selection.rotate_axis_hover != RotateAxis::None ||
+            g_selection.uniform_scale_hover;
+        if (over_gizmo) {
+            event_extra->u.adjust_cursor.set_cursor =
+                PF_Cursor_CROSSHAIRS;
+        }
+        event_extra->evt_out_flags = static_cast<PF_EventOutFlags>(
+            PF_EO_HANDLED_EVENT | PF_EO_ALWAYS_UPDATE);
+        return PF_Err_NONE;
     }
 
     if (event_extra->e_type == PF_Event_DRAW) {
@@ -3436,11 +3526,23 @@ PF_Err HandleSurfaceGizmoEvent(
                             static_cast<float>(ring[index].x),
                             static_cast<float>(ring[index].y));
                     }
-                    const float stroke =
+                    const bool emphasized =
                         g_selection.rotate_axis_drag ==
-                                axes[axis_index]
-                            ? 3.0F
-                            : 1.5F;
+                            axes[axis_index] ||
+                        g_selection.rotate_axis_hover ==
+                            axes[axis_index];
+                    const float stroke = emphasized ? 4.0F : 2.0F;
+                    const DRAWBOT_ColorRGBA shadow_color{
+                        0.02F, 0.02F, 0.02F, 0.78F};
+                    DRAWBOT_PenP ring_shadow(
+                        drawbot.supplier_suiteP,
+                        supplier,
+                        &shadow_color,
+                        stroke + 3.0F);
+                    drawbot.surface_suiteP->StrokePath(
+                        drawing_surface,
+                        ring_shadow,
+                        ring_path);
                     DRAWBOT_PenP ring_pen(
                         drawbot.supplier_suiteP,
                         supplier,
@@ -3484,10 +3586,21 @@ PF_Err HandleSurfaceGizmoEvent(
                         axis_path,
                         static_cast<float>(tip.x),
                         static_cast<float>(tip.y));
-                    const float stroke =
-                        g_selection.axis_drag == axes[axis_index]
-                            ? 3.0F
-                            : 2.0F;
+                    const bool emphasized =
+                        g_selection.axis_drag == axes[axis_index] ||
+                        g_selection.axis_hover == axes[axis_index];
+                    const float stroke = emphasized ? 4.5F : 2.75F;
+                    const DRAWBOT_ColorRGBA shadow_color{
+                        0.02F, 0.02F, 0.02F, 0.82F};
+                    DRAWBOT_PenP axis_shadow(
+                        drawbot.supplier_suiteP,
+                        supplier,
+                        &shadow_color,
+                        stroke + 3.5F);
+                    drawbot.surface_suiteP->StrokePath(
+                        drawing_surface,
+                        axis_shadow,
+                        axis_path);
                     DRAWBOT_PenP axis_pen(
                         drawbot.supplier_suiteP,
                         supplier,
@@ -3497,18 +3610,94 @@ PF_Err HandleSurfaceGizmoEvent(
                         drawing_surface,
                         axis_pen,
                         axis_path);
-                    const float half =
-                        draw_tool == kTransformToolScale ? 4.0F
-                                                        : 3.0F;
-                    DRAWBOT_RectF32 tip_rect{
-                        static_cast<float>(tip.x - half),
-                        static_cast<float>(tip.y - half),
-                        half * 2.0F,
-                        half * 2.0F};
+                    if (draw_tool == kTransformToolMove) {
+                        const double dx = tip.x - origin.x;
+                        const double dy = tip.y - origin.y;
+                        const double length =
+                            std::sqrt(dx * dx + dy * dy);
+                        if (length > 1.0e-6) {
+                            const double ux = dx / length;
+                            const double uy = dy / length;
+                            const double arrow_length =
+                                emphasized ? 16.0 : 13.0;
+                            const double arrow_half_width =
+                                emphasized ? 7.5 : 6.0;
+                            const Point2 base{
+                                tip.x - ux * arrow_length,
+                                tip.y - uy * arrow_length};
+                            DRAWBOT_PathP arrow(
+                                drawbot.supplier_suiteP,
+                                supplier);
+                            drawbot.path_suiteP->MoveTo(
+                                arrow,
+                                static_cast<float>(tip.x),
+                                static_cast<float>(tip.y));
+                            drawbot.path_suiteP->LineTo(
+                                arrow,
+                                static_cast<float>(
+                                    base.x - uy * arrow_half_width),
+                                static_cast<float>(
+                                    base.y + ux * arrow_half_width));
+                            drawbot.path_suiteP->LineTo(
+                                arrow,
+                                static_cast<float>(
+                                    base.x + uy * arrow_half_width),
+                                static_cast<float>(
+                                    base.y - ux * arrow_half_width));
+                            drawbot.path_suiteP->Close(arrow);
+                            DRAWBOT_BrushP arrow_brush(
+                                drawbot.supplier_suiteP,
+                                supplier,
+                                &axis_colors[axis_index]);
+                            drawbot.surface_suiteP->FillPath(
+                                drawing_surface,
+                                arrow_brush,
+                                arrow,
+                                kDRAWBOT_FillType_Default);
+                        }
+                    } else {
+                        const float half = emphasized ? 6.0F : 4.5F;
+                        DRAWBOT_RectF32 tip_rect{
+                            static_cast<float>(tip.x - half),
+                            static_cast<float>(tip.y - half),
+                            half * 2.0F,
+                            half * 2.0F};
+                        suites.SurfaceSuiteCurrent()->PaintRect(
+                            drawing_surface,
+                            &axis_colors[axis_index],
+                            &tip_rect);
+                    }
+                }
+                Point2 hub;
+                if (ProjectSelectionCentroidToFrame(
+                        in_data,
+                        event_extra,
+                        scene,
+                        camera,
+                        centroid,
+                        hub)) {
+                    const DRAWBOT_ColorRGBA hub_color{
+                        0.96F, 0.96F, 0.96F, 0.98F};
+                    const DRAWBOT_ColorRGBA hub_shadow{
+                        0.02F, 0.02F, 0.02F, 0.85F};
+                    DRAWBOT_RectF32 shadow_rect{
+                        static_cast<float>(hub.x - 6.0),
+                        static_cast<float>(hub.y - 6.0),
+                        12.0F,
+                        12.0F};
                     suites.SurfaceSuiteCurrent()->PaintRect(
                         drawing_surface,
-                        &axis_colors[axis_index],
-                        &tip_rect);
+                        &hub_shadow,
+                        &shadow_rect);
+                    DRAWBOT_RectF32 hub_rect{
+                        static_cast<float>(hub.x - 3.5),
+                        static_cast<float>(hub.y - 3.5),
+                        7.0F,
+                        7.0F};
+                    suites.SurfaceSuiteCurrent()->PaintRect(
+                        drawing_surface,
+                        &hub_color,
+                        &hub_rect);
                 }
             }
             if (draw_tool == kTransformToolScale) {
@@ -3539,18 +3728,24 @@ PF_Err HandleSurfaceGizmoEvent(
                         drawbot.supplier_suiteP,
                         supplier,
                         &uniform_color,
-                        g_selection.uniform_scale_drag
-                            ? 3.0F
-                            : 1.5F);
+                        g_selection.uniform_scale_drag ||
+                                g_selection.uniform_scale_hover
+                            ? 4.0F
+                            : 2.0F);
                     drawbot.surface_suiteP->StrokePath(
                         drawing_surface,
                         uniform_pen,
                         uniform_path);
+                    const float uniform_half =
+                        g_selection.uniform_scale_drag ||
+                                g_selection.uniform_scale_hover
+                            ? 6.0F
+                            : 4.5F;
                     DRAWBOT_RectF32 uniform_tip{
-                        static_cast<float>(tip.x - 4.0),
-                        static_cast<float>(tip.y - 4.0),
-                        8.0F,
-                        8.0F};
+                        static_cast<float>(tip.x - uniform_half),
+                        static_cast<float>(tip.y - uniform_half),
+                        uniform_half * 2.0F,
+                        uniform_half * 2.0F};
                     suites.SurfaceSuiteCurrent()->PaintRect(
                         drawing_surface,
                         &uniform_color,
