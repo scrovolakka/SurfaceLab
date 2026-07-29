@@ -1881,8 +1881,14 @@ bool ResolveAfterEffectsView(
     camera.down = Normalize(MatrixRow(camera_to_world, 1));
     camera.forward = Normalize(MatrixRow(camera_to_world, 2));
     camera.focal_distance = distance_to_image_plane * scale_z;
-    camera.center_x = center_x;
-    camera.center_y = center_y;
+    // AEGP_GetEffectCameraMatrix reports the full-resolution image plane even
+    // while AE is using Adaptive Resolution. Derive the raster centre from
+    // that authoritative plane and the current downsample, rather than from a
+    // SmartFX checkout rect whose coordinate units vary by render phase.
+    camera.center_x =
+        static_cast<double>(image_plane_width) * scale_x * 0.5;
+    camera.center_y =
+        static_cast<double>(image_plane_height) * scale_y * 0.5;
     camera.output_offset_x = output_offset_x;
     camera.output_offset_y = output_offset_y;
     camera.perspective = true;
@@ -3022,8 +3028,8 @@ CameraState BuildResolvedCameraState(
     // The full-comp 2D host is a render window, not a scene object. AE applies
     // its layer transform after the effect, so folding the host transform back
     // into the projection shifts the comp-world surface a second time.
-    camera.input_center_x = center_x;
-    camera.input_center_y = center_y;
+    camera.input_center_x = camera.center_x;
+    camera.input_center_y = camera.center_y;
     bool initialize_from_input = false;
     for (std::uint32_t surface = 0; surface < kSurfaceCount; ++surface) {
         const PF_Handle handle =
@@ -3044,8 +3050,8 @@ CameraState BuildResolvedCameraState(
     }
     camera.scene_transform = BuildSceneCoordinateTransform(
         params,
-        center_x,
-        center_y,
+        camera.input_center_x,
+        camera.input_center_y,
         initialize_from_input,
         scale_x,
         scale_y,
