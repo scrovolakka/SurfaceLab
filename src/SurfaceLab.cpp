@@ -558,6 +558,55 @@ SceneData ResolveSceneForFrame(
         surface.position_y = static_cast<float>(position.y_value);
         surface.position_z = static_cast<float>(position.z_value);
     }
+    for (std::uint32_t slot = 0;
+         slot < kPointAnimationSlotCount;
+         ++slot) {
+        const PF_Point3DDef& metadata =
+            params[PointAnimationMetadataParam(slot)]->u.point3d_d;
+        const A_long encoded_surface =
+            static_cast<A_long>(std::llround(metadata.x_value));
+        const A_long encoded_row =
+            static_cast<A_long>(std::llround(metadata.y_value));
+        const A_long encoded_column =
+            static_cast<A_long>(std::llround(metadata.z_value));
+        if (encoded_surface < 1 ||
+            encoded_surface > static_cast<A_long>(kSurfaceCount) ||
+            encoded_row < 1 ||
+            encoded_row >
+                static_cast<A_long>(kMaximumLatticeAxisPoints) ||
+            encoded_column < 1 ||
+            encoded_column >
+                static_cast<A_long>(kMaximumLatticeAxisPoints)) {
+            continue;
+        }
+        SurfaceData& surface =
+            scene.surfaces[
+                static_cast<std::uint32_t>(encoded_surface - 1)];
+        const auto row =
+            static_cast<std::uint16_t>(encoded_row - 1);
+        const auto column =
+            static_cast<std::uint16_t>(encoded_column - 1);
+        if (row > surface.lattice.divisions_y ||
+            column > surface.lattice.divisions_x) {
+            continue;
+        }
+        const PF_Point3DDef& value =
+            params[PointAnimationValueParam(slot)]->u.point3d_d;
+        StoredPoint3& point =
+            surface.lattice.points[LatticePointIndex(
+                surface.lattice.divisions_x,
+                row,
+                column)];
+        if (std::isfinite(value.x_value)) {
+            point.x = static_cast<float>(value.x_value);
+        }
+        if (std::isfinite(value.y_value)) {
+            point.y = static_cast<float>(value.y_value);
+        }
+        if (std::isfinite(value.z_value)) {
+            point.z = static_cast<float>(value.z_value);
+        }
+    }
     return scene;
 }
 

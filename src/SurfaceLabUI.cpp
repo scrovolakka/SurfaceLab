@@ -2056,6 +2056,254 @@ PF_Err PublishRigBridge(
     return PF_Err_NONE;
 }
 
+bool DecodePointAnimationSlot(
+    const PF_ParamDef* metadata,
+    std::uint32_t& surface,
+    std::uint16_t& row,
+    std::uint16_t& column) {
+    if (!metadata) {
+        return false;
+    }
+    const PF_Point3DDef& point = metadata->u.point3d_d;
+    const A_long encoded_surface =
+        static_cast<A_long>(std::llround(point.x_value));
+    const A_long encoded_row =
+        static_cast<A_long>(std::llround(point.y_value));
+    const A_long encoded_column =
+        static_cast<A_long>(std::llround(point.z_value));
+    if (encoded_surface < 1 ||
+        encoded_surface > static_cast<A_long>(kSurfaceCount) ||
+        encoded_row < 1 ||
+        encoded_row > static_cast<A_long>(kMaximumLatticeAxisPoints) ||
+        encoded_column < 1 ||
+        encoded_column > static_cast<A_long>(kMaximumLatticeAxisPoints)) {
+        return false;
+    }
+    surface = static_cast<std::uint32_t>(encoded_surface - 1);
+    row = static_cast<std::uint16_t>(encoded_row - 1);
+    column = static_cast<std::uint16_t>(encoded_column - 1);
+    return true;
+}
+
+PF_Err ExposeSelectedPointAnimations(
+    PF_InData* in_data,
+    PF_OutData* out_data,
+    PF_ParamDef* params[]) {
+    if (!in_data || !params) {
+        return PF_Err_BAD_CALLBACK_PARAM;
+    }
+    std::size_t exposed = 0;
+    for (const LatticePointRef& selected : g_selection.points) {
+        std::uint32_t chosen_slot = kPointAnimationSlotCount;
+        for (std::uint32_t slot = 0;
+             slot < kPointAnimationSlotCount;
+             ++slot) {
+            std::uint32_t surface{};
+            std::uint16_t row{};
+            std::uint16_t column{};
+            if (DecodePointAnimationSlot(
+                    params[PointAnimationMetadataParam(slot)],
+                    surface,
+                    row,
+                    column)) {
+                if (surface == selected.surface &&
+                    row == selected.row &&
+                    column == selected.column) {
+                    chosen_slot = slot;
+                    break;
+                }
+            } else if (chosen_slot == kPointAnimationSlotCount) {
+                chosen_slot = slot;
+            }
+        }
+        if (chosen_slot >= kPointAnimationSlotCount) {
+            break;
+        }
+        std::uint32_t existing_surface{};
+        std::uint16_t existing_row{};
+        std::uint16_t existing_column{};
+        const bool already_assigned = DecodePointAnimationSlot(
+            params[PointAnimationMetadataParam(chosen_slot)],
+            existing_surface,
+            existing_row,
+            existing_column);
+        if (!already_assigned) {
+            InitializePendingLatticeForInput(
+                in_data,
+                params,
+                selected.surface);
+            const PF_Handle handle =
+                params[SurfaceLatticeParam(selected.surface)]
+                    ->u.arb_d.value;
+            if (!handle) {
+                continue;
+            }
+            const auto* lattice =
+                static_cast<const LatticeData*>(
+                    PF_LOCK_HANDLE(handle));
+            if (!lattice || !IsValidLattice(*lattice) ||
+                selected.row > lattice->divisions_y ||
+                selected.column > lattice->divisions_x) {
+                if (lattice) {
+                    PF_UNLOCK_HANDLE(handle);
+                }
+                continue;
+            }
+            const StoredPoint3 point = lattice->points[
+                LatticePointIndex(
+                    lattice->divisions_x,
+                    selected.row,
+                    selected.column)];
+            PF_UNLOCK_HANDLE(handle);
+            PF_Point3DDef& metadata =
+                params[PointAnimationMetadataParam(chosen_slot)]
+                    ->u.point3d_d;
+            metadata.x_value = selected.surface + 1;
+            metadata.y_value = selected.row + 1;
+            metadata.z_value = selected.column + 1;
+            MarkChanged(
+                params[PointAnimationMetadataParam(chosen_slot)]);
+            PF_Point3DDef& value =
+                params[PointAnimationValueParam(chosen_slot)]
+                    ->u.point3d_d;
+            value.x_value = point.x;
+            value.y_value = point.y;
+            value.z_value = point.z;
+            MarkChanged(
+                params[PointAnimationValueParam(chosen_slot)]);
+        }
+        ++exposed;
+    }
+    if (out_data) {
+        out_data->out_flags |=
+            PF_OutFlag_REFRESH_UI |
+            PF_OutFlag_FORCE_RERENDER;
+        if (exposed == 0) {
+            std::snprintf(
+                out_data->return_msg,
+                sizeof(out_data->return_msg),
+                "Select free lattice points in the Composition panel first.");
+            out_data->out_flags |= PF_OutFlag_DISPLAY_ERROR_MESSAGE;
+        }
+    }
+    return PF_Err_NONE;
+}
+
+PF_Err ClearPointAnimationSlots(
+    PF_OutData* out_data,
+    PF_ParamDef* params[]) {
+    if (!params) {
+        return PF_Err_BAD_CALLBACK_PARAM;
+    }
+    for (std::uint32_t slot = 0;
+         slot < kPointAnimationSlotCount;
+         ++slot) {
+        PF_Point3DDef& metadata =
+            params[PointAnimationMetadataParam(slot)]->u.point3d_d;
+        metadata.x_value = 0.0;
+        metadata.y_value = 0.0;
+        metadata.z_value = 0.0;
+        MarkChanged(params[PointAnimationMetadataParam(slot)]);
+    }
+    if (out_data) {
+        out_data->out_flags |=
+            PF_OutFlag_REFRESH_UI |
+            PF_OutFlag_FORCE_RERENDER;
+    }
+    return PF_Err_NONE;
+}
+
+PF_Err UpdatePointAnimationUi(
+    PF_InData* in_data,
+    PF_ParamDef* params[]) {
+    if (!in_data || !params) {
+        return PF_Err_BAD_CALLBACK_PARAM;
+    }
+    AEGP_SuiteHandler suites(in_data->pica_basicP);
+    for (std::uint32_t slot = 0;
+         slot < kPointAnimationSlotCount;
+         ++slot) {
+        std::uint32_t surface{};
+        std::uint16_t row{};
+        std::uint16_t column{};
+        const bool assigned = DecodePointAnimationSlot(
+            params[PointAnimationMetadataParam(slot)],
+            surface,
+            row,
+            column);
+        bool active = false;
+        if (assigned) {
+            InitializePendingLatticeForInput(in_data, params, surface);
+            const PF_Handle handle =
+                params[SurfaceLatticeParam(surface)]->u.arb_d.value;
+            if (handle) {
+                const auto* lattice =
+                    static_cast<const LatticeData*>(
+                        PF_LOCK_HANDLE(handle));
+                active = lattice && IsValidLattice(*lattice) &&
+                         row <= lattice->divisions_y &&
+                         column <= lattice->divisions_x;
+                if (lattice) {
+                    PF_UNLOCK_HANDLE(handle);
+                }
+            }
+        }
+
+        PF_ParamDef* value =
+            params[PointAnimationValueParam(slot)];
+        char name[32]{};
+        if (assigned) {
+            std::snprintf(
+                name,
+                sizeof(name),
+                active ? "S%u Point %u,%u"
+                       : "S%u Point %u,%u (inactive)",
+                surface + 1,
+                column,
+                row);
+        } else {
+            std::snprintf(
+                name,
+                sizeof(name),
+                "Point Slot %u",
+                slot + 1);
+        }
+        const PF_ParamUIFlags old_flags = value->ui_flags;
+        if (assigned) {
+            value->ui_flags &= ~PF_PUI_INVISIBLE;
+        } else {
+            value->ui_flags |= PF_PUI_INVISIBLE;
+        }
+        if (active) {
+            value->ui_flags &= ~PF_PUI_DISABLED;
+        } else {
+            value->ui_flags |= PF_PUI_DISABLED;
+        }
+        const bool name_changed =
+            std::strncmp(
+                value->PF_DEF_NAME,
+                name,
+                sizeof(value->PF_DEF_NAME)) != 0;
+        if (name_changed) {
+            PF_STRNNCPY(
+                value->PF_DEF_NAME,
+                name,
+                sizeof(value->PF_DEF_NAME));
+        }
+        if (name_changed || value->ui_flags != old_flags) {
+            const PF_Err error =
+                suites.ParamUtilsSuite3()->PF_UpdateParamUI(
+                    in_data->effect_ref,
+                    PointAnimationValueParam(slot),
+                    value);
+            if (error != PF_Err_NONE) {
+                return error;
+            }
+        }
+    }
+    return PF_Err_NONE;
+}
+
 }  // namespace
 
 PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
@@ -2449,6 +2697,75 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
     }
 
     AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_START_COLLAPSED;
+    PF_ADD_TOPIC(
+        "Point Animation",
+        kDiskPointAnimationStart);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_BUTTON(
+        "Selected Points",
+        "Expose Selected Points",
+        0,
+        PF_ParamFlag_SUPERVISE,
+        kDiskPointAnimationExpose);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_BUTTON(
+        "Point Slots",
+        "Clear All Point Slots",
+        0,
+        PF_ParamFlag_SUPERVISE,
+        kDiskPointAnimationClear);
+
+    for (std::uint32_t slot = 0;
+         slot < kPointAnimationSlotCount;
+         ++slot) {
+        char metadata_name[32]{};
+        std::snprintf(
+            metadata_name,
+            sizeof(metadata_name),
+            "Point Slot %u Metadata",
+            slot + 1);
+        error = AddPoint3D(
+            in_data,
+            def,
+            metadata_name,
+            0.0,
+            0.0,
+            0.0,
+            kDiskPointAnimationSlotsStart +
+                static_cast<A_long>(slot) *
+                    kPointAnimationSlotStride,
+            PF_PUI_INVISIBLE | PF_PUI_DISABLED);
+        if (error != PF_Err_NONE) {
+            return error;
+        }
+        char value_name[32]{};
+        std::snprintf(
+            value_name,
+            sizeof(value_name),
+            "Point Slot %u",
+            slot + 1);
+        error = AddPoint3D(
+            in_data,
+            def,
+            value_name,
+            0.0,
+            0.0,
+            0.0,
+            kDiskPointAnimationSlotsStart +
+                static_cast<A_long>(slot) *
+                    kPointAnimationSlotStride + 1,
+            PF_PUI_INVISIBLE);
+        if (error != PF_Err_NONE) {
+            return error;
+        }
+    }
+    AEFX_CLR_STRUCT(def);
+    PF_END_TOPIC(kDiskPointAnimationEnd);
+
+    AEFX_CLR_STRUCT(def);
     PF_ADD_BUTTON(
         "Null Controllers",
         "Create Null Rig...",
@@ -2499,6 +2816,15 @@ PF_Err UserChangedParam(
     const PF_UserChangedParamExtra* extra) {
     if (!extra) {
         return PF_Err_BAD_CALLBACK_PARAM;
+    }
+    if (extra->param_index == kParamPointAnimationExpose) {
+        return ExposeSelectedPointAnimations(
+            in_data,
+            out_data,
+            params);
+    }
+    if (extra->param_index == kParamPointAnimationClear) {
+        return ClearPointAnimationSlots(out_data, params);
     }
     if (extra->param_index == kParamCreateNullRig) {
         return RunBundledScript(
@@ -2623,6 +2949,11 @@ PF_Err UpdateParameterUi(
         if (lattice) {
             PF_UNLOCK_HANDLE(handle);
         }
+    }
+    const PF_Err animation_ui_error =
+        UpdatePointAnimationUi(in_data, params);
+    if (animation_ui_error != PF_Err_NONE) {
+        return animation_ui_error;
     }
     return PublishRigBridge(in_data, params);
 }

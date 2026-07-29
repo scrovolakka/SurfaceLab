@@ -3,7 +3,7 @@
 SurfaceLab is an After Effects native effect for placing and deforming flat
 sources in 3D with an interpolating control-point lattice.
 
-Current version: **1.6.2** (v1 architecture).
+Current version: **1.7.0** (v1 architecture).
 Match name: `XPK SurfaceLab` · Effect menu: **SurfaceLab > SurfaceLab**.
 The installed build is shown in Effect Controls under **About → SurfaceLab Version**.
 
@@ -31,6 +31,14 @@ Use **Null Controllers → Create Null Rig…** in Effect Controls to issue 3D
 Null point controllers for a surface. The same workflow remains available by
 running [scripts/SurfaceLabCreateNullRig.jsx](scripts/SurfaceLabCreateNullRig.jsx)
 manually.
+
+To animate points without Null layers, select free lattice vertices in the
+Composition panel and click **Point Animation → Expose Selected Points**.
+SurfaceLab reveals one keyframeable 3D Point property per selected vertex
+(up to 32). Reducing Divisions may temporarily mark a binding as inactive;
+restoring the divisions reactivates the same property and its keyframes.
+**Clear All Point Slots** removes the bindings but does not rewrite the
+lattice.
 
 Additional workflow scripts:
 
@@ -61,6 +69,9 @@ Additional workflow scripts:
   on the surface; a one-division axis reduces to exact linear interpolation.
 - Lattice keyframes interpolate point-by-point linearly. Flattening uses an
   explicit big-endian, active-points-only wire format (`SLV1` schema).
+- A fixed bank of 32 Point Animation bindings exposes selected lattice
+  vertices as ordinary keyframeable 3D Point properties. Fixed slots keep the
+  Effect Controls schema stable while divisions change.
 - Mesh Quality only changes tessellation density per lattice interval; it never
   rewrites lattice data.
 - Each Surface has a procedural **Roll** layer (Angle, Tilt, Radius,
@@ -130,11 +141,10 @@ to Surface 1 and every Surface whose Source Layer is assigned.
   linked lattice point at the current frame.
 - The compact **Null Rig Bridge** is fully hidden internal script transport.
   v1.5 packs its request and metadata into two 3D Point streams, reducing the
-  internal schema from 255 to 245 transport parameters; v1.6 adds one
-  non-animatable UI button while leaving all authored
-  Surface disk IDs and property indices unchanged. Modern After Effects does
-  not impose a 255-parameter limit; the compact form is retained because it is
-  simpler to maintain.
+  internal schema from 255 to 245 transport parameters. v1.7 adds the fixed
+  Point Animation bank and keeps every existing authored Surface and bridge
+  disk ID stable. Modern After Effects does not impose a 255-parameter limit;
+  the compact bridge remains simpler to maintain.
 
 ### Roll controller
 

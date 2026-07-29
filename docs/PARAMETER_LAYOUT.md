@@ -1,6 +1,6 @@
 # SurfaceLab parameter layout
 
-SurfaceLab v1.6 registers **246** After Effects parameters. Modern After
+SurfaceLab v1.7 registers **314** After Effects parameters. Modern After
 Effects does not impose a 255-parameter limit; this exact count is documented
 for script indexing and saved-project compatibility, not as a capacity ceiling.
 
@@ -11,15 +11,17 @@ for script indexing and saved-project compatibility, not as a capacity ceiling.
 | Surfaces topic + eight 26-param Surface blocks | 10–219 | 210 |
 | Render and Comp-edit controls | 220–224 | 5 |
 | Compact Null Rig Bridge | 225–243 | 19 |
-| Null Rig launcher button | 244 | 1 |
-| Version button | 245 | 1 |
+| Point Animation topic, controls, and 32 slot pairs | 244–311 | 68 |
+| Null Rig launcher button | 312 | 1 |
+| Version button | 313 | 1 |
 
 ## Compatibility rule
 
-Indices 0–224 are identical to v1.4.3. Every authored Scene and Surface
-parameter also keeps its persisted disk ID. The only removed streams are
-internal Bridge selectors/metadata and decorative topic wrappers; they contain
-no artist-authored geometry or animation.
+Indices 0–243 are identical to v1.6. Every existing Scene, Surface, bridge,
+launcher, and version parameter also keeps its persisted disk ID. The v1.7
+Point Animation block is inserted before the two existing buttons in property
+order, but After Effects resolves those persisted parameters by their stable
+disk IDs.
 
 Retired disk IDs must never be reused:
 
@@ -30,6 +32,19 @@ Retired disk IDs must never be reused:
 
 The Version button keeps disk ID `801`. Rig Point disk IDs `780…796` also stay
 stable.
+
+## Point Animation bank
+
+- **244** — collapsed Point Animation topic
+- **245** — Expose Selected Points button
+- **246** — Clear All Point Slots button
+- **247…310** — 32 pairs of hidden binding metadata and keyframeable Point3D
+  values
+- **311** — Point Animation topic end
+
+Binding metadata stores `(surface + 1, row + 1, column + 1)`. A binding outside
+the Surface's current divisions remains persisted and is ignored until those
+divisions make the point active again.
 
 ## Compact Bridge
 

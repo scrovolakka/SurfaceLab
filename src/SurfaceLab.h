@@ -13,9 +13,9 @@
 
 // Keep these in lockstep with CMake project VERSION and SurfaceLabPiPL.r.
 constexpr A_short kSurfaceLabVersionMajor = 1;
-constexpr A_short kSurfaceLabVersionMinor = 6;
-constexpr A_short kSurfaceLabVersionPatch = 2;
-constexpr const char* kSurfaceLabVersionString = "1.6.2";
+constexpr A_short kSurfaceLabVersionMinor = 7;
+constexpr A_short kSurfaceLabVersionPatch = 0;
+constexpr const char* kSurfaceLabVersionString = "1.7.0";
 
 constexpr std::uint32_t kSurfaceCount = 8;
 constexpr PF_ParamIndex kSurfaceParameterStride = 26;
@@ -23,6 +23,8 @@ constexpr PF_ParamIndex kSurfaceParameterStride = 26;
 // metadata are packed into two more Point3D streams to keep the internal
 // transport compact without touching authored Surface streams.
 constexpr PF_ParamIndex kRigBridgePointCount = 17;
+constexpr PF_ParamIndex kPointAnimationSlotCount = 32;
+constexpr PF_ParamIndex kPointAnimationSlotStride = 2;
 
 enum SurfaceParamOffset : PF_ParamIndex {
     kSurfaceTopicStartOffset = 0,
@@ -80,7 +82,15 @@ enum ParamIndex : PF_ParamIndex {
     kParamRigPointsEnd =
         kParamRigPointsStart +
         kRigBridgePointCount,
-    kParamCreateNullRig = kParamRigPointsEnd,
+    kParamPointAnimationStart = kParamRigPointsEnd,
+    kParamPointAnimationExpose = kParamPointAnimationStart + 1,
+    kParamPointAnimationClear,
+    kParamPointAnimationSlotsStart,
+    kParamPointAnimationSlotsEnd =
+        kParamPointAnimationSlotsStart +
+        kPointAnimationSlotCount * kPointAnimationSlotStride,
+    kParamPointAnimationEnd = kParamPointAnimationSlotsEnd,
+    kParamCreateNullRig,
     kParamAboutVersion,
     kParamCount
 };
@@ -107,6 +117,15 @@ constexpr PF_ParamIndex SurfaceLatticeParam(std::uint32_t surface) {
 
 constexpr PF_ParamIndex RigPointParam(std::uint32_t column) {
     return kParamRigPointsStart + static_cast<PF_ParamIndex>(column);
+}
+
+constexpr PF_ParamIndex PointAnimationMetadataParam(std::uint32_t slot) {
+    return kParamPointAnimationSlotsStart +
+           static_cast<PF_ParamIndex>(slot) * kPointAnimationSlotStride;
+}
+
+constexpr PF_ParamIndex PointAnimationValueParam(std::uint32_t slot) {
+    return PointAnimationMetadataParam(slot) + 1;
 }
 
 enum ParamDiskId : A_long {
@@ -139,7 +158,14 @@ enum ParamDiskId : A_long {
     // v1.5 compact Bridge streams use fresh IDs.
     kDiskRigRequest = 810,
     kDiskRigMetadata,
-    kDiskCreateNullRig
+    kDiskCreateNullRig,
+    kDiskPointAnimationStart = 820,
+    kDiskPointAnimationExpose,
+    kDiskPointAnimationClear,
+    kDiskPointAnimationSlotsStart = 830,
+    kDiskPointAnimationEnd =
+        kDiskPointAnimationSlotsStart +
+        kPointAnimationSlotCount * kPointAnimationSlotStride
 };
 
 constexpr A_long SurfaceDiskId(
@@ -159,17 +185,16 @@ constexpr A_long SurfaceDiskId(
            persisted_offset;
 }
 
-static_assert(
-    kParamCount == 246,
-    "Update the documented parameter layout after changing the schema");
+static_assert(kParamCount == 314, "Update the documented parameter layout");
 // SurfaceLabCreateNullRig.jsx addresses the hidden bridge by AE effect
 // property index. Keep these assertions beside the parameter layout so a
 // future UI addition cannot silently desynchronise the script.
 static_assert(kParamRigRequest == 225, "Update Null Rig bridge indices");
 static_assert(kParamRigMetadata == 226, "Update Null Rig bridge indices");
 static_assert(kParamRigPointsStart == 227, "Update Null Rig bridge indices");
-static_assert(kParamCreateNullRig == 244, "Update Null Rig button index");
-static_assert(kParamAboutVersion == 245, "Update About parameter index");
+static_assert(kParamPointAnimationStart == 244, "Update point animation index");
+static_assert(kParamCreateNullRig == 312, "Update Null Rig button index");
+static_assert(kParamAboutVersion == 313, "Update About parameter index");
 
 extern "C" {
 

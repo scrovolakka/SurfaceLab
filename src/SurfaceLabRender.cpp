@@ -3492,6 +3492,24 @@ PF_Err CheckoutSmartRenderParameters(
             }
         }
     }
+    for (std::uint32_t slot = 0;
+         slot < kPointAnimationSlotCount;
+         ++slot) {
+        PF_Err error = CheckoutSmartParameter(
+            in_data,
+            parameters,
+            PointAnimationMetadataParam(slot));
+        if (error != PF_Err_NONE) {
+            return error;
+        }
+        error = CheckoutSmartParameter(
+            in_data,
+            parameters,
+            PointAnimationValueParam(slot));
+        if (error != PF_Err_NONE) {
+            return error;
+        }
+    }
     return PF_Err_NONE;
 }
 
