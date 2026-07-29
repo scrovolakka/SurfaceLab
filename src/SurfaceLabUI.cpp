@@ -198,9 +198,9 @@ bool ProjectSurfacePointToFrame(
         BuildSurfaceEvaluationState(
             surface,
             camera,
-            1.0,
-            1.0,
-            1.0);
+            camera.raster_scale_x,
+            camera.raster_scale_y,
+            camera.raster_scale_z);
     const Point3 world = EvaluateTransformedPoint(
         surface,
         evaluation,
@@ -216,7 +216,11 @@ bool ProjectSurfacePointToFrame(
            LayerPointToFrame(
                in_data,
                event_extra,
-               {projected.x, projected.y},
+               {
+                   projected.x /
+                       std::max(1.0e-6, camera.raster_scale_x),
+                   projected.y /
+                       std::max(1.0e-6, camera.raster_scale_y)},
                frame_point);
 }
 
@@ -640,9 +644,9 @@ bool BuildCageToWorldTransform(
     const SurfaceEvaluationState state = BuildSurfaceEvaluationState(
         surface,
         camera,
-        1.0,
-        1.0,
-        1.0);
+        camera.raster_scale_x,
+        camera.raster_scale_y,
+        camera.raster_scale_z);
     const StoredPoint3& raw_zero = surface.lattice.points[0];
     const StoredPoint3& evaluated_zero = state.lattice.points[0];
     const Point3 recenter_offset{
@@ -722,7 +726,11 @@ bool ProjectWorldPointToFrame(
            LayerPointToFrame(
                in_data,
                event_extra,
-               {projected.x, projected.y},
+               {
+                   projected.x /
+                       std::max(1.0e-6, camera.raster_scale_x),
+                   projected.y /
+                       std::max(1.0e-6, camera.raster_scale_y)},
                frame_point);
 }
 

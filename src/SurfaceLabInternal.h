@@ -63,6 +63,9 @@ struct CameraState {
     double input_center_y{};
     double output_offset_x{};
     double output_offset_y{};
+    double raster_scale_x{1.0};
+    double raster_scale_y{1.0};
+    double raster_scale_z{1.0};
     Affine2D comp_to_output{};
     bool perspective{true};
     bool use_basis{};

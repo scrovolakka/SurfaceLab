@@ -1799,6 +1799,9 @@ CameraState BuildDefaultAfterEffectsCameraState(
     camera.center_y = center_y;
     camera.output_offset_x = output_offset_x;
     camera.output_offset_y = output_offset_y;
+    camera.raster_scale_x = scale_z;
+    camera.raster_scale_y = scale_z;
+    camera.raster_scale_z = scale_z;
     camera.focal_distance = camera_distance * scale_z;
     camera.perspective = true;
     camera.position = {
@@ -1935,6 +1938,9 @@ bool ResolveAfterEffectsView(
         static_cast<double>(image_plane_height) * scale_y * 0.5;
     camera.output_offset_x = output_offset_x;
     camera.output_offset_y = output_offset_y;
+    camera.raster_scale_x = scale_x;
+    camera.raster_scale_y = scale_y;
+    camera.raster_scale_z = scale_z;
     camera.perspective = true;
     camera.use_basis = true;
 
@@ -3206,8 +3212,6 @@ bool IsUsableTextureWorld(const PF_LayerDef& world) {
 struct RenderFrameSnapshot {
     SceneData scene{};
     CameraState camera{};
-    SceneData overlay_scene{};
-    CameraState overlay_camera{};
     LightingState lighting{};
     int legacy_tessellation{1};
     double scale_x{1.0};
@@ -3275,28 +3279,6 @@ RenderFrameSnapshot BuildRenderFrameSnapshot(
                               std::max(1.0e-6, snapshot.scale_x);
     const double full_height = static_cast<double>(input_height) /
                                std::max(1.0e-6, snapshot.scale_y);
-    snapshot.overlay_scene = ResolveSceneForFrame(
-        in_data,
-        params,
-        static_cast<A_long>(std::lround(full_width)),
-        static_cast<A_long>(std::lround(full_height)));
-    snapshot.overlay_camera = BuildResolvedCameraState(
-        in_data,
-        params,
-        full_width * 0.5,
-        full_height * 0.5,
-        0.0,
-        0.0,
-        1.0,
-        1.0,
-        1.0);
-    ResolveNullPointOverrides(
-        in_data,
-        snapshot.overlay_scene,
-        snapshot.overlay_camera,
-        1.0,
-        1.0,
-        1.0);
     snapshot.scene = ResolveSceneForFrame(
         in_data,
         params,
@@ -3438,10 +3420,13 @@ PF_Err RenderSurface(PF_InData* in_data, PF_ParamDef* params[], PF_LayerDef* out
         FinalizeDepthView<Pixel>(*output, depth_buffer);
     }
 
+    CameraState overlay_camera = snapshot.camera;
+    overlay_camera.output_offset_x = 0.0;
+    overlay_camera.output_offset_y = 0.0;
     PublishRenderedOverlaySnapshot(
         in_data->effect_ref,
-        snapshot.overlay_scene,
-        snapshot.overlay_camera);
+        snapshot.scene,
+        overlay_camera);
     return PF_Err_NONE;
 }
 
@@ -3981,6 +3966,9 @@ std::vector<double> BuildExternalStateDigest(
     digest.push_back(camera.center_y);
     digest.push_back(camera.output_offset_x);
     digest.push_back(camera.output_offset_y);
+    digest.push_back(camera.raster_scale_x);
+    digest.push_back(camera.raster_scale_y);
+    digest.push_back(camera.raster_scale_z);
     digest.push_back(camera.comp_to_output.xx);
     digest.push_back(camera.comp_to_output.xy);
     digest.push_back(camera.comp_to_output.yx);
@@ -4375,8 +4363,8 @@ PF_Err SmartRender(
             snapshot.samples[snapshot.samples.size() / 2];
         PublishRenderedOverlaySnapshot(
             in_data->effect_ref,
-            displayed.overlay_scene,
-            displayed.overlay_camera);
+            displayed.scene,
+            displayed.camera);
     }
     return error;
 }
