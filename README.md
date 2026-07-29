@@ -3,7 +3,7 @@
 SurfaceLab is an After Effects native effect for placing and deforming flat
 sources in 3D with an interpolating control-point lattice.
 
-Current version: **1.6.1** (v1 architecture).
+Current version: **1.6.2** (v1 architecture).
 Match name: `XPK SurfaceLab` · Effect menu: **SurfaceLab > SurfaceLab**.
 The installed build is shown in Effect Controls under **About → SurfaceLab Version**.
 
@@ -111,7 +111,8 @@ The persisted parameter layout and reserved IDs are documented in
 Click **Null Controllers → Create Null Rig…** in Effect Controls (or run
 [scripts/SurfaceLabCreateNullRig.jsx](scripts/SurfaceLabCreateNullRig.jsx)
 manually). Choose a surface and issue all points, the perimeter, one row, one
-column, or one point.
+column, or one point. Choose **All Enabled Surfaces** to apply the same range
+to Surface 1 and every Surface whose Source Layer is assigned.
 
 - Optional **Surface Root** is created at the evaluated cage center and aligned
   to the surface’s current world-space frame. Its exact AE world transform is

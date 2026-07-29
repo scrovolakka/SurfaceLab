@@ -1871,9 +1871,26 @@ PF_Err UpdateSurfaceSlotUi(
     }
     // Surface 1 always has the host input fallback. Later slots are enabled
     // only by assigning their Source Layer.
-    const bool enabled =
-        surface == 0 ||
-        params[SurfaceSourceParam(surface)]->u.ld.data != nullptr;
+    bool enabled = surface == 0;
+    if (!enabled) {
+        PF_ParamDef source_value;
+        AEFX_CLR_STRUCT(source_value);
+        const PF_Err checkout_error = PF_CHECKOUT_PARAM(
+            in_data,
+            SurfaceSourceParam(surface),
+            in_data->current_time,
+            in_data->time_step,
+            in_data->time_scale,
+            &source_value);
+        if (checkout_error == PF_Err_NONE) {
+            enabled = source_value.u.ld.data != nullptr;
+            const PF_Err checkin_error =
+                PF_CHECKIN_PARAM(in_data, &source_value);
+            if (checkin_error != PF_Err_NONE) {
+                return checkin_error;
+            }
+        }
+    }
     AEGP_SuiteHandler suites(in_data->pica_basicP);
     const auto update_parameter =
         [&](PF_ParamIndex index) -> PF_Err {

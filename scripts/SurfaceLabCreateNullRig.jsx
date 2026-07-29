@@ -13,6 +13,7 @@ function surfaceLabCreateNullRig() {
     var SURFACE_COUNT = 8;
     var SURFACE_STRIDE = 26;
     var SURFACE_PARAMETERS_START = 11;
+    var SURFACE_SOURCE_OFFSET = 1;
     var SCENE_POSITION = 2;
     var SCENE_ROTATION_X = 3;
     var SCENE_ROTATION_Y = 4;
@@ -746,7 +747,17 @@ function surfaceLabCreateNullRig() {
         var surface = surfaceGroup.add(
             "dropdownlist",
             undefined,
-            ["1", "2", "3", "4", "5", "6", "7", "8"]);
+            [
+                "All Enabled Surfaces",
+                "Surface 1",
+                "Surface 2",
+                "Surface 3",
+                "Surface 4",
+                "Surface 5",
+                "Surface 6",
+                "Surface 7",
+                "Surface 8"
+            ]);
         surface.selection = 0;
 
         var scopeGroup = dialog.add("group");
@@ -780,12 +791,30 @@ function surfaceLabCreateNullRig() {
             return null;
         }
         return {
-            surface: surface.selection.index,
+            allEnabled: surface.selection.index === 0,
+            surface: surface.selection.index - 1,
             scope: scope.selection.index,
             row: parseInt(row.text, 10),
             column: parseInt(column.text, 10),
             roots: roots.value
         };
+    }
+
+    function enabledSurfaceIndices(effect) {
+        var result = [0];
+        var surfaceIndex;
+        for (surfaceIndex = 1;
+             surfaceIndex < SURFACE_COUNT;
+             surfaceIndex += 1) {
+            var source = effect.property(
+                surfacePropertyIndex(
+                    surfaceIndex,
+                    SURFACE_SOURCE_OFFSET));
+            if (source && Number(source.value) > 0) {
+                result.push(surfaceIndex);
+            }
+        }
+        return result;
     }
 
     var comp = app.project && app.project.activeItem;
@@ -806,142 +835,149 @@ function surfaceLabCreateNullRig() {
 
     app.beginUndoGroup("Issue SurfaceLab Null Rig");
     try {
-        var lattice = parseLattice(host.effect, options.surface);
-        if (isNaN(options.row)) {
-            options.row = 0;
-        }
-        if (isNaN(options.column)) {
-            options.column = 0;
-        }
-        options.row = Math.max(
-            0,
-            Math.min(lattice.divisionsY, options.row));
-        options.column = Math.max(
-            0,
-            Math.min(lattice.divisionsX, options.column));
-        var selectedPoints = selectPointIndices(
-            options.scope,
-            options.row,
-            options.column,
-            lattice.divisionsX,
-            lattice.divisionsY);
-        if (selectedPoints.length > 128 &&
-            !confirm(
-                "This will issue " + selectedPoints.length +
-                " 3D Nulls.\n\nContinue?")) {
-            return;
-        }
-        var worldPoints = buildWorldPoints(
-            comp,
-            host.effect,
-            options.surface,
-            lattice);
-        var pointFrames = buildPointFrames(
-            worldPoints,
-            lattice.divisionsX,
-            lattice.divisionsY);
-        var surfaceFrame = buildSurfaceFrame(
-            worldPoints,
-            lattice.divisionsX,
-            lattice.divisionsY);
-        var hostId = String(host.layer.id);
-        var surfaceRoot = null;
-        var detachedPointNulls = [];
-        if (options.roots) {
-            var surfaceCenter = worldBoundsCenter(worldPoints);
-            var surfaceIdentity =
-                "|id0=" + lattice.surfaceIdChunks[0] +
-                "|id1=" + lattice.surfaceIdChunks[1] +
-                "|id2=" + lattice.surfaceIdChunks[2] +
-                "|id3=" + lattice.surfaceIdChunks[3];
-            var surfaceRootIdentity =
-                "SurfaceLabV1|surface-root|host=" + hostId +
-                surfaceIdentity;
-            var existingSurfaceRoot = findMarkedLayer(
-                comp,
-                surfaceRootIdentity);
-            var rootsNeedUpgrade =
-                !existingSurfaceRoot ||
-                markerComment(existingSurfaceRoot)
-                    .indexOf("|rootv=4|") < 0;
-            if (rootsNeedUpgrade) {
-                detachedPointNulls = findMarkedLayers(
-                    comp,
-                    "SurfaceLabV1|point|host=" + hostId +
-                        surfaceIdentity + "|");
-                var detachedIndex;
-                for (detachedIndex = 0;
-                     detachedIndex < detachedPointNulls.length;
-                     detachedIndex += 1) {
-                    if (detachedPointNulls[detachedIndex].parent) {
-                        detachedPointNulls[detachedIndex].parent = null;
-                    }
-                }
+        var surfaceIndices = options.allEnabled
+            ? enabledSurfaceIndices(host.effect)
+            : [options.surface];
+        var requestedRow = isNaN(options.row) ? 0 : options.row;
+        var requestedColumn =
+            isNaN(options.column) ? 0 : options.column;
+        var issued = [];
+        var surfaceCursor;
+        for (surfaceCursor = 0;
+             surfaceCursor < surfaceIndices.length;
+             surfaceCursor += 1) {
+            options.surface = surfaceIndices[surfaceCursor];
+            var lattice = parseLattice(
+                host.effect,
+                options.surface);
+            var surfaceRow = Math.max(
+                0,
+                Math.min(lattice.divisionsY, requestedRow));
+            var surfaceColumn = Math.max(
+                0,
+                Math.min(lattice.divisionsX, requestedColumn));
+            var selectedPoints = selectPointIndices(
+                options.scope,
+                surfaceRow,
+                surfaceColumn,
+                lattice.divisionsX,
+                lattice.divisionsY);
+            if (selectedPoints.length > 128 &&
+                !confirm(
+                    "Surface " + (options.surface + 1) +
+                    " will issue " + selectedPoints.length +
+                    " 3D Nulls.\n\nContinue?")) {
+                return;
             }
-            surfaceRoot = getOrCreateRoot(
+            var worldPoints = buildWorldPoints(
                 comp,
-                surfaceRootIdentity,
-                "SL S" + (options.surface + 1) + " Root",
-                null,
-                surfaceCenter,
-                surfaceFrame);
-            for (detachedIndex = 0;
-                 detachedIndex < detachedPointNulls.length;
-                 detachedIndex += 1) {
-                detachedPointNulls[detachedIndex].parent = surfaceRoot;
-            }
-            // buildWorldPoints describes the unrooted surface. If an existing
-            // Surface Root has already moved, issue new Point Nulls on the
-            // current rooted surface, not at its stale bind pose. Rebuilding
-            // tangent frames from the mapped points also gives every new Null
-            // the direction currently visible in the Comp panel.
-            worldPoints = mapPointsThroughRoot(
-                worldPoints,
-                surfaceRoot);
-            pointFrames = buildPointFrames(
+                host.effect,
+                options.surface,
+                lattice);
+            var pointFrames = buildPointFrames(
                 worldPoints,
                 lattice.divisionsX,
                 lattice.divisionsY);
-        }
-        var issued = [];
-        var index;
-        for (index = 0; index < selectedPoints.length; index += 1) {
-            var selectedPoint = selectedPoints[index];
-            var comment =
-                "SurfaceLabV1|point|host=" + hostId +
-                "|id0=" + lattice.surfaceIdChunks[0] +
-                "|id1=" + lattice.surfaceIdChunks[1] +
-                "|id2=" + lattice.surfaceIdChunks[2] +
-                "|id3=" + lattice.surfaceIdChunks[3] +
-                "|row=" + selectedPoint.row +
-                "|col=" + selectedPoint.column;
-            var pointNull = findMarkedLayer(comp, comment);
-            var pointNullIsNew = !pointNull;
-            if (!pointNull) {
-                pointNull = comp.layers.addNull(comp.duration);
-                pointNull.name =
-                    "SL S" + (options.surface + 1) +
-                    " R" + selectedPoint.row +
-                    " C" + selectedPoint.column;
-                prepareNull(pointNull);
-                setMarker(pointNull, comment);
-            }
-            if (pointNullIsNew) {
-                if (pointNull.parent) {
-                    pointNull.parent = null;
+            var surfaceFrame = buildSurfaceFrame(
+                worldPoints,
+                lattice.divisionsX,
+                lattice.divisionsY);
+            var hostId = String(host.layer.id);
+            var surfaceRoot = null;
+            var detachedPointNulls = [];
+            if (options.roots) {
+                var surfaceCenter = worldBoundsCenter(worldPoints);
+                var surfaceIdentity =
+                    "|id0=" + lattice.surfaceIdChunks[0] +
+                    "|id1=" + lattice.surfaceIdChunks[1] +
+                    "|id2=" + lattice.surfaceIdChunks[2] +
+                    "|id3=" + lattice.surfaceIdChunks[3];
+                var surfaceRootIdentity =
+                    "SurfaceLabV1|surface-root|host=" + hostId +
+                    surfaceIdentity;
+                var existingSurfaceRoot = findMarkedLayer(
+                    comp,
+                    surfaceRootIdentity);
+                var rootsNeedUpgrade =
+                    !existingSurfaceRoot ||
+                    markerComment(existingSurfaceRoot)
+                        .indexOf("|rootv=4|") < 0;
+                if (rootsNeedUpgrade) {
+                    detachedPointNulls = findMarkedLayers(
+                        comp,
+                        "SurfaceLabV1|point|host=" + hostId +
+                            surfaceIdentity + "|");
+                    var detachedIndex;
+                    for (detachedIndex = 0;
+                         detachedIndex < detachedPointNulls.length;
+                         detachedIndex += 1) {
+                        if (detachedPointNulls[detachedIndex].parent) {
+                            detachedPointNulls[detachedIndex].parent = null;
+                        }
+                    }
                 }
-                pointNull.property("ADBE Transform Group")
-                    .property("ADBE Position")
-                    .setValue(worldPoints[selectedPoint.point]);
-                pointNull.property("ADBE Transform Group")
-                    .property("ADBE Orientation")
-                    .setValue(frameOrientation(
-                        pointFrames[selectedPoint.point]));
+                surfaceRoot = getOrCreateRoot(
+                    comp,
+                    surfaceRootIdentity,
+                    "SL S" + (options.surface + 1) + " Root",
+                    null,
+                    surfaceCenter,
+                    surfaceFrame);
+                for (detachedIndex = 0;
+                     detachedIndex < detachedPointNulls.length;
+                     detachedIndex += 1) {
+                    detachedPointNulls[detachedIndex].parent = surfaceRoot;
+                }
+                worldPoints = mapPointsThroughRoot(
+                    worldPoints,
+                    surfaceRoot);
+                pointFrames = buildPointFrames(
+                    worldPoints,
+                    lattice.divisionsX,
+                    lattice.divisionsY);
             }
-            if (surfaceRoot && pointNull.parent !== surfaceRoot) {
-                pointNull.parent = surfaceRoot;
+            var index;
+            for (index = 0;
+                 index < selectedPoints.length;
+                 index += 1) {
+                var selectedPoint = selectedPoints[index];
+                var comment =
+                    "SurfaceLabV1|point|host=" + hostId +
+                    "|id0=" + lattice.surfaceIdChunks[0] +
+                    "|id1=" + lattice.surfaceIdChunks[1] +
+                    "|id2=" + lattice.surfaceIdChunks[2] +
+                    "|id3=" + lattice.surfaceIdChunks[3] +
+                    "|row=" + selectedPoint.row +
+                    "|col=" + selectedPoint.column;
+                var pointNull = findMarkedLayer(comp, comment);
+                var pointNullIsNew = !pointNull;
+                if (!pointNull) {
+                    pointNull = comp.layers.addNull(comp.duration);
+                    pointNull.name =
+                        "SL S" + (options.surface + 1) +
+                        " R" + selectedPoint.row +
+                        " C" + selectedPoint.column;
+                    prepareNull(pointNull);
+                    setMarker(pointNull, comment);
+                }
+                if (pointNullIsNew) {
+                    if (pointNull.parent) {
+                        pointNull.parent = null;
+                    }
+                    pointNull.property("ADBE Transform Group")
+                        .property("ADBE Position")
+                        .setValue(worldPoints[selectedPoint.point]);
+                    pointNull.property("ADBE Transform Group")
+                        .property("ADBE Orientation")
+                        .setValue(frameOrientation(
+                            pointFrames[selectedPoint.point]));
+                }
+                if (surfaceRoot &&
+                    pointNull.parent !== surfaceRoot) {
+                    pointNull.parent = surfaceRoot;
+                }
+                issued.push(pointNull);
             }
-            issued.push(pointNull);
         }
         for (index = 1; index <= comp.numLayers; index += 1) {
             comp.layer(index).selected = false;
