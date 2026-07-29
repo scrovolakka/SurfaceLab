@@ -3,7 +3,7 @@
 SurfaceLab is an After Effects native effect for placing and deforming flat
 sources in 3D with an interpolating control-point lattice.
 
-Current version: **1.7.1** (v1 architecture).
+Current version: **1.8.0** (v1 architecture).
 Match name: `XPK SurfaceLab` · Effect menu: **SurfaceLab > SurfaceLab**.
 The installed build is shown in Effect Controls under **About → SurfaceLab Version**.
 
@@ -39,6 +39,12 @@ SurfaceLab reveals one keyframeable 3D Point property per selected vertex
 restoring the divisions reactivates the same property and its keyframes.
 **Clear All Point Slots** removes the bindings but does not rewrite the
 lattice.
+
+When a Surface must inherit the proportions of its footage or precomp, open
+**Surface Utilities**, choose the Target Surface, and click
+**Match Source Aspect**. The operation preserves the lattice centre, height,
+deformation, and Point Animation bindings while scaling its local X extent to
+the Source Layer's display aspect ratio.
 
 Additional workflow scripts:
 

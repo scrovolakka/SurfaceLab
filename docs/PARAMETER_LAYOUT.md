@@ -1,6 +1,6 @@
 # SurfaceLab parameter layout
 
-SurfaceLab v1.7 registers **314** After Effects parameters. Modern After
+SurfaceLab v1.8 registers **318** After Effects parameters. Modern After
 Effects does not impose a 255-parameter limit; this exact count is documented
 for script indexing and saved-project compatibility, not as a capacity ceiling.
 
@@ -14,6 +14,7 @@ for script indexing and saved-project compatibility, not as a capacity ceiling.
 | Point Animation topic, controls, and 32 slot pairs | 244–311 | 68 |
 | Null Rig launcher button | 312 | 1 |
 | Version button | 313 | 1 |
+| Surface Utilities topic, target, action, and end | 314–317 | 4 |
 
 ## Compatibility rule
 
@@ -45,6 +46,17 @@ stable.
 Binding metadata stores `(surface + 1, row + 1, column + 1)`. A binding outside
 the Surface's current divisions remains persisted and is ignored until those
 divisions make the point active again.
+
+## Surface Utilities
+
+- **314** — collapsed Surface Utilities topic
+- **315** — Target Surface selector
+- **316** — Match Source Aspect button
+- **317** — Surface Utilities topic end
+
+The block is appended after every v1.7 parameter. Its fresh disk IDs
+`900…903` avoid changing the existing Scene, Surface, bridge, Point Animation,
+Null launcher, and Version property indices.
 
 ## Compact Bridge
 

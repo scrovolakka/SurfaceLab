@@ -13,9 +13,9 @@
 
 // Keep these in lockstep with CMake project VERSION and SurfaceLabPiPL.r.
 constexpr A_short kSurfaceLabVersionMajor = 1;
-constexpr A_short kSurfaceLabVersionMinor = 7;
-constexpr A_short kSurfaceLabVersionPatch = 1;
-constexpr const char* kSurfaceLabVersionString = "1.7.1";
+constexpr A_short kSurfaceLabVersionMinor = 8;
+constexpr A_short kSurfaceLabVersionPatch = 0;
+constexpr const char* kSurfaceLabVersionString = "1.8.0";
 
 constexpr std::uint32_t kSurfaceCount = 8;
 constexpr PF_ParamIndex kSurfaceParameterStride = 26;
@@ -92,6 +92,10 @@ enum ParamIndex : PF_ParamIndex {
     kParamPointAnimationEnd = kParamPointAnimationSlotsEnd,
     kParamCreateNullRig,
     kParamAboutVersion,
+    kParamSurfaceUtilitiesStart,
+    kParamSurfaceUtilitiesTarget,
+    kParamSurfaceUtilitiesMatchAspect,
+    kParamSurfaceUtilitiesEnd,
     kParamCount
 };
 
@@ -165,7 +169,11 @@ enum ParamDiskId : A_long {
     kDiskPointAnimationSlotsStart = 830,
     kDiskPointAnimationEnd =
         kDiskPointAnimationSlotsStart +
-        kPointAnimationSlotCount * kPointAnimationSlotStride
+        kPointAnimationSlotCount * kPointAnimationSlotStride,
+    kDiskSurfaceUtilitiesStart = 900,
+    kDiskSurfaceUtilitiesTarget,
+    kDiskSurfaceUtilitiesMatchAspect,
+    kDiskSurfaceUtilitiesEnd
 };
 
 constexpr A_long SurfaceDiskId(
@@ -185,7 +193,7 @@ constexpr A_long SurfaceDiskId(
            persisted_offset;
 }
 
-static_assert(kParamCount == 314, "Update the documented parameter layout");
+static_assert(kParamCount == 318, "Update the documented parameter layout");
 // SurfaceLabCreateNullRig.jsx addresses the hidden bridge by AE effect
 // property index. Keep these assertions beside the parameter layout so a
 // future UI addition cannot silently desynchronise the script.
@@ -195,6 +203,9 @@ static_assert(kParamRigPointsStart == 227, "Update Null Rig bridge indices");
 static_assert(kParamPointAnimationStart == 244, "Update point animation index");
 static_assert(kParamCreateNullRig == 312, "Update Null Rig button index");
 static_assert(kParamAboutVersion == 313, "Update About parameter index");
+static_assert(
+    kParamSurfaceUtilitiesStart == 314,
+    "Append utilities after all persisted v1.7 parameters");
 
 extern "C" {
 

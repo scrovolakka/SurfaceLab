@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -2219,6 +2220,186 @@ PF_Err ClearPointAnimationSlots(
     return PF_Err_NONE;
 }
 
+PF_Err MatchSurfaceToSourceAspect(
+    PF_InData* in_data,
+    PF_OutData* out_data,
+    PF_ParamDef* params[]) {
+    if (!in_data || !params) {
+        return PF_Err_BAD_CALLBACK_PARAM;
+    }
+    const std::uint32_t surface =
+        static_cast<std::uint32_t>(std::clamp<A_long>(
+            params[kParamSurfaceUtilitiesTarget]->u.pd.value,
+            1,
+            static_cast<A_long>(kSurfaceCount)) - 1);
+
+    A_long source_width = 0;
+    A_long source_height = 0;
+    double pixel_aspect = 1.0;
+    PF_ParamDef source_value;
+    AEFX_CLR_STRUCT(source_value);
+    const PF_Err checkout_error = PF_CHECKOUT_PARAM(
+        in_data,
+        SurfaceSourceParam(surface),
+        in_data->current_time,
+        in_data->time_step,
+        in_data->time_scale,
+        &source_value);
+    if (checkout_error == PF_Err_NONE) {
+        source_width = source_value.u.ld.width;
+        source_height = source_value.u.ld.height;
+        const PF_RationalScale par =
+            source_value.u.ld.pix_aspect_ratio;
+        if (par.num > 0 && par.den > 0) {
+            pixel_aspect =
+                static_cast<double>(par.num) /
+                static_cast<double>(par.den);
+        }
+        const PF_Err checkin_error =
+            PF_CHECKIN_PARAM(in_data, &source_value);
+        if (checkin_error != PF_Err_NONE) {
+            return checkin_error;
+        }
+    }
+    if ((source_width <= 0 || source_height <= 0) &&
+        surface == 0 && params[kParamInput]) {
+        source_width = params[kParamInput]->u.ld.width;
+        source_height = params[kParamInput]->u.ld.height;
+        const PF_RationalScale par =
+            params[kParamInput]->u.ld.pix_aspect_ratio;
+        if (par.num > 0 && par.den > 0) {
+            pixel_aspect =
+                static_cast<double>(par.num) /
+                static_cast<double>(par.den);
+        }
+    }
+    if (source_width <= 0 || source_height <= 0) {
+        if (out_data) {
+            std::snprintf(
+                out_data->return_msg,
+                sizeof(out_data->return_msg),
+                "Assign a Source Layer to Surface %u first.",
+                surface + 1);
+            out_data->out_flags |=
+                PF_OutFlag_DISPLAY_ERROR_MESSAGE;
+        }
+        return PF_Err_NONE;
+    }
+
+    InitializePendingLatticeForInput(in_data, params, surface);
+    PF_Handle handle =
+        params[SurfaceLatticeParam(surface)]->u.arb_d.value;
+    if (!handle) {
+        return PF_Err_BAD_CALLBACK_PARAM;
+    }
+    auto* lattice =
+        static_cast<LatticeData*>(PF_LOCK_HANDLE(handle));
+    if (!lattice || !IsValidLattice(*lattice)) {
+        if (lattice) {
+            PF_UNLOCK_HANDLE(handle);
+        }
+        return PF_Err_INTERNAL_STRUCT_DAMAGED;
+    }
+    double minimum_x = std::numeric_limits<double>::infinity();
+    double maximum_x = -std::numeric_limits<double>::infinity();
+    double minimum_y = std::numeric_limits<double>::infinity();
+    double maximum_y = -std::numeric_limits<double>::infinity();
+    Point3 centroid{};
+    std::size_t point_count = 0;
+    for (std::uint16_t row = 0;
+         row <= lattice->divisions_y;
+         ++row) {
+        for (std::uint16_t column = 0;
+             column <= lattice->divisions_x;
+             ++column) {
+            const StoredPoint3& point =
+                lattice->points[LatticePointIndex(
+                    lattice->divisions_x,
+                    row,
+                    column)];
+            minimum_x = std::min(minimum_x, static_cast<double>(point.x));
+            maximum_x = std::max(maximum_x, static_cast<double>(point.x));
+            minimum_y = std::min(minimum_y, static_cast<double>(point.y));
+            maximum_y = std::max(maximum_y, static_cast<double>(point.y));
+            centroid.x += point.x;
+            centroid.y += point.y;
+            centroid.z += point.z;
+            ++point_count;
+        }
+    }
+    const double current_width = maximum_x - minimum_x;
+    const double current_height = maximum_y - minimum_y;
+    if (point_count == 0 || current_width <= 1.0e-6 ||
+        current_height <= 1.0e-6) {
+        PF_UNLOCK_HANDLE(handle);
+        if (out_data) {
+            std::snprintf(
+                out_data->return_msg,
+                sizeof(out_data->return_msg),
+                "Surface %u has no measurable X/Y extent.",
+                surface + 1);
+            out_data->out_flags |=
+                PF_OutFlag_DISPLAY_ERROR_MESSAGE;
+        }
+        return PF_Err_NONE;
+    }
+    centroid.x /= point_count;
+    centroid.y /= point_count;
+    centroid.z /= point_count;
+    const double target_aspect =
+        static_cast<double>(source_width) * pixel_aspect /
+        static_cast<double>(source_height);
+    const double x_scale =
+        target_aspect * current_height / current_width;
+    for (std::uint16_t row = 0;
+         row <= lattice->divisions_y;
+         ++row) {
+        for (std::uint16_t column = 0;
+             column <= lattice->divisions_x;
+             ++column) {
+            StoredPoint3& point =
+                lattice->points[LatticePointIndex(
+                    lattice->divisions_x,
+                    row,
+                    column)];
+            point.x = static_cast<float>(
+                centroid.x +
+                (static_cast<double>(point.x) - centroid.x) *
+                    x_scale);
+        }
+    }
+    PF_UNLOCK_HANDLE(handle);
+    MarkChanged(params[SurfaceLatticeParam(surface)]);
+
+    for (std::uint32_t slot = 0;
+         slot < kPointAnimationSlotCount;
+         ++slot) {
+        std::uint32_t bound_surface{};
+        std::uint16_t row{};
+        std::uint16_t column{};
+        if (!DecodePointAnimationSlot(
+                params[PointAnimationMetadataParam(slot)],
+                bound_surface,
+                row,
+                column) ||
+            bound_surface != surface) {
+            continue;
+        }
+        PF_Point3DDef& value =
+            params[PointAnimationValueParam(slot)]->u.point3d_d;
+        value.x_value =
+            centroid.x +
+            (value.x_value - centroid.x) * x_scale;
+        MarkChanged(params[PointAnimationValueParam(slot)]);
+    }
+    if (out_data) {
+        out_data->out_flags |=
+            PF_OutFlag_REFRESH_UI |
+            PF_OutFlag_FORCE_RERENDER;
+    }
+    return PF_Err_NONE;
+}
+
 PF_Err UpdatePointAnimationUi(
     PF_InData* in_data,
     PF_ParamDef* params[]) {
@@ -2796,6 +2977,32 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
             kDiskAboutVersion);
     }
 
+    AEFX_CLR_STRUCT(def);
+    def.flags = PF_ParamFlag_START_COLLAPSED;
+    PF_ADD_TOPIC(
+        "Surface Utilities",
+        kDiskSurfaceUtilitiesStart);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_POPUP(
+        "Target Surface",
+        kSurfaceCount,
+        1,
+        "Surface 1|Surface 2|Surface 3|Surface 4|"
+        "Surface 5|Surface 6|Surface 7|Surface 8",
+        kDiskSurfaceUtilitiesTarget);
+
+    AEFX_CLR_STRUCT(def);
+    PF_ADD_BUTTON(
+        "Source Aspect",
+        "Match Source Aspect",
+        0,
+        PF_ParamFlag_SUPERVISE,
+        kDiskSurfaceUtilitiesMatchAspect);
+
+    AEFX_CLR_STRUCT(def);
+    PF_END_TOPIC(kDiskSurfaceUtilitiesEnd);
+
     PF_CustomUIInfo custom_ui;
     AEFX_CLR_STRUCT(custom_ui);
     custom_ui.events = PF_CustomEFlag_COMP;
@@ -2810,8 +3017,8 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
     out_data->num_params = kParamCount;
     // Catch layout drift early: last registered index must be kParamCount - 1.
     static_assert(
-        kParamAboutVersion + 1 == kParamCount,
-        "About button must terminate immediately before kParamCount");
+        kParamSurfaceUtilitiesEnd + 1 == kParamCount,
+        "Surface Utilities must terminate immediately before kParamCount");
     return PF_Err_NONE;
 }
 
@@ -2822,6 +3029,13 @@ PF_Err UserChangedParam(
     const PF_UserChangedParamExtra* extra) {
     if (!extra) {
         return PF_Err_BAD_CALLBACK_PARAM;
+    }
+    if (extra->param_index ==
+        kParamSurfaceUtilitiesMatchAspect) {
+        return MatchSurfaceToSourceAspect(
+            in_data,
+            out_data,
+            params);
     }
     if (extra->param_index == kParamPointAnimationExpose) {
         return ExposeSelectedPointAnimations(
