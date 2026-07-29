@@ -3,7 +3,7 @@
 SurfaceLab is an After Effects native effect for placing and deforming flat
 sources in 3D with an interpolating control-point lattice.
 
-Current version: **1.5.1** (v1 architecture).
+Current version: **1.6.1** (v1 architecture).
 Match name: `XPK SurfaceLab` · Effect menu: **SurfaceLab > SurfaceLab**.
 The installed build is shown in Effect Controls under **About → SurfaceLab Version**.
 
@@ -27,9 +27,10 @@ v1 is a clean break from the 0.x prototype. Older projects are not migrated.
 4. In any **Surface N** group, set **Source** to a footage or precomp layer.
    Surface 1 initially samples the host input itself.
 
-Optional: run
-[scripts/SurfaceLabCreateNullRig.jsx](scripts/SurfaceLabCreateNullRig.jsx)
-to issue 3D Null point controllers for a surface.
+Use **Null Controllers → Create Null Rig…** in Effect Controls to issue 3D
+Null point controllers for a surface. The same workflow remains available by
+running [scripts/SurfaceLabCreateNullRig.jsx](scripts/SurfaceLabCreateNullRig.jsx)
+manually.
 
 Additional workflow scripts:
 
@@ -107,9 +108,10 @@ The persisted parameter layout and reserved IDs are documented in
 
 ## Null point controllers
 
-Run [scripts/SurfaceLabCreateNullRig.jsx](scripts/SurfaceLabCreateNullRig.jsx)
-from `File > Scripts > Run Script File…`. Choose a surface and issue all
-points, the perimeter, one row, one column, or one point.
+Click **Null Controllers → Create Null Rig…** in Effect Controls (or run
+[scripts/SurfaceLabCreateNullRig.jsx](scripts/SurfaceLabCreateNullRig.jsx)
+manually). Choose a surface and issue all points, the perimeter, one row, one
+column, or one point.
 
 - Optional **Surface Root** is created at the evaluated cage center and aligned
   to the surface’s current world-space frame. Its exact AE world transform is
@@ -127,7 +129,8 @@ points, the perimeter, one row, one column, or one point.
   linked lattice point at the current frame.
 - The compact **Null Rig Bridge** is fully hidden internal script transport.
   v1.5 packs its request and metadata into two 3D Point streams, reducing the
-  internal schema from 255 to 245 parameters while leaving all authored
+  internal schema from 255 to 245 transport parameters; v1.6 adds one
+  non-animatable UI button while leaving all authored
   Surface disk IDs and property indices unchanged. Modern After Effects does
   not impose a 255-parameter limit; the compact form is retained because it is
   simpler to maintain.

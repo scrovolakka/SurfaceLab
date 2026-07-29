@@ -1,6 +1,6 @@
 # SurfaceLab parameter layout
 
-SurfaceLab v1.5 registers **245** After Effects parameters. Modern After
+SurfaceLab v1.6 registers **246** After Effects parameters. Modern After
 Effects does not impose a 255-parameter limit; this exact count is documented
 for script indexing and saved-project compatibility, not as a capacity ceiling.
 
@@ -11,7 +11,8 @@ for script indexing and saved-project compatibility, not as a capacity ceiling.
 | Surfaces topic + eight 26-param Surface blocks | 10–219 | 210 |
 | Render and Comp-edit controls | 220–224 | 5 |
 | Compact Null Rig Bridge | 225–243 | 19 |
-| Version button | 244 | 1 |
+| Null Rig launcher button | 244 | 1 |
+| Version button | 245 | 1 |
 
 ## Compatibility rule
 

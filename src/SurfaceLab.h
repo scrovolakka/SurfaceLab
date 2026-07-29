@@ -13,9 +13,9 @@
 
 // Keep these in lockstep with CMake project VERSION and SurfaceLabPiPL.r.
 constexpr A_short kSurfaceLabVersionMajor = 1;
-constexpr A_short kSurfaceLabVersionMinor = 5;
+constexpr A_short kSurfaceLabVersionMinor = 6;
 constexpr A_short kSurfaceLabVersionPatch = 1;
-constexpr const char* kSurfaceLabVersionString = "1.5.1";
+constexpr const char* kSurfaceLabVersionString = "1.6.1";
 
 constexpr std::uint32_t kSurfaceCount = 8;
 constexpr PF_ParamIndex kSurfaceParameterStride = 26;
@@ -80,7 +80,8 @@ enum ParamIndex : PF_ParamIndex {
     kParamRigPointsEnd =
         kParamRigPointsStart +
         kRigBridgePointCount,
-    kParamAboutVersion = kParamRigPointsEnd,
+    kParamCreateNullRig = kParamRigPointsEnd,
+    kParamAboutVersion,
     kParamCount
 };
 
@@ -137,7 +138,8 @@ enum ParamDiskId : A_long {
     kDiskAboutVersion = 801,
     // v1.5 compact Bridge streams use fresh IDs.
     kDiskRigRequest = 810,
-    kDiskRigMetadata
+    kDiskRigMetadata,
+    kDiskCreateNullRig
 };
 
 constexpr A_long SurfaceDiskId(
@@ -158,7 +160,7 @@ constexpr A_long SurfaceDiskId(
 }
 
 static_assert(
-    kParamCount == 245,
+    kParamCount == 246,
     "Update the documented parameter layout after changing the schema");
 // SurfaceLabCreateNullRig.jsx addresses the hidden bridge by AE effect
 // property index. Keep these assertions beside the parameter layout so a
@@ -166,7 +168,8 @@ static_assert(
 static_assert(kParamRigRequest == 225, "Update Null Rig bridge indices");
 static_assert(kParamRigMetadata == 226, "Update Null Rig bridge indices");
 static_assert(kParamRigPointsStart == 227, "Update Null Rig bridge indices");
-static_assert(kParamAboutVersion == 244, "Update About parameter index");
+static_assert(kParamCreateNullRig == 244, "Update Null Rig button index");
+static_assert(kParamAboutVersion == 245, "Update About parameter index");
 
 extern "C" {
 

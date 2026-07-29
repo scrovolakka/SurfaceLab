@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.25)
 
 set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum supported macOS version")
 
-project(SurfaceLab VERSION 1.5.1 LANGUAGES C CXX OBJCXX)
+project(SurfaceLab VERSION 1.6.1 LANGUAGES C CXX OBJCXX)
 
 # The After Effects plug-in is macOS-only and needs the licensed AE SDK. The
 # scene-model unit tests are host-independent and build anywhere, so they are a
@@ -91,6 +91,9 @@ execute_process(
 add_custom_command(TARGET SurfaceLab POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E make_directory
         "$<TARGET_BUNDLE_DIR:SurfaceLab>/Contents/Resources"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/SurfaceLabCreateNullRig.jsx"
+        "$<TARGET_BUNDLE_DIR:SurfaceLab>/Contents/Resources/SurfaceLabCreateNullRig.jsx"
     COMMAND "${REZ_EXECUTABLE}"
         -o "$<TARGET_BUNDLE_DIR:SurfaceLab>/Contents/Resources/SurfaceLab.rsrc"
         -d SystemSevenOrLater=1

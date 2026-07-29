@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
+#include <string>
 #include <vector>
 
 #if defined(__APPLE__)
@@ -19,6 +20,107 @@
 #endif
 
 namespace {
+
+PF_Err RunBundledScript(
+    PF_InData* in_data,
+    PF_OutData* out_data,
+    const char* resource_name) {
+#if defined(__APPLE__)
+    if (!in_data || !out_data || !resource_name) {
+        return PF_Err_BAD_CALLBACK_PARAM;
+    }
+    auto* global = reinterpret_cast<GlobalData*>(
+        in_data->global_data);
+    if (!global) {
+        return PF_Err_INTERNAL_STRUCT_DAMAGED;
+    }
+    AEGP_SuiteHandler suites(in_data->pica_basicP);
+    A_Boolean scripting_available = FALSE;
+    A_Err error =
+        suites.UtilitySuite6()->AEGP_IsScriptingAvailable(
+            &scripting_available);
+    if (error != A_Err_NONE || !scripting_available) {
+        std::snprintf(
+            out_data->return_msg,
+            sizeof(out_data->return_msg),
+            "After Effects scripting is not available.");
+        out_data->out_flags |= PF_OutFlag_DISPLAY_ERROR_MESSAGE;
+        return PF_Err_NONE;
+    }
+
+    const CFBundleRef bundle = CFBundleGetBundleWithIdentifier(
+        CFSTR("com.xinpak.surfacelab"));
+    if (!bundle) {
+        std::snprintf(
+            out_data->return_msg,
+            sizeof(out_data->return_msg),
+            "SurfaceLab could not resolve its plug-in bundle.");
+        out_data->out_flags |= PF_OutFlag_DISPLAY_ERROR_MESSAGE;
+        return PF_Err_NONE;
+    }
+    const CFStringRef name = CFStringCreateWithCString(
+        kCFAllocatorDefault,
+        resource_name,
+        kCFStringEncodingUTF8);
+    const CFURLRef url = name
+        ? CFBundleCopyResourceURL(
+              bundle,
+              name,
+              CFSTR("jsx"),
+              nullptr)
+        : nullptr;
+    if (name) {
+        CFRelease(name);
+    }
+    CFDataRef data = nullptr;
+    if (url) {
+        SInt32 resource_error = 0;
+        CFURLCreateDataAndPropertiesFromResource(
+            kCFAllocatorDefault,
+            url,
+            &data,
+            nullptr,
+            nullptr,
+            &resource_error);
+    }
+    if (url) {
+        CFRelease(url);
+    }
+    if (!data) {
+        suites.UtilitySuite6()->AEGP_ReportInfo(
+            global->plugin_id,
+            "SurfaceLab could not load its bundled Null Rig script.");
+        return PF_Err_NONE;
+    }
+    std::vector<A_char> script(
+        static_cast<std::size_t>(CFDataGetLength(data)) + 1U,
+        '\0');
+    CFDataGetBytes(
+        data,
+        CFRangeMake(0, CFDataGetLength(data)),
+        reinterpret_cast<UInt8*>(script.data()));
+    CFRelease(data);
+    error = suites.UtilitySuite6()->AEGP_ExecuteScript(
+        global->plugin_id,
+        script.data(),
+        FALSE,
+        nullptr,
+        nullptr);
+    if (error != A_Err_NONE) {
+        std::snprintf(
+            out_data->return_msg,
+            sizeof(out_data->return_msg),
+            "After Effects could not schedule the SurfaceLab Null Rig script.");
+        out_data->out_flags |= PF_OutFlag_DISPLAY_ERROR_MESSAGE;
+    }
+    return PF_Err_NONE;
+#else
+    (void)in_data;
+    (void)out_data;
+    (void)resource_name;
+    return PF_Err_NONE;
+#endif
+}
 
 PF_Err AddPoint3D(
     PF_InData* in_data,
@@ -2330,6 +2432,14 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
     }
 
     AEFX_CLR_STRUCT(def);
+    PF_ADD_BUTTON(
+        "Null Controllers",
+        "Create Null Rig...",
+        0,
+        PF_ParamFlag_SUPERVISE,
+        kDiskCreateNullRig);
+
+    AEFX_CLR_STRUCT(def);
     def.flags = PF_ParamFlag_SUPERVISE;
     {
         char version_button[32]{};
@@ -2372,6 +2482,12 @@ PF_Err UserChangedParam(
     const PF_UserChangedParamExtra* extra) {
     if (!extra) {
         return PF_Err_BAD_CALLBACK_PARAM;
+    }
+    if (extra->param_index == kParamCreateNullRig) {
+        return RunBundledScript(
+            in_data,
+            out_data,
+            "SurfaceLabCreateNullRig");
     }
     if (extra->param_index == kParamAboutVersion) {
         if (out_data) {

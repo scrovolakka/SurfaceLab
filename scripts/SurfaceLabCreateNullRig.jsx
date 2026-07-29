@@ -8,7 +8,7 @@
  * Nulls back into SurfaceLab. New Point Nulls use the surface tangent frame;
  * an optional oriented Surface Root supplies rigid whole-surface motion.
  */
-(function surfaceLabCreateNullRig() {
+function surfaceLabCreateNullRig() {
     var EFFECT_MATCH_NAME = "XPK SurfaceLab";
     var SURFACE_COUNT = 8;
     var SURFACE_STRIDE = 26;
@@ -958,4 +958,9 @@
     } finally {
         app.endUndoGroup();
     }
-}());
+}
+
+// A project-structure change (adding Null layers) cannot safely happen while
+// a native effect is inside PF_Cmd_USER_CHANGED_PARAM. Defining the function
+// is safe there; schedule its body after that effect callback has returned.
+app.scheduleTask("surfaceLabCreateNullRig()", 10, false);
