@@ -4897,6 +4897,13 @@ PF_Err HandleSurfaceGizmoEvent(
     PF_UNLOCK_HANDLE(handle);
     params[SurfaceLatticeParam(g_selection.primary.surface)]
         ->uu.change_flags |= PF_ChangeFlag_CHANGED_VALUE;
+    // PF_EO_UPDATE_NOW redraws the custom Comp overlay, but it does not by
+    // itself invalidate AE's cached effect frame. Without an explicit render
+    // invalidation the cage follows the pointer while the textured Surface
+    // can remain at an older drag sample until mouse-up.
+    if (out_data) {
+        out_data->out_flags |= PF_OutFlag_FORCE_RERENDER;
+    }
     g_selection.last_mouse = mouse;
     event_extra->evt_out_flags = static_cast<PF_EventOutFlags>(
         PF_EO_HANDLED_EVENT |
