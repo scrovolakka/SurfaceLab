@@ -11,14 +11,41 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <unordered_map>
 #include <vector>
 
 #include "SurfaceLabRender.h"
 
 namespace {
+
+struct RenderedOverlaySnapshot {
+    SceneData scene{};
+    CameraState camera{};
+};
+
+std::mutex g_rendered_overlay_mutex;
+std::unordered_map<PF_ProgPtr, RenderedOverlaySnapshot>
+    g_rendered_overlay_snapshots;
+
+void PublishRenderedOverlaySnapshot(
+    PF_ProgPtr effect_ref,
+    const SceneData& scene,
+    const CameraState& camera) {
+    if (!effect_ref) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(g_rendered_overlay_mutex);
+    if (g_rendered_overlay_snapshots.size() > 64 &&
+        g_rendered_overlay_snapshots.find(effect_ref) ==
+            g_rendered_overlay_snapshots.end()) {
+        g_rendered_overlay_snapshots.clear();
+    }
+    g_rendered_overlay_snapshots[effect_ref] = {scene, camera};
+}
 
 bool IsFinitePoint3(const Point3& point) {
     return std::isfinite(point.x) &&
@@ -27,6 +54,23 @@ bool IsFinitePoint3(const Point3& point) {
 }
 
 }  // namespace
+
+bool ResolveRenderedOverlaySnapshot(
+    PF_ProgPtr effect_ref,
+    SceneData& scene,
+    CameraState& camera) {
+    if (!effect_ref) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(g_rendered_overlay_mutex);
+    const auto found = g_rendered_overlay_snapshots.find(effect_ref);
+    if (found == g_rendered_overlay_snapshots.end()) {
+        return false;
+    }
+    scene = found->second.scene;
+    camera = found->second.camera;
+    return true;
+}
 
 Vertex ProjectVertex(
     const Point3& point,
@@ -3162,6 +3206,8 @@ bool IsUsableTextureWorld(const PF_LayerDef& world) {
 struct RenderFrameSnapshot {
     SceneData scene{};
     CameraState camera{};
+    SceneData overlay_scene{};
+    CameraState overlay_camera{};
     LightingState lighting{};
     int legacy_tessellation{1};
     double scale_x{1.0};
@@ -3229,6 +3275,28 @@ RenderFrameSnapshot BuildRenderFrameSnapshot(
                               std::max(1.0e-6, snapshot.scale_x);
     const double full_height = static_cast<double>(input_height) /
                                std::max(1.0e-6, snapshot.scale_y);
+    snapshot.overlay_scene = ResolveSceneForFrame(
+        in_data,
+        params,
+        static_cast<A_long>(std::lround(full_width)),
+        static_cast<A_long>(std::lround(full_height)));
+    snapshot.overlay_camera = BuildResolvedCameraState(
+        in_data,
+        params,
+        full_width * 0.5,
+        full_height * 0.5,
+        0.0,
+        0.0,
+        1.0,
+        1.0,
+        1.0);
+    ResolveNullPointOverrides(
+        in_data,
+        snapshot.overlay_scene,
+        snapshot.overlay_camera,
+        1.0,
+        1.0,
+        1.0);
     snapshot.scene = ResolveSceneForFrame(
         in_data,
         params,
@@ -3370,6 +3438,10 @@ PF_Err RenderSurface(PF_InData* in_data, PF_ParamDef* params[], PF_LayerDef* out
         FinalizeDepthView<Pixel>(*output, depth_buffer);
     }
 
+    PublishRenderedOverlaySnapshot(
+        in_data->effect_ref,
+        snapshot.overlay_scene,
+        snapshot.overlay_camera);
     return PF_Err_NONE;
 }
 
@@ -4272,27 +4344,39 @@ PF_Err SmartRender(
     }
     switch (format) {
         case PF_PixelFormat_ARGB128:
-            return RenderMotionSamples<PF_PixelFloat>(
+            error = RenderMotionSamples<PF_PixelFloat>(
                 snapshot,
                 input_worlds,
                 source_worlds,
                 back_source_worlds,
                 *output);
+            break;
         case PF_PixelFormat_ARGB64:
-            return RenderMotionSamples<PF_Pixel16>(
+            error = RenderMotionSamples<PF_Pixel16>(
                 snapshot,
                 input_worlds,
                 source_worlds,
                 back_source_worlds,
                 *output);
+            break;
         case PF_PixelFormat_ARGB32:
-            return RenderMotionSamples<PF_Pixel8>(
+            error = RenderMotionSamples<PF_Pixel8>(
                 snapshot,
                 input_worlds,
                 source_worlds,
                 back_source_worlds,
                 *output);
+            break;
         default:
             return PF_Err_BAD_CALLBACK_PARAM;
     }
+    if (error == PF_Err_NONE) {
+        const RenderFrameSnapshot& displayed =
+            snapshot.samples[snapshot.samples.size() / 2];
+        PublishRenderedOverlaySnapshot(
+            in_data->effect_ref,
+            displayed.overlay_scene,
+            displayed.overlay_camera);
+    }
+    return error;
 }

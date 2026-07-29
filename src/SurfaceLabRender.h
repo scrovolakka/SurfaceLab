@@ -83,6 +83,14 @@ CameraState BuildResolvedCameraState(
     double scale_y,
     double scale_z);
 
+// Full-resolution state associated with the most recently completed raster.
+// This keeps the Comp overlay on the same evaluated frame AE is displaying
+// while interactive parameter and camera edits are being throttled.
+bool ResolveRenderedOverlaySnapshot(
+    PF_ProgPtr effect_ref,
+    SceneData& scene,
+    CameraState& camera);
+
 // Resolves marker-identified 3D Nulls at the current comp time and replaces
 // only their corresponding lattice points. Null layer names and layer order
 // are deliberately ignored. The returned map is also used by the gizmo to

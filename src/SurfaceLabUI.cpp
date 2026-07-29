@@ -3212,8 +3212,16 @@ PF_Err HandleSurfaceGizmoEvent(
     }
     SceneData scene =
         ResolveSceneForFrame(in_data, params, width, height);
-    const CameraState camera =
+    CameraState camera =
         BuildGizmoCamera(in_data, params, width, height);
+    // AE can throttle effect rasterization while a numeric field, transform,
+    // or camera is being edited. Keep hit testing and Drawbot geometry tied to
+    // the last frame that actually completed, so the cage never advances
+    // independently of the textured Surface displayed underneath it.
+    ResolveRenderedOverlaySnapshot(
+        in_data->effect_ref,
+        scene,
+        camera);
     const NullPointOverrideState null_overrides =
         ResolveNullPointOverrides(
             in_data,
