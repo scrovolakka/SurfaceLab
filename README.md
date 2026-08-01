@@ -3,7 +3,7 @@
 SurfaceLab is an After Effects native effect for placing and deforming flat
 sources in 3D with an interpolating control-point lattice.
 
-Current version: **1.8.4** (v1 architecture).
+Current version: **1.8.6** (v1 architecture).
 Match name: `XPK SurfaceLab` · Effect menu: **SurfaceLab > SurfaceLab**.
 The installed build is shown in Effect Controls under **About → SurfaceLab Version**.
 
@@ -86,6 +86,10 @@ Additional workflow scripts:
 - Rendering uses the CPU SmartFX path for 8/16/32-bpc output, perspective-
   correct bilinear sampling, per-pixel depth, and **Render View** modes:
   Finish, Depth, UV, Normal.
+- AE low-quality and reduced-resolution previews use a lightweight interactive
+  raster: one mesh subdivision per lattice interval, one spatial/motion
+  sample, and no shadows. Full-resolution frames retain the authored Mesh
+  Quality, antialiasing, motion blur, and shadows.
 - On macOS, AE's Metal device setup now compiles and dispatch-validates a
   device-local SurfaceLab pipeline. Frame rasterization intentionally remains
   on the CPU SmartFX path until the Metal renderer reaches visual parity; AE

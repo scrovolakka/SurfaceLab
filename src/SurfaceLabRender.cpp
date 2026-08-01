@@ -3209,6 +3209,28 @@ bool IsUsableTextureWorld(const PF_LayerDef& world) {
            world.rowbytes != 0;
 }
 
+bool IsInteractivePreviewRender(const PF_InData* in_data) {
+    if (!in_data) {
+        return false;
+    }
+    if (in_data->quality == PF_Quality_LO) {
+        return true;
+    }
+    // AE's Adaptive Resolution keeps the Comp viewer responsive by asking
+    // effects for a reduced raster while a camera, transform, or custom
+    // handle is moving. SurfaceLab's CPU tessellation used to retain its full
+    // sampling cost for that temporary raster, so completed frames trailed
+    // the live cage by several drag samples. The full-resolution request AE
+    // sends after interaction stops does not enter this path.
+    const auto is_reduced = [](const PF_RationalScale& scale) {
+        return scale.num > 0 &&
+               static_cast<A_u_long>(scale.num) <
+                   std::max<A_u_long>(1U, scale.den);
+    };
+    return is_reduced(in_data->downsample_x) ||
+           is_reduced(in_data->downsample_y);
+}
+
 struct RenderFrameSnapshot {
     SceneData scene{};
     CameraState camera{};
@@ -3224,6 +3246,7 @@ struct RenderFrameSnapshot {
     std::array<bool, kMaximumSurfaces> back_source_slots{};
     ShadowScene shadow_scene{};
     bool shadows_enabled{};
+    bool interactive_preview{};
 };
 
 RenderFrameSnapshot BuildRenderFrameSnapshot(
@@ -3241,6 +3264,8 @@ RenderFrameSnapshot BuildRenderFrameSnapshot(
         static_cast<double>(in_data->downsample_y.num) /
         std::max<A_u_long>(1U, in_data->downsample_y.den);
     snapshot.scale_z = (snapshot.scale_x + snapshot.scale_y) * 0.5;
+    snapshot.interactive_preview =
+        IsInteractivePreviewRender(in_data);
     snapshot.wireframe = false;
     snapshot.render_view = std::clamp<A_long>(
         params[kParamRenderView]->u.pd.value,
@@ -3284,6 +3309,14 @@ RenderFrameSnapshot BuildRenderFrameSnapshot(
         params,
         static_cast<A_long>(std::lround(full_width)),
         static_cast<A_long>(std::lround(full_height)));
+    if (snapshot.interactive_preview) {
+        snapshot.antialiasing = kAntialiasingOff;
+        for (std::uint32_t index = 0;
+             index < snapshot.scene.surface_count;
+             ++index) {
+            snapshot.scene.surfaces[index].mesh_quality = 1;
+        }
+    }
     ResolveNullPointOverrides(
         in_data,
         snapshot.scene,
@@ -3292,6 +3325,7 @@ RenderFrameSnapshot BuildRenderFrameSnapshot(
         snapshot.scale_y,
         snapshot.scale_z);
     snapshot.shadows_enabled =
+        !snapshot.interactive_preview &&
         snapshot.render_view == kRenderViewFinish &&
         std::any_of(
             snapshot.lighting.lights.begin(),
@@ -3873,6 +3907,9 @@ std::vector<A_long> ResolveMotionSampleTimes(PF_InData* in_data) {
     if (!in_data || !in_data->effect_ref || in_data->time_step <= 0) {
         return {in_data ? in_data->current_time : 0};
     }
+    if (IsInteractivePreviewRender(in_data)) {
+        return {in_data->current_time};
+    }
     AEGP_SuiteHandler suites(in_data->pica_basicP);
     AEGP_LayerH effect_layer = nullptr;
     AEGP_CompH comp = nullptr;
@@ -4115,6 +4152,8 @@ PF_Err SmartPreRender(
             0.0);
         external_state.push_back(
             static_cast<double>(sample_in.current_time));
+        external_state.push_back(
+            frame.interactive_preview ? 1.0 : 0.0);
         const std::vector<double> frame_state =
             BuildExternalStateDigest(
                 frame.camera,
